@@ -3568,7 +3568,10 @@ class AIMindPlugin(Star):
             if mode in ("simple", "expert"):
                 current["mode"] = mode
                 self._save_simple_overrides("panel_mode.json", current, "面板模式")
-        return json_response({"mode": str(current.get("mode") or "simple")})
+        return json_response({
+            "mode": str(current.get("mode") or "simple"),
+            "background": bool(getattr(self.settings.panel, "background", True)),
+        })
 
     # ------------------------------------------------------------------
     # 鉴权：谁是主人
