@@ -16,6 +16,7 @@ AstrBot 的事件循环是单线程的，但为了将来可能出现的
 from __future__ import annotations
 
 import sqlite3
+import time
 import threading
 from array import array
 from pathlib import Path
@@ -290,6 +291,104 @@ class MemoryStore:
             f"UPDATE memories SET last_hit = ?, hit_count = hit_count + 1 WHERE id IN ({placeholders})",
             [now, *ids],
         )
+
+    # -- 垃圾桶 -------------------------------------------------------------
+    # 结构跟 memories 一样，末尾多一列删除时间。用 CREATE TABLE AS 把列原样
+    # 拷过来，不手写列名 —— 以后 memories 加列也不会漏。
+    _TRASH_DDL = "CREATE TABLE IF NOT EXISTS memories_trash AS SELECT * FROM memories WHERE 0"
+
+    def _ensure_trash(self, conn: Any) -> None:
+        try:
+            conn.execute(self._TRASH_DDL)
+            conn.execute(
+                "ALTER TABLE memories_trash ADD COLUMN deleted_at REAL NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+        except sqlite3.Error:
+            pass          # 表已经有了 / 列已经加过
+
+    def _memory_columns(self, conn: Any) -> list[str]:
+        rows = conn.execute("PRAGMA table_info(memories)").fetchall()
+        return [str(item[1]) for item in rows]
+
+    def trash(self, memory_id: int) -> bool:
+        """删除 = 先进垃圾桶。1 天后由后台真正清掉（purge_trash）。"""
+        conn = self.connection
+        if conn is None:
+            return False
+        self._ensure_trash(conn)
+        try:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT id FROM memories WHERE id = ?", (int(memory_id),)
+                ).fetchone()
+                if row is None:
+                    return False
+                conn.execute(
+                    "INSERT INTO memories_trash SELECT *, ? FROM memories WHERE id = ?",
+                    (time.time(), int(memory_id)),
+                )
+                conn.execute("DELETE FROM memories WHERE id = ?", (int(memory_id),))
+                conn.commit()
+        except sqlite3.Error as exc:
+            if self.logger is not None:
+                self.logger.warning(f"[ai_memory] 移入垃圾桶失败：{exc}")
+            return False
+        return True
+
+    def trash_many(self, memory_ids: Iterable[int]) -> int:
+        done = 0
+        for one in memory_ids or ():
+            if self.trash(int(one)):
+                done += 1
+        return done
+
+    def trash_list(self, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self.connection
+        if conn is None:
+            return []
+        self._ensure_trash(conn)
+        rows = self._query(
+            "SELECT * FROM memories_trash ORDER BY deleted_at DESC LIMIT ?", (int(limit),)
+        )
+        out = []
+        for item in rows:
+            data = {key: item[key] for key in item.keys()}
+            out.append(data)
+        return out
+
+    def restore(self, memory_id: int) -> bool:
+        """从垃圾桶捡回来（id 原样保留）。"""
+        conn = self.connection
+        if conn is None:
+            return False
+        self._ensure_trash(conn)
+        try:
+            with self._lock:
+                names = ", ".join(self._memory_columns(conn))
+                conn.execute(
+                    f"INSERT INTO memories ({names})"
+                    f" SELECT {names} FROM memories_trash WHERE id = ?",
+                    (int(memory_id),),
+                )
+                conn.execute("DELETE FROM memories_trash WHERE id = ?", (int(memory_id),))
+                conn.commit()
+        except sqlite3.Error as exc:
+            if self.logger is not None:
+                self.logger.warning(f"[ai_memory] 从垃圾桶恢复失败：{exc}")
+            return False
+        return True
+
+    def purge_trash(self, before: float) -> int:
+        """把垃圾桶里超过时限的真正删掉。"""
+        conn = self.connection
+        if conn is None:
+            return 0
+        self._ensure_trash(conn)
+        cursor = self._execute(
+            "DELETE FROM memories_trash WHERE deleted_at < ?", (float(before),)
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
 
     def delete(self, memory_id: int) -> bool:
         cursor = self._execute("DELETE FROM memories WHERE id = ?", (memory_id,))

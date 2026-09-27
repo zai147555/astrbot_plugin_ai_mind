@@ -2204,6 +2204,56 @@
       view.scale = next;
       drawGraph();
     };
+    // 垃圾桶：删除先进这里，1 天后才真正清掉。
+    // 用 JS 动态建，不假设 HTML 里的结构（上次就是因为假设结构，下拉没插进去）。
+    (function () {
+      var host = $("maddbtn") ? $("maddbtn").closest(".card") : null;
+      if (!host || !host.parentNode || $("trashbox")) return;
+      var box = document.createElement("div");
+      box.className = "card";
+      box.id = "trashbox";
+      box.innerHTML = "<div class='row' style='justify-content:space-between'>"
+        + "<b>🗑 垃圾桶</b>"
+        + "<span class='small muted' id='trashnote'>删掉的东西在这里留 1 天，过期自动清掉</span>"
+        + "<button class='ghost small' id='trashreload'>刷新</button></div>"
+        + "<div id='trashlist' class='small' style='margin-top:8px'></div>";
+      host.parentNode.insertBefore(box, host.nextSibling);
+    })();
+    function loadTrash() {
+      var list = $("trashlist");
+      if (!list) return;
+      request("memory/trash", "GET").then(function (data) {
+        var items = (data && data.items) || [];
+        var note = $("trashnote");
+        if (note) note.textContent = items.length
+          ? ("共 " + items.length + " 条，过期自动清掉")
+          : "空的（删掉的东西会在这里留 1 天）";
+        if (!items.length) { list.innerHTML = "<span class='muted'>还没有删除过东西</span>"; return; }
+        list.innerHTML = items.map(function (it) {
+          return "<div class='row' style='justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)'>"
+            + "<span>#" + it.id + " " + esc((it.content || "").slice(0, 40)) + "</span>"
+            + "<span class='small muted'>" + (it.expires_in_hours || 0).toFixed(1) + " 小时后清除</span>"
+            + "<span><button class='ghost small' data-trash-restore='" + it.id + "'>恢复</button>"
+            + " <button class='ghost small' data-trash-gone='" + it.id + "'>彻底删除</button></span></div>";
+        }).join("");
+        list.querySelectorAll("[data-trash-restore]").forEach(function (btn) {
+          btn.onclick = function () {
+            request("memory/trash", "POST", { action: "restore", id: btn.getAttribute("data-trash-restore") })
+              .then(function () { toast("已恢复"); loadTrash(); loadMemory(); })
+              .catch(function (e) { toast("失败：" + e.message); });
+          };
+        });
+        list.querySelectorAll("[data-trash-gone]").forEach(function (btn) {
+          btn.onclick = function () {
+            request("memory/trash", "POST", { action: "purge", id: btn.getAttribute("data-trash-gone") })
+              .then(function () { toast("已彻底删除"); loadTrash(); })
+              .catch(function (e) { toast("失败：" + e.message); });
+          };
+        });
+      }).catch(function (e) { list.innerHTML = "<span class='muted'>读取失败：" + esc(e.message) + "</span>"; });
+    }
+    if ($("trashreload")) $("trashreload").onclick = loadTrash;
+    state.loadTrash = loadTrash;
     $("tab-images").onclick = function () {
       setView("images");
       loadImages().catch(function (e) { toast("加载失败：" + e.message); });
@@ -2771,7 +2821,9 @@
     // 「关于谁」：手动加记忆时指定这条记的是谁。
     // 后端本来就收 owner_id，只是面板一直没送 —— 于是手动加的全成了「本人」。
     (function () {
-      var anchor = $("maddkind") ? $("maddkind").closest("label") : null;
+      // 直接插在「类型」这个 select 前面 —— 不假设它包在 <label> 里。
+      // 上一版就是这么假设的（closest("label")），结果面板上根本没出现这个下拉。
+      var anchor = $("maddkind");
       if (!anchor || !anchor.parentNode || $("maddwho")) return;
       var sel = document.createElement("select");
       sel.id = "maddwho";
