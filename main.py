@@ -44,6 +44,33 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
+# ---------------------------------------------------------------------------
+# 抢回自己的包名：绝不让别的插件的同名 mind 包顶替
+# ---------------------------------------------------------------------------
+# Python 里 sys.modules 谁先注册谁赢。如果另一个插件（合并前那两个）已经
+# import 过它自己的 mind 包，我们再 from mind.xxx import ... 拿到的就是
+# **别人那份代码** —— 日志里的模块名会是光秃秃的 mind.samples，而不是我们的
+# astrbot_plugin_ai_mind.mind.samples。后果：改自己的文件改十几版，
+# 跑的还是别人的代码。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+
+def _reclaim_mind_package() -> list:
+    """把不属于本插件目录的 mind.* 从 sys.modules 里清掉。"""
+    dropped: list = []
+    for name in [n for n in list(sys.modules) if n == "mind" or n.startswith("mind.")]:
+        module = sys.modules.get(name)
+        where = os.path.abspath(str(getattr(module, "__file__", "") or ""))
+        if where and _HERE in where:
+            continue                      # 已经是我们自己的了
+        sys.modules.pop(name, None)
+        dropped.append(name)
+    return dropped
+
+
+_RECLAIMED = _reclaim_mind_package()
 try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
     from .mind import (
         EMOTION_RULES_BLOCK,
@@ -812,6 +839,16 @@ class AIMindPlugin(Star):
             "[ai_mind] 代码指纹："
             f"{getattr(_dbconn, 'STAMP', '?')} / {getattr(_samples, 'STAMP', '?')}"
             f"｜目录 {os.path.dirname(os.path.abspath(__file__))}"
+        )
+        try:
+            from .mind import panel as _panel
+        except ImportError:  # pragma: no cover
+            import mind.panel as _panel  # type: ignore[no-redef]
+        logger.info(
+            "[ai_mind] 实际加载的模块："
+            f"samples={getattr(_samples, '__file__', '?')}"
+            f"｜panel={getattr(_panel, '__file__', '?')}"
+            + (f"｜抢回被顶替的包 {_RECLAIMED}" if _RECLAIMED else "")
         )
         logger.info(f"[ai_mind] {splitter_engine.describe(self.splitter)}")
         logger.info(f"[ai_mind] {debounce_engine.describe(self.settings.debounce)}")
