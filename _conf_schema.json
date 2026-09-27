@@ -1,0 +1,1078 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后情绪与记忆都不再介入对话；面板仍然可以查看已有数据。"
+  },
+  "emotion": {
+    "description": "情绪",
+    "type": "object",
+    "hint": "让她拥有会自己涨落、会记仇也会记好的心情。",
+    "items": {
+      "enabled": {
+        "description": "总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉后插件完全不介入对话，但已有的情绪状态仍会保留在磁盘上。"
+      },
+      "persona": {
+        "description": "人格与情绪基调",
+        "type": "object",
+        "items": {
+          "preset": {
+            "description": "性格预设",
+            "type": "string",
+            "default": "tsundere",
+            "options": [
+              "tsundere",
+              "neutral"
+            ],
+            "hint": "tsundere = 傲娇（嘴硬心软、炸毛式害羞、阴阳怪气式吃醋）；neutral = 通用。也可以填你自己在「心智面板 → 人格定制」里另存为的预设名。"
+          },
+          "bot_name": {
+            "description": "角色名",
+            "type": "string",
+            "default": "",
+            "hint": "只用于面板显示与注入时的自我指代，留空则用“她”。"
+          },
+          "custom_temperament": {
+            "description": "手动指定气质基线",
+            "type": "bool",
+            "default": false,
+            "hint": "打开后下面的三个数值才会生效；关闭时一律使用预设自带的气质基线（推荐保持关闭）。"
+          },
+          "temperament": {
+            "description": "气质基线（没事时心情停在哪里）",
+            "type": "object",
+            "items": {
+              "pleasure": {
+                "description": "愉悦基线 P",
+                "type": "float",
+                "default": 0.08,
+                "hint": "-1 ~ 1"
+              },
+              "arousal": {
+                "description": "唤醒基线 A",
+                "type": "float",
+                "default": 0.22,
+                "hint": "-1 ~ 1"
+              },
+              "dominance": {
+                "description": "掌控基线 D",
+                "type": "float",
+                "default": 0.3,
+                "hint": "-1 ~ 1"
+              }
+            }
+          },
+          "custom_rules": {
+            "description": "自定义情绪规则",
+            "type": "list",
+            "default": [],
+            "hint": "每行一条，格式：关键词1|关键词2 => P,A,D => 好感度增减 => 说明 => special/other（最后一段可省略）。也可以在「心智面板 → 人格定制」里可视化编辑并保存成预设。"
+          }
+        }
+      },
+      "dynamics": {
+        "description": "情绪动力学",
+        "type": "object",
+        "items": {
+          "custom_values": {
+            "description": "手动指定衰减参数",
+            "type": "bool",
+            "default": false,
+            "hint": "关闭时使用预设自带参数（推荐保持关闭）。"
+          },
+          "emotion_half_life": {
+            "description": "即时情绪半衰期（秒）",
+            "type": "int",
+            "default": 240,
+            "hint": "越小情绪退得越快。240 秒 ≈ 4 分钟后当前情绪强度减半。"
+          },
+          "mood_half_life": {
+            "description": "心境半衰期（秒）",
+            "type": "int",
+            "default": 5400,
+            "hint": "心境是被情绪长期带偏的那一层，衰减慢得多。5400 秒 = 1.5 小时。"
+          },
+          "mood_coupling": {
+            "description": "情绪对心境的带动比例",
+            "type": "float",
+            "default": 0.1,
+            "hint": "0 ~ 1。越大越“记仇/记好”，一次刺激就能改变长期心境。"
+          },
+          "max_delta": {
+            "description": "单条消息能造成的最大情绪冲击",
+            "type": "float",
+            "default": 0.62,
+            "hint": "0.05 ~ 1。防止一句话把情绪直接打满。"
+          }
+        }
+      },
+      "appraisal": {
+        "description": "情绪评估",
+        "type": "object",
+        "hint": "一条消息怎么变成情绪波动：手写规则优先，中文情感词汇本体兜底。",
+        "items": {
+          "lexicon": {
+            "description": "用中文情感词汇本体兜底",
+            "type": "bool",
+            "default": true,
+            "hint": "手写规则没覆盖到的日常表达（「心累」「美滋滋」「有点忐忑」……）由这张 7 大类 21 小类的词表接住。它只在规则一条都没命中时生效，而且冲击力明显更弱，不会盖过你精心写的规则。"
+          },
+          "lexicon_gain": {
+            "description": "兜底的冲击力倍率",
+            "type": "float",
+            "default": 0.25,
+            "hint": "0.05 ~ 1。手写规则大约是它的 3~4 倍。调大她会对日常话更敏感，调小就更依赖你自己的规则。"
+          }
+        }
+      },
+      "relationship": {
+        "description": "好感度与关系",
+        "type": "object",
+        "items": {
+          "special_users": {
+            "description": "专属用户 ID 列表",
+            "type": "list",
+            "default": [],
+            "hint": "填 QQ 号 / 用户 ID。**这是「认人」的关键**：不填的话，人设里写了「要叫他宝宝」也没用 —— 插件不知道谁是宝宝，模型就会开口问「你是谁呀」「报上名号来」。填了之后会告诉模型「这个人就是你的宝宝，你早就认识他」。懒得翻配置就去「心智面板 → 人格定制 → 专属用户」填，那边还能从聊过的人里直接挑。"
+          },
+          "special_label": {
+            "description": "专属标记的文字",
+            "type": "string",
+            "default": "特别的人",
+            "hint": "显示在面板与注入内容里，例如填“宝宝”“主人”。怎么称呼他仍由你的人设决定。"
+          },
+          "inject_identity": {
+            "description": "告诉她「现在跟谁说话」",
+            "type": "bool",
+            "default": true,
+            "hint": "每一轮把「正在跟你说话的人是谁」当成事实告诉模型。关掉之后她会重新开始问「你是谁」，但是否这样称呼、用什么态度，仍旧完全由你的人设决定。"
+          },
+          "identity_min_messages": {
+            "description": "聊过多少条才算「认识」",
+            "type": "int",
+            "default": 3,
+            "hint": "非专属用户至少聊过这么多条，才会被告知「你认识他」。专属用户不受限制 —— 就算只说了一句话也认得。"
+          },
+          "group_discretion": {
+            "description": "群里不许透露关系",
+            "type": "bool",
+            "default": true,
+            "hint": "专属用户在群里时，额外叮嘱一句：别人打听你们的关系不许透露、不许承认，但对他本人不要装不认识。"
+          },
+          "initial": {
+            "description": "新用户初始好感度",
+            "type": "int",
+            "default": 8,
+            "hint": "0 ~ 100"
+          },
+          "min": {
+            "description": "好感度下限",
+            "type": "int",
+            "default": -100
+          },
+          "max": {
+            "description": "好感度上限",
+            "type": "int",
+            "default": 100
+          },
+          "familiarity_gain": {
+            "description": "每条消息累积的熟悉度",
+            "type": "float",
+            "default": 1,
+            "hint": "熟悉度只增不减，上限 100。"
+          },
+          "decay_days": {
+            "description": "好感度衰减天数",
+            "type": "int",
+            "default": 0,
+            "hint": "0 = 不衰减（推荐）。填 30 表示好感度每 30 天减半。"
+          },
+          "gain_scale": {
+            "description": "好感度增长速度",
+            "type": "float",
+            "default": 0.4,
+            "hint": "0.02 ~ 3。好感度越高越难涨；想让关系升得慢一点就调小，想快就调大。"
+          }
+        }
+      },
+      "injection": {
+        "description": "注入方式",
+        "type": "object",
+        "items": {
+          "mode": {
+            "description": "情绪状态注入位置",
+            "type": "string",
+            "default": "content_part",
+            "options": [
+              "content_part",
+              "system_prompt",
+              "both"
+            ],
+            "hint": "content_part = 作为本轮用户消息的附加上下文（推荐，不破坏 system prompt 缓存）；system_prompt = 直接追加到系统提示词；both = 两边都放。"
+          },
+          "verbosity": {
+            "description": "注入详细程度",
+            "type": "string",
+            "default": "normal",
+            "options": [
+              "lite",
+              "normal",
+              "rich"
+            ],
+            "hint": "lite 只给情绪词与表达基调；normal 附带数值、起因与关系；rich 再附上最近的情绪波动。"
+          },
+          "inject_rules": {
+            "description": "注入情绪扮演规则",
+            "type": "bool",
+            "default": true,
+            "hint": "一段固定不变的说明，声明“情绪只是滤镜，不改人设/称呼/分条/排版”。关闭可以完全不动 system prompt。"
+          },
+          "trusted": {
+            "description": "身份/情绪块放进「系统级受信任位」",
+            "type": "bool",
+            "default": true,
+            "hint": "放在 System Prompt 之后、用户消息之前（ProviderRequest.contexts）。关掉就退回原来的方式（追加到本轮用户消息），但那样用户自己就能覆盖或伪造这些内容 —— 「他是你的宝宝」这种身份信息尤其不该待在用户消息里。"
+          },
+          "with_trace": {
+            "description": "总是附带最近情绪波动",
+            "type": "bool",
+            "default": false,
+            "hint": "让模型知道自己“刚才还在气头上”，连贯性更好，代价是提示词变长。"
+          }
+        }
+      },
+      "expression": {
+        "description": "情绪自表达回读",
+        "type": "object",
+        "items": {
+          "self_feedback": {
+            "description": "回读方式",
+            "type": "string",
+            "default": "heuristic",
+            "options": [
+              "heuristic",
+              "tag",
+              "off"
+            ],
+            "hint": "heuristic = 从她自己刚说的话里反推情绪（傲娇人设推荐，完全不污染提示词）；tag = 只在模型输出 <emotion>害羞</emotion> 时回读；off = 关闭。"
+          },
+          "self_feedback_gain": {
+            "description": "回读强度",
+            "type": "float",
+            "default": 0.22,
+            "hint": "0 ~ 1。越小越保守，只做轻微的情绪一致性强化。"
+          },
+          "style_hold_seconds": {
+            "description": "规则基调保持时长（秒）",
+            "type": "int",
+            "default": 300,
+            "hint": "像“他生病了要嘴毒心软”这类专门基调，会覆盖情绪原型自带的语气，持续这段时间。"
+          }
+        }
+      },
+      "idle": {
+        "description": "长时间没人说话",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用空闲情绪",
+            "type": "bool",
+            "default": true
+          },
+          "threshold_minutes": {
+            "description": "多久算“很久没说话”（分钟）",
+            "type": "int",
+            "default": 180,
+            "hint": "超过这个时长后，她下次开口前会先有点空落落、带一点被晾着的不爽。"
+          },
+          "max_effect": {
+            "description": "空闲情绪的最大影响",
+            "type": "float",
+            "default": 0.3,
+            "hint": "0 ~ 0.8。"
+          }
+        }
+      },
+      "safety": {
+        "description": "安全优先",
+        "type": "object",
+        "items": {
+          "crisis_detection": {
+            "description": "自伤 / 轻生信号检测",
+            "type": "bool",
+            "default": true,
+            "hint": "强烈建议保持开启。命中后会临时封锁所有傲娇、嘴硬与玩笑，强制进入认真关心模式。规则式检测会有漏判，不能替代真正的危机干预。"
+          },
+          "hold_minutes": {
+            "description": "安全模式持续时间（分钟）",
+            "type": "int",
+            "default": 10,
+            "hint": "这段时间内她会一直保持认真、温和的语气。"
+          }
+        }
+      }
+    }
+  },
+  "memory": {
+    "description": "长期记忆",
+    "type": "object",
+    "hint": "记住你是谁、你喜欢什么、你正在经历什么。",
+    "items": {
+      "enabled": {
+        "description": "总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉后不再抽取也不再注入，已存下的记忆会保留在磁盘上。"
+      },
+      "capture": {
+        "description": "对话采集",
+        "type": "object",
+        "items": {
+          "batch_turns": {
+            "description": "攒够几轮对话抽取一次",
+            "type": "int",
+            "default": 6,
+            "hint": "越大越省 token，但记下来得越晚。6 轮是比较平衡的值。"
+          },
+          "idle_flush_seconds": {
+            "description": "静默多久后抽取",
+            "type": "int",
+            "default": 180,
+            "hint": "聊到一半停了，等这么久就把手上攒的内容先整理掉，不用等满 batch_turns。"
+          },
+          "max_turns_kept": {
+            "description": "单个会话最多缓存多少轮",
+            "type": "int",
+            "default": 40,
+            "hint": "防止长时间抽取失败时内存无限增长。"
+          },
+          "min_turn_chars": {
+            "description": "多短的消息不值得记",
+            "type": "int",
+            "default": 4
+          }
+        }
+      },
+      "extract": {
+        "description": "记忆抽取",
+        "type": "object",
+        "items": {
+          "provider_id": {
+            "description": "用哪个模型做抽取",
+            "type": "string",
+            "default": "",
+            "_special": "select_provider",
+            "hint": "留空 = 用当前会话正在用的模型。建议挑一个便宜快速的小模型，抽取不需要太强的能力。"
+          },
+          "max_items_per_batch": {
+            "description": "每批最多抽取几条",
+            "type": "int",
+            "default": 6,
+            "hint": "限制单次抽取的产出，防止模型一口气写一大堆琐事。"
+          },
+          "include_assistant": {
+            "description": "抽取时带上 AI 的回复",
+            "type": "bool",
+            "default": true,
+            "hint": "有上下文判断更准；关掉可以再省一点 token。"
+          },
+          "extra_instructions": {
+            "description": "额外的抽取要求",
+            "type": "text",
+            "default": "",
+            "hint": "会追加到抽取提示词里。例如：注意记录他提到的所有日期和约定。"
+          },
+          "dedup_threshold": {
+            "description": "判定为重复的相似度阈值",
+            "type": "float",
+            "default": 0.6,
+            "hint": "0.2 ~ 0.98。越高越容易产生重复条目，越低越容易把两件不同的事合并掉。"
+          },
+          "user_label": {
+            "description": "聊天记录里对方的称呼",
+            "type": "string",
+            "default": "对方"
+          },
+          "bot_label": {
+            "description": "聊天记录里 AI 的称呼",
+            "type": "string",
+            "default": "你"
+          }
+        }
+      },
+      "retrieval": {
+        "description": "记忆检索",
+        "type": "object",
+        "items": {
+          "pinned_limit": {
+            "description": "常驻档案条数",
+            "type": "int",
+            "default": 12,
+            "hint": "名字、生日、称呼、长期爱好这类记忆每轮都会带上，这里限制最多带几条。"
+          },
+          "recent_limit": {
+            "description": "最近发生的条数",
+            "type": "int",
+            "default": 5
+          },
+          "recent_max_age_days": {
+            "description": "「最近发生」的时间窗（天）",
+            "type": "int",
+            "default": 14,
+            "hint": "超过这个天数的记忆不再无条件带上，必须靠关键词或语义被检索到。"
+          },
+          "relevant_limit": {
+            "description": "按相关度召回几条",
+            "type": "int",
+            "default": 4
+          },
+          "min_relevant_score": {
+            "description": "相关度最低门槛",
+            "type": "float",
+            "default": 0.22,
+            "hint": "调高 = 只想起最确定的，调低 = 更容易想起旧事但可能有噪声。"
+          },
+          "scan_limit": {
+            "description": "单次最多扫描多少条",
+            "type": "int",
+            "default": 1500
+          },
+          "recency_half_life_days": {
+            "description": "新鲜度半衰期（天）",
+            "type": "int",
+            "default": 30,
+            "hint": "越久之前的记忆，在打分里占的新鲜度越低。"
+          },
+          "weight_lexical": {
+            "description": "词法相关度权重",
+            "type": "float",
+            "default": 0.6
+          },
+          "weight_semantic": {
+            "description": "语义相关度权重",
+            "type": "float",
+            "default": 0.35,
+            "hint": "只有打开「向量检索」时才生效，关闭时会自动归零。"
+          },
+          "weight_recency": {
+            "description": "新鲜度权重",
+            "type": "float",
+            "default": 0.25
+          },
+          "weight_importance": {
+            "description": "重要度权重",
+            "type": "float",
+            "default": 0.15
+          },
+          "max_inject_chars": {
+            "description": "注入记忆的最大长度",
+            "type": "int",
+            "default": 1400,
+            "hint": "超过就按行截断，避免把提示词撑爆。"
+          }
+        }
+      },
+      "embedding": {
+        "description": "向量检索（可选升级）",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用向量检索",
+            "type": "bool",
+            "default": false,
+            "hint": "打开后，词法匹配不到但意思相近的旧记忆也能被想起来（例如「想喝杯咖啡」能想起「他喜欢喝冰美式」）。需要先在 WebUI 里配好一个 Embedding 服务提供商。"
+          },
+          "provider_id": {
+            "description": "用哪个 Embedding 提供商",
+            "type": "string",
+            "default": "",
+            "hint": "留空 = 自动用第一个已配置的 Embedding 提供商；也可以填提供商 ID。"
+          },
+          "timeout_seconds": {
+            "description": "向量请求超时（秒）",
+            "type": "int",
+            "default": 3,
+            "hint": "向量服务慢或挂掉时，会自动退回纯词法检索，不会卡住回复。"
+          }
+        }
+      },
+      "privacy": {
+        "description": "隐私",
+        "type": "object",
+        "items": {
+          "scan_sensitive": {
+            "description": "识别敏感信息",
+            "type": "bool",
+            "default": true,
+            "hint": "强烈建议保持开启。命中证件号、手机号、住址、学校、密码等特征的记忆会被标成🔒，永久限定为只在本人私聊里出现，绝不进群聊。"
+          },
+          "private_memory_in_group": {
+            "description": "群聊里也带上私聊记忆",
+            "type": "bool",
+            "default": false,
+            "hint": "默认关闭。打开后，当他本人在群里说话时，私聊里知道的非敏感记忆也会带上（并附上「别主动说出来」的提示）。敏感信息无论如何都不会进群。"
+          },
+          "group_scope": {
+            "description": "群里学到的记忆的作用域",
+            "type": "string",
+            "default": "session",
+            "options": [
+              "session",
+              "user",
+              "global"
+            ],
+            "hint": "session = 只在这个群里可用（推荐）；user = 该用户在任何会话可用；global = 所有会话可用。"
+          },
+          "private_scope": {
+            "description": "私聊学到的记忆的作用域",
+            "type": "string",
+            "default": "user",
+            "options": [
+              "session",
+              "user",
+              "global"
+            ],
+            "hint": "user = 只在该用户出现时可用（推荐）。"
+          }
+        }
+      },
+      "injection": {
+        "description": "注入方式",
+        "type": "object",
+        "items": {
+          "mode": {
+            "description": "记忆注入位置",
+            "type": "string",
+            "default": "content_part",
+            "options": [
+              "content_part",
+              "system_prompt",
+              "both"
+            ],
+            "hint": "content_part = 作为本轮用户消息的附加上下文（推荐，不破坏 system prompt 缓存）。"
+          },
+          "inject_rules": {
+            "description": "注入记忆行为准则",
+            "type": "bool",
+            "default": true,
+            "hint": "一段固定不变的说明（不要编造、不要念出来、别每条都提），写进 system_prompt，不会破坏提示词缓存。"
+          }
+        }
+      }
+    }
+  },
+  "panel": {
+    "description": "心智面板",
+    "type": "object",
+    "hint": "在 WebUI 的「插件 → AI 心智 → 页面」里打开的可视化面板。",
+    "items": {
+      "curve_hours": {
+        "description": "默认展示最近多少小时的情绪曲线",
+        "type": "int",
+        "default": 72,
+        "hint": "面板上可以随时切换 1 小时 ~ 30 天。"
+      },
+      "heartbeat_seconds": {
+        "description": "曲线心跳采样间隔（秒）",
+        "type": "int",
+        "default": 300,
+        "hint": "就算没有情绪事件，也按这个间隔打点，曲线上才看得见「自己衰减回基线」的过程。"
+      },
+      "sample_epsilon": {
+        "description": "采样灵敏度",
+        "type": "float",
+        "default": 0.004,
+        "hint": "变化小于这个幅度就不采样，避免曲线被噪声填满。想让曲线更细腻就调小。"
+      },
+      "curve_max_points": {
+        "description": "每个会话保留多少曲线点",
+        "type": "int",
+        "default": 3000,
+        "hint": "超出后丢最旧的。按每 5 分钟一个点算，3000 个点大约够 10 天。"
+      },
+      "public_access": {
+        "description": "允许非管理员访问面板数据",
+        "type": "bool",
+        "default": false,
+        "hint": "默认只有登录 WebUI 的人能看。面板接口本身就是走 WebUI 的登录态的。"
+      }
+    }
+  },
+  "commands": {
+    "description": "指令",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用聊天里的指令",
+        "type": "bool",
+        "default": true
+      },
+      "admin_only_mutations": {
+        "description": "改动类操作仅限管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "影响 /情绪 重置、/情绪 设定、/记忆 清空。"
+      },
+      "keep_relations_on_reset": {
+        "description": "重置情绪时保留好感度",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "advanced": {
+    "description": "高级",
+    "type": "object",
+    "items": {
+      "save_interval": {
+        "description": "情绪落盘间隔（秒）",
+        "type": "int",
+        "default": 60
+      },
+      "maintenance_interval": {
+        "description": "后台维护间隔（秒）",
+        "type": "int",
+        "default": 20
+      },
+      "debug_log": {
+        "description": "输出调试日志",
+        "type": "bool",
+        "default": false,
+        "hint": "想看每批记住了什么、每次触发了什么情绪就打开它。"
+      }
+    }
+  },
+  "images": {
+    "description": "关键词配图",
+    "type": "object",
+    "hint": "说到某些话就直接发一张图。图片在「心智面板 → 关键词配图」里上传和管理。",
+    "items": {
+      "enabled": {
+        "description": "启用关键词配图",
+        "type": "bool",
+        "default": true
+      },
+      "mode": {
+        "description": "命中后怎么处理",
+        "type": "string",
+        "default": "replace",
+        "options": [
+          "replace",
+          "before"
+        ],
+        "hint": "replace = 只发图，不再让模型回复（推荐，最像「甩张图给你」）；before = 先发图，然后照常回复。"
+      },
+      "fuzzy_threshold": {
+        "description": "模糊匹配阈值",
+        "type": "float",
+        "default": 0.6,
+        "hint": "0.1 ~ 1。「模糊相似」模式下按字符重合度算分，低于这个值不触发。调高更严格。"
+      },
+      "cooldown_seconds": {
+        "description": "同一会话的冷却时间（秒）",
+        "type": "int",
+        "default": 30,
+        "hint": "防止一句话刷十遍就发十张图。填 0 表示不限制。"
+      },
+      "max_bytes": {
+        "description": "单张图片上传上限（字节）",
+        "type": "int",
+        "default": 8388608,
+        "hint": "默认 8 MB。"
+      },
+      "preview_max_bytes": {
+        "description": "面板预览的体积上限（字节）",
+        "type": "int",
+        "default": 524288,
+        "hint": "超过这个大小的图片在面板上不给缩略图，免得列表接口变慢。"
+      },
+      "skip_commands": {
+        "description": "指令消息不参与配图匹配",
+        "type": "bool",
+        "default": true,
+        "hint": "以 / # ! 等开头的消息按指令处理，不会被配图截胡。"
+      },
+      "react_emotion": {
+        "description": "只发图时仍然结算情绪",
+        "type": "bool",
+        "default": true,
+        "hint": "即使不回她，这句话也照样影响她的心情。"
+      },
+      "reply_text": {
+        "description": "发图时附带的一句话",
+        "type": "string",
+        "default": "",
+        "hint": "留空就只发图。"
+      },
+      "ai_send": {
+        "description": "让 AI 自己决定发图",
+        "type": "object",
+        "hint": "插件会把可用图清单告诉模型，她就能在回复里用 <pic>关键词</pic> 点图。任何模型都能用，不要求支持 function calling。",
+        "items": {
+          "enabled": {
+            "description": "启用 AI 主动发图",
+            "type": "bool",
+            "default": true
+          },
+          "max_per_message": {
+            "description": "一条回复最多发几张",
+            "type": "int",
+            "default": 2,
+            "hint": "1 ~ 9。发多了很吵。"
+          }
+        }
+      }
+    }
+  },
+  "splitter": {
+    "description": "拟人分段",
+    "type": "object",
+    "hint": "把一条回复按标点拆成几口气，一段一段发出去（参考 astrbot_plugin_splitter 的做法）。人设里写的「1~3 条气泡」就靠它兜底。大部分参数可以直接在「心智面板 → 分段拟人」里改，改完立刻生效、不写回这里。",
+    "items": {
+      "enabled": {
+        "description": "启用拟人分段",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉就是老样子：一条回复一次发完。"
+      },
+      "llm_only": {
+        "description": "只切 AI 的回复",
+        "type": "bool",
+        "default": true,
+        "hint": "开着的时候，指令回执、报错、插件自己发的提示都不会被切开。"
+      },
+      "scope": {
+        "description": "在哪些会话生效",
+        "type": "string",
+        "default": "both",
+        "options": [
+          "both",
+          "private",
+          "group"
+        ],
+        "hint": "both = 私聊群聊都切；private = 只在私聊；group = 只在群里。"
+      },
+      "max_segments": {
+        "description": "一条回复最多几口气",
+        "type": "int",
+        "default": 3,
+        "hint": "0 = 不限。配合人设里的「最多 3 条气泡」用，超出的内容并进最后一条。"
+      },
+      "delay_strategy": {
+        "description": "段与段之间等多久",
+        "type": "string",
+        "default": "linear",
+        "options": [
+          "linear",
+          "log",
+          "random",
+          "fixed"
+        ],
+        "hint": "按「下一段有多长」算：linear 线性、log 对数、random 在区间里随机、fixed 固定值。"
+      },
+      "fixed_delay": {
+        "description": "固定延迟（秒）",
+        "type": "float",
+        "default": 1.2,
+        "hint": "只有 delay_strategy = fixed 时生效。"
+      },
+      "linear_base": {
+        "description": "线性延迟的固定部分（秒）",
+        "type": "float",
+        "default": 0.4
+      },
+      "linear_factor": {
+        "description": "线性延迟每个字加多少秒",
+        "type": "float",
+        "default": 0.05,
+        "hint": "0.05 表示下一段有 20 个字就多等 1 秒。"
+      },
+      "max_delay": {
+        "description": "单段最长等待（秒）",
+        "type": "float",
+        "default": 4.0,
+        "hint": "不管算出多少都封顶，免得一次回复卡半天。"
+      },
+      "smart": {
+        "description": "智能保护",
+        "type": "bool",
+        "default": true,
+        "hint": "代码块、<think>、Markdown 表格、引号与括号里的内容整块保留，不会被切碎。"
+      },
+      "split_regex": {
+        "description": "切分正则",
+        "type": "string",
+        "default": "",
+        "hint": "留空按默认（句号问号叹号分号省略号换行）。写错了会自动退回默认值，不会崩。"
+      },
+      "min_segment_length": {
+        "description": "每口气的目标长度下限",
+        "type": "int",
+        "default": 8,
+        "hint": "均分模式下用来决定在哪切，避免出现「嗯。」这种一个字的空气泡。"
+      },
+      "no_split_around": {
+        "description": "这些词前面不切",
+        "type": "list",
+        "default": [],
+        "hint": "一行一个。例如填「宝宝」，就不会出现「……哼。」和「宝宝你在干嘛」分成两条的情况。"
+      },
+      "replace_rules": {
+        "description": "发出去之前先替换",
+        "type": "list",
+        "default": [],
+        "hint": "每条一个对象：{\"find\": \"作为AI\", \"replace\": \"\"}。右边留空就是删掉。"
+      },
+      "min_length": {
+        "description": "短于这个字数不切",
+        "type": "int",
+        "default": 0,
+        "hint": "0 = 不限。"
+      },
+      "max_length": {
+        "description": "长于这个字数不切",
+        "type": "int",
+        "default": 0,
+        "hint": "0 = 不限。防止把长篇大论刷成一屏。"
+      },
+      "voice_tag_disable_split": {
+        "description": "回复里带语音标记就不分段",
+        "type": "bool",
+        "default": true,
+        "hint": "有语音插件（TTS 情绪路由那类）会让模型在回复里写 [TTS]、【语音】 之类的标记，再拿整条去合成语音。这时候分段会把标记当正文发出去、语音插件又只拿到最后一段，最后变成「语音念一句 + 文字刷一片」。开着就整条交给它。"
+      },
+      "voice_tags": {
+        "description": "哪些算语音标记",
+        "type": "list",
+        "default": [
+          "[TTS]",
+          "[tts]",
+          "【语音】",
+          "[语音]",
+          "<tts>",
+          "</tts>",
+          "[EMO",
+          "【EMO"
+        ],
+        "hint": "一行一个，只看回复的开头和结尾。你用的语音插件要求写什么标记，就填什么。"
+      },
+      "voice_conflict_policy": {
+        "description": "语音和文字同时存在时怎么办",
+        "type": "string",
+        "default": "voice_only",
+        "options": [
+          "voice_only",
+          "text_only",
+          "voice_then_text",
+          "both"
+        ],
+        "hint": "有些 TTS 插件会把「整条文字 + 整条语音」一起塞进消息链，再分段就等于同一句话念一遍、又打字打一遍。voice_only = 只发语音（推荐）；text_only = 只发文字；voice_then_text = 先语音、再发一条完整文字；both = 旧行为（文字照常分段，会刷屏）。"
+      },
+      "tts_for_segments": {
+        "description": "分段也走框架内置语音",
+        "type": "bool",
+        "default": true,
+        "hint": "插件主动发出去的前几段会绕过框架的语音转换，不自己转的话就是「前几段文字 + 只剩最后一段是语音」。开着就是整条统一：要么全是语音、要么全是文字。"
+      },
+      "tts_probability_mode": {
+        "description": "框架语音的概率怎么算",
+        "type": "string",
+        "default": "single",
+        "options": [
+          "single",
+          "per_segment"
+        ],
+        "hint": "single = 整条只掷一次骰子（推荐，不会一段文字一段语音）；per_segment = 逐段各掷一次。"
+      },
+      "record_strategy": {
+        "description": "语音组件怎么跟",
+        "type": "string",
+        "default": "单独",
+        "options": [
+          "单独",
+          "跟随下段",
+          "跟随上段",
+          "嵌入"
+        ],
+        "hint": "一条回复里已经有语音段时，它自己占一条还是跟前后文合并。默认单独发。"
+      }
+    }
+  },
+  "humanize": {
+    "description": "去 AI 味",
+    "type": "object",
+    "hint": "发送前的一道阀门：先给这条回复打分（纯本地词表 + 统计，不联网），低于阈值就打回让她重说。默认只体检不改，确认效果后再改成 rewrite。",
+    "items": {
+      "enabled": {
+        "description": "启用去 AI 味",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉就完全不做这件事。"
+      },
+      "mode": {
+        "description": "模式",
+        "type": "string",
+        "default": "check",
+        "options": [
+          "off",
+          "check",
+          "rewrite"
+        ],
+        "hint": "check = 只体检（打分记录，不改回复，推荐先用这个）；rewrite = 不达标就打回重写。"
+      },
+      "threshold": {
+        "description": "打回阈值",
+        "type": "float",
+        "default": 60.0,
+        "hint": "0~100，分数越高越像人话。低于这个分数才处理。她那句招牌傲娇话能拿满分。"
+      },
+      "max_rounds": {
+        "description": "最多重写几轮",
+        "type": "int",
+        "default": 2,
+        "hint": "1~5。每多一轮就多一次模型调用，一般 1~2 轮就够。"
+      },
+      "min_length": {
+        "description": "短于这个字数不体检",
+        "type": "int",
+        "default": 12,
+        "hint": "「嗯。」这种短话本来就没法像机器，跳过能省一次判断。"
+      },
+      "scope": {
+        "description": "在哪些会话生效",
+        "type": "string",
+        "default": "both",
+        "options": [
+          "both",
+          "private",
+          "group"
+        ]
+      },
+      "llm_only": {
+        "description": "只管 AI 的回复",
+        "type": "bool",
+        "default": true,
+        "hint": "指令回执、报错、插件自己发的提示不参与体检。"
+      },
+      "provider_id": {
+        "description": "用哪个模型重写",
+        "type": "string",
+        "default": "",
+        "hint": "留空 = 用当前对话模型。建议留空：换个模型容易把人设口吻也换掉。"
+      },
+      "timeout": {
+        "description": "单次重写超时（秒）",
+        "type": "float",
+        "default": 20.0,
+        "hint": "超时就放弃重写、保留原文，不会卡住回复。"
+      },
+      "keep_best": {
+        "description": "改差了就留原来的",
+        "type": "bool",
+        "default": true,
+        "hint": "强烈建议开着：改完分数更低的那版直接丢掉。"
+      },
+      "extra_ai_words": {
+        "description": "额外要拦的 AI 高频词",
+        "type": "list",
+        "default": [],
+        "hint": "一行一个，补在内置词表之上。"
+      },
+      "extra_templates": {
+        "description": "额外要拦的套路句型",
+        "type": "list",
+        "default": []
+      },
+      "allow_words": {
+        "description": "白名单",
+        "type": "list",
+        "default": [],
+        "hint": "这些词不算 AI 味。她本来就爱这么说的话就填进来。"
+      }
+    }
+  },
+  "guard": {
+    "description": "主人鉴权与护栏",
+    "type": "object",
+    "hint": "谁是主人、谁能用工具、哪些话不能进模型。参考 astrbot_plugin_owner_guard 的做法。",
+    "items": {
+      "enabled": {
+        "description": "启用鉴权",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉就等于所有人都是主人（不拦任何东西）。"
+      },
+      "extra_masters": {
+        "description": "额外的主人身份",
+        "type": "list",
+        "default": [],
+        "hint": "「专属用户」自动就是主人，这里填额外的。支持三种写法：123456（所有平台）、aiocqhttp:123456（只认这个平台类型）、<平台实例ID>:123456（最精确）、aiocqhttp:*（该平台所有人，慎用）。"
+      },
+      "trust_admins": {
+        "description": "AstrBot 管理员等同主人",
+        "type": "bool",
+        "default": true
+      },
+      "block_sensitive": {
+        "description": "拦截非主人的敏感消息",
+        "type": "bool",
+        "default": true,
+        "hint": "提示词注入/越狱、冒充主人、索取密钥、危险操作、管理指令 —— 命中就直接停下，后面的插件和模型都不会处理。"
+      },
+      "block_all_commands": {
+        "description": "非主人不能用任何指令",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，以 / 或 ! 开头的一律拦掉。"
+      },
+      "reply": {
+        "description": "拦截后回一句",
+        "type": "string",
+        "default": "这个我不能帮你做。",
+        "hint": "留空就静默不理。"
+      },
+      "block_tools": {
+        "description": "拦截非主人的工具调用",
+        "type": "bool",
+        "default": true,
+        "hint": "请求级让模型看不见 + 执行期再校验一次，双保险。"
+      },
+      "tool_mode": {
+        "description": "工具名单模式",
+        "type": "string",
+        "default": "whitelist",
+        "options": [
+          "whitelist",
+          "blacklist"
+        ],
+        "hint": "whitelist = 只保留名单里的（默认最安全，空名单=什么工具都不给）；blacklist = 只摘掉名单里的。"
+      },
+      "kept_tools": {
+        "description": "工具名单",
+        "type": "list",
+        "default": [],
+        "hint": "支持 * 通配，例如 write_* 。"
+      },
+      "scrub_reply": {
+        "description": "发送前清理内部内容",
+        "type": "bool",
+        "default": true,
+        "hint": "把回复里漏出来的 <relationship> 之类标记抠掉，并把「系统告诉我」「我的记忆库」这种把底牌摊开的整句删掉。"
+      },
+      "extra_patterns": {
+        "description": "额外拦截规则（正则）",
+        "type": "list",
+        "default": []
+      },
+      "allow_patterns": {
+        "description": "白名单（命中里含这些词就放行）",
+        "type": "list",
+        "default": []
+      }
+    }
+  }
+}

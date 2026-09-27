@@ -1,0 +1,3923 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>心智面板 · 情绪与记忆</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --fg: #1f2430; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #6366f1; --accent-fg: #ffffff;
+    --p: #ec4899; --a: #f59e0b; --d: #3b82f6;
+    --ok: #10b981; --warn: #f59e0b; --danger: #ef4444;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1);
+  }
+  html[data-theme="dark"] {
+    --bg: #0f1115; --card: #171a21; --fg: #e6e8ee; --muted: #9aa3b2;
+    --line: #262b36; --accent: #818cf8; --accent-fg: #10131a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 650; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .top { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .top h1 { font-size: 18px; margin-right: auto; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; box-shadow: var(--shadow); margin-bottom: 14px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .grow { flex: 1 1 auto; }
+  button, select, input[type=text], input[type=search], textarea {
+    font: inherit; color: var(--fg); background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; outline: none;
+  }
+  button { cursor: pointer; transition: filter .12s; }
+  button:hover { filter: brightness(1.06); }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+  button.on { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tabs button { padding: 8px 18px; border-radius: 999px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12.5px; }
+  .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .grid2 { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; }
+  @media (max-width: 940px) { .grid2 { grid-template-columns: 1fr; } }
+  .bignum { font-size: 34px; line-height: 1.15; font-weight: 700; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px;
+    border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--muted);
+  }
+  .chip.lock { color: var(--warn); border-color: var(--warn); }
+  .chip.pin { color: var(--accent); border-color: var(--accent); }
+  .chartbox { position: relative; }
+  canvas { width: 100%; height: 300px; display: block; cursor: crosshair; touch-action: none; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
+  .slider { display: grid; grid-template-columns: 62px 1fr 62px; gap: 8px; align-items: center; margin: 6px 0; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .memitem { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .memitem .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .memitem .body { white-space: pre-wrap; word-break: break-word; }
+  .memitem textarea { width: 100%; min-height: 54px; margin-top: 6px; }
+  .tip {
+    position: absolute; pointer-events: none; background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px;
+    box-shadow: var(--shadow); display: none; z-index: 5; white-space: nowrap;
+  }
+  .actionbar { margin-top: 10px; padding: 10px; border: 1px dashed var(--accent); border-radius: 10px; }
+  .err { color: var(--danger); }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--fg); color: var(--bg); padding: 8px 16px; border-radius: 999px;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 99; font-size: 13px;
+  }
+  .toast.show { opacity: .94; }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  body.simple-mode .tabs button[data-adv="1"] { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>🧠 心智面板</h1>
+    <span class="small muted">会话</span>
+    <select id="session" title="选择要看的群聊或私聊" style="min-width:210px"></select>
+    <button id="mode-btn" class="ghost small" title="傻瓜模式只留必要的东西">切到专家模式</button>
+    <button id="refresh" class="ghost" title="重新拉取数据">刷新</button>
+    <span id="api-status" class="small muted" style="flex-basis:100%"></span>
+  </div>
+
+  <div class="tabs">
+    <button id="tab-wizard">上手</button>
+    <button id="tab-emotion" class="on">情绪曲线</button>
+    <button id="tab-manage" data-adv="1">管理</button>
+    <button id="tab-memory">长期记忆</button>
+    <button id="tab-graph" data-adv="1">记忆图谱</button>
+    <button id="tab-images" data-adv="1">关键词配图</button>
+    <button id="tab-persona">人格定制</button>
+    <button id="tab-split">分段拟人</button>
+    <button id="tab-humanize">去 AI 味</button>
+    <button id="tab-theory" data-adv="1">理论</button>
+    <button id="tab-style">表达</button>
+    <button id="tab-prompts" data-adv="1">提示词</button>
+  </div>
+
+  <!-- ================= 上手（傻瓜模式） ================= -->
+  <div id="view-wizard" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">上手</h3>
+        <span class="small muted" id="wz-summary"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="wz-reload">重新自检</button>
+        <button class="primary small" id="wz-apply">一键套用推荐配置</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        这一页只做两件事：**告诉你哪里没配好**、**帮你一键配好**。
+        看不懂设置项没关系，右上角切「专家模式」才有那些东西。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">她现在是什么状态</h3>
+      <div class="row" id="wz-toggles"></div>
+      <div class="small muted" style="margin-top:8px" id="wz-stats"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">自检</h3>
+      <div id="wz-checks"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">三分钟上手</h3>
+      <div id="wz-steps" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card" id="wz-settings-card">
+      <div class="row">
+        <h3 style="margin-right:8px">全部功能设置</h3>
+        <span class="small muted" id="st-note"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="wz-fold-settings">折叠</button>
+        <button class="ghost small" id="st-reload">重新读取</button>
+        <button class="primary small" id="st-save">保存改动</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        这里就是插件配置本身，改完点保存会写回配置文件（和 WebUI 的「配置」页是同一份，两边都能改）。
+        「分段拟人」「专属用户」「去 AI 味」这些页签里的改动优先级更高，存在插件数据目录里，不写回这里。
+      </div>
+      <div class="small muted" id="st-dirty" style="margin-top:4px"></div>
+      <div id="st-groups"></div>
+    </div>
+
+  </div>
+
+
+  <!-- ================= 情绪 ================= -->
+  <div id="view-emotion">
+    <div class="grid2">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 id="cur-title">此刻心情</h2>
+          <div class="row" id="range-btns"></div>
+        </div>
+        <div class="chartbox">
+          <canvas id="chart"></canvas>
+          <div class="tip" id="tip"></div>
+        </div>
+        <div class="small muted" id="curve-note" style="margin-top:6px"></div>
+        <div class="legend small">
+          <span><i style="background:var(--p)"></i>愉悦 P</span>
+          <span><i style="background:var(--a)"></i>唤醒 A</span>
+          <span><i style="background:var(--d)"></i>掌控 D</span>
+          <span class="muted">虚线 = 气质基线 · 灰竖线 = 情绪事件</span>
+        </div>
+        <div id="pickbar" class="actionbar small" style="display:none"></div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;align-items:flex-start">
+            <div>
+              <div class="bignum" id="cur-emoji">🙂</div>
+              <div id="cur-label" style="font-size:17px;font-weight:650">平静</div>
+              <div class="small muted" id="cur-level">强度 1/5</div>
+            </div>
+            <div style="text-align:right">
+              <div class="small muted">心境</div>
+              <div id="mood-label" style="font-weight:600">平静</div>
+              <div class="small muted" id="idle">—</div>
+            </div>
+          </div>
+          <div class="small" style="margin-top:10px">
+            <div class="muted">情绪起因</div>
+            <div id="cur-cause">—</div>
+            <div class="muted" style="margin-top:8px">表达基调</div>
+            <div id="cur-style" style="color:var(--accent)">—</div>
+          </div>
+          <div id="crisis" class="small err" style="display:none;margin-top:8px">⚠️ 当前处于安全优先状态</div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:8px">操纵情绪</h3>
+          <div class="slider"><span class="small">愉悦 P</span><input type="range" id="sp" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="spv">0.00</span></div>
+          <div class="slider"><span class="small">唤醒 A</span><input type="range" id="sa" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="sav">0.00</span></div>
+          <div class="slider"><span class="small">掌控 D</span><input type="range" id="sd" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="sdv">0.00</span></div>
+          <div class="row" id="mood-presets" style="margin-top:10px;gap:6px"></div>
+          <div class="row" style="margin-top:8px">
+            <button class="primary" id="apply-set">设为此刻心情</button>
+            <button class="ghost" id="load-cur">读取当前值</button>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="freeze">🧊 冻结</button>
+            <button class="ghost" id="reset">重置情绪</button>
+            <button class="danger" id="clear-curve">清空曲线</button>
+          </div>
+          <div class="small muted" style="margin-top:8px">
+            冻结后聊天不再自动改变情绪，但面板上的手动操作仍然生效。
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:8px">和人的关系</h3>
+          <div id="users" class="small"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">最近的情绪事件</h3>
+      <div id="events" class="small"></div>
+    </div>
+  </div>
+
+  <!-- ================= 记忆 ================= -->
+  <!-- ================= 管理 ================= -->
+  <div id="view-manage" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">管理与维护</h3>
+        <span class="small muted" id="mg-note"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="mg-reload">刷新</button>
+      </div>
+      <div class="row" style="margin-top:10px" id="mg-stats"></div>
+      <div class="small muted" style="margin-top:8px" id="mg-db"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-bottom:8px">情绪（作用在顶部选中的会话）</h3>
+        <div class="row">
+          <button class="ghost small" id="mg-freeze">冻结 / 解冻</button>
+          <button class="ghost small" id="mg-reset">重置情绪</button>
+          <button class="ghost small" id="mg-clear-curve">清空曲线</button>
+        </div>
+        <div class="small muted" style="margin-top:10px">直接设定此刻心情：</div>
+        <div class="slider"><span class="small">愉悦 P</span><input type="range" id="mg-p" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="mg-pv">0.00</span></div>
+        <div class="slider"><span class="small">唤醒 A</span><input type="range" id="mg-a" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="mg-av">0.00</span></div>
+        <div class="slider"><span class="small">掌控 D</span><input type="range" id="mg-d" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="mg-dv">0.00</span></div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary small" id="mg-set">设成这个心情</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:8px">数据维护</h3>
+        <div class="row">
+          <label class="small muted">曲线每会话保留 <input type="number" id="mg-keep" value="1500" min="50" max="100000" style="width:90px"> 点</label>
+          <button class="ghost small" id="mg-prune-samples">压缩曲线</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost small" id="mg-clear-lexicon">清空词表命中</button>
+          <button class="ghost small" id="mg-thaw">解冻全部会话</button>
+          <button class="ghost small" id="mg-vacuum">整理数据库</button>
+        </div>
+        <div class="small muted" style="margin-top:8px">
+          压缩曲线只丢最旧的采样点，情绪当前值不受影响；整理数据库会重写文件、通常能瘦一圈。
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">记忆清理</h3>
+      <div class="row">
+        <button class="danger small" id="mg-mem-session">清空本会话记忆</button>
+        <button class="danger small" id="mg-mem-all">清空全部记忆</button>
+        <span class="grow"></span>
+        <span class="small muted">删除不可撤销，都会让你再点一次确认</span>
+      </div>
+      <div class="small muted" style="margin-top:12px">按条件清理（符合条件的全部删掉）：</div>
+      <div class="row" style="margin-top:6px">
+        <label class="small muted">类型 <select id="mg-kind"></select></label>
+        <label class="small muted">作用域 <select id="mg-scope"></select></label>
+        <label class="small muted">重要度不超过 <input type="number" id="mg-imp" step="0.1" min="0" max="1" value="0.4" style="width:80px"></label>
+        <label class="small"><input type="checkbox" id="mg-never"> 只看从没被想起过的</label>
+        <label class="small"><input type="checkbox" id="mg-keep-pinned" checked> 跳过常驻</label>
+        <button class="danger small" id="mg-prune">按条件清理</button>
+      </div>
+      <div class="small muted" style="margin-top:8px" id="mg-result"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">隐私与数据</h3>
+        <span class="small muted" id="pv-note"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="pv-reload">刷新</button>
+        <button class="primary small" id="pv-save">保存设置</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="small"><input type="checkbox" id="pv-selfdel"> 允许本人用 /忘我 删掉自己的数据</label>
+        <label class="small"><input type="checkbox" id="pv-consent"> 需要同意才采集</label>
+        <label class="small"><input type="checkbox" id="pv-export"> 允许管理员导出档案</label>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        拒绝名单里的人**既不采集也不注入** —— 她不会记住他，也不会把他记得的事说给别人。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="pv-uid" placeholder="用户 ID（支持 平台:uid）" style="min-width:200px">
+        <button class="danger small" id="pv-deny">加入拒绝名单</button>
+        <button class="ghost small" id="pv-allow">移出拒绝名单</button>
+        <span class="grow"></span>
+        <button class="ghost small" id="pv-exportbtn">导出这个人的档案</button>
+        <button class="danger small" id="pv-forget">删掉这个人的数据</button>
+      </div>
+      <div id="pv-denied" class="row" style="margin-top:10px"></div>
+      <div class="small muted" style="margin-top:8px" id="pv-result"></div>
+      <textarea id="pv-json" style="width:100%;min-height:120px;margin-top:8px;display:none"></textarea>
+    </div>
+  </div>
+
+  <div id="view-memory" style="display:none">
+    <div class="card">
+      <div class="row">
+        <input type="search" id="mq" class="grow" placeholder="搜索记忆内容或关键词…">
+        <select id="mkind">
+          <option value="">全部类型</option>
+          <option value="fact">事实</option>
+          <option value="preference">喜好</option>
+          <option value="event">经历</option>
+          <option value="promise">约定</option>
+          <option value="relation">关系</option>
+        </select>
+        <select id="mscope">
+          <option value="">全部作用域</option>
+          <option value="session">本会话</option>
+          <option value="user">该用户</option>
+          <option value="global">通用</option>
+        </select>
+        <select id="mflag">
+          <option value="">全部</option>
+          <option value="pinned">仅常驻</option>
+          <option value="sensitive">仅敏感</option>
+        </select>
+        <button id="msearch" class="primary">查询</button>
+      </div>
+      <div id="mstats" class="small muted" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">手动添加一条</h3>
+      <div class="row">
+        <input type="text" id="madd" class="grow" placeholder="例如：他喜欢喝冰美式">
+        <select id="maddkind">
+          <option value="fact">事实</option>
+          <option value="preference">喜好</option>
+          <option value="event">经历</option>
+          <option value="promise">约定</option>
+        </select>
+        <label class="small muted"><input type="checkbox" id="maddpin" checked> 常驻</label>
+        <button id="maddbtn" class="primary">添加</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        含证件号、住址、学校等敏感内容的会自动被限成「仅在本人私聊可见」。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>AI 抽取到的记忆</h3>
+        <div class="row">
+          <button class="ghost" id="mprev">上一页</button>
+          <span class="small muted" id="mpage">—</span>
+          <button class="ghost" id="mnext">下一页</button>
+        </div>
+      </div>
+      <div class="row" id="mbulk" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+        <label class="small" style="display:flex;align-items:center;gap:5px">
+          <input type="checkbox" id="mselectall"> 全选本页
+        </label>
+        <span class="small muted" id="mselinfo">未选中任何条目</span>
+        <span class="grow"></span>
+        <button class="ghost small" id="mbulk-pin">设为常驻</button>
+        <button class="ghost small" id="mbulk-unpin">取消常驻</button>
+        <select id="mbulk-scope" title="批量改作用域">
+          <option value="">改作用域…</option>
+          <option value="global">通用（所有会话）</option>
+          <option value="user">仅该用户</option>
+          <option value="session">仅本会话</option>
+        </select>
+        <button class="danger small" id="mbulk-del">删除选中</button>
+      </div>
+      <div id="mlist" style="margin-top:10px"></div>
+    </div>
+  </div>
+  <!-- ================= 配图 ================= -->
+  <!-- ================= 记忆图谱 ================= -->
+  <div id="view-graph" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">记忆图谱</h3>
+        <span class="small muted" id="gp-note"></span>
+        <span class="grow"></span>
+        <label class="small muted">类型 <select id="gp-kind"></select></label>
+        <label class="small muted">作用域 <select id="gp-scope"></select></label>
+        <label class="small muted">最多 <input type="number" id="gp-limit" value="260" min="10" max="800" style="width:80px"></label>
+        <button class="ghost small" id="gp-reload">重新布局</button>
+      </div>
+      <div class="row" style="margin-top:10px" id="gp-stats"></div>
+      <div class="small muted" style="margin-top:6px">
+        记忆是实心圆（越大越重要），关键词是浅色小点，人（方块）和会话（三角）挂在边上。
+        同一个关键词串起来的记忆自动聚成一簇，虚线圆圈就是簇的范围。可以拖动节点、滚轮缩放、拖空白平移。
+      </div>
+    </div>
+
+    <div class="card" style="position:relative">
+      <div class="row">
+        <button class="ghost small" id="gp-select">多选管理</button>
+        <span class="small muted" id="gp-selcount">点节点看详情；开多选后点节点即可勾选，点簇圈可以整簇选中</span>
+        <span class="grow"></span>
+        <button class="ghost small" id="gp-selall">全选</button>
+        <button class="ghost small" id="gp-selnone">清空选择</button>
+      </div>
+      <div class="row" id="gp-actions" style="margin-top:6px;display:none">
+        <button class="ghost small" id="gp-pin">设为常驻</button>
+        <button class="ghost small" id="gp-unpin">取消常驻</button>
+        <label class="small muted">改成 <select id="gp-newscope">
+          <option value="">作用域…</option>
+          <option value="session">本会话</option>
+          <option value="user">本人</option>
+          <option value="global">全局</option>
+        </select></label>
+        <button class="ghost small" id="gp-applyscope">应用</button>
+        <span class="grow"></span>
+        <button class="danger small" id="gp-del">删除选中</button>
+      </div>
+      <div class="chartbox" style="margin-top:10px">
+        <canvas id="graph" style="height:460px;cursor:grab"></canvas>
+        <div class="tip" id="gp-tip"></div>
+      </div>
+      <div class="legend small">
+        <span><i style="background:var(--accent)"></i>记忆</span>
+        <span><i style="background:var(--muted)"></i>关键词</span>
+        <span><i style="background:var(--a)"></i>人</span>
+        <span><i style="background:var(--d)"></i>会话</span>
+        <span class="muted">虚线 = 自动聚出来的簇</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">选中的记忆</h3>
+      <div id="gp-detail" class="small muted">点图上的任意一个实心圆，这里会显示它的内容、类型、作用域和归属。</div>
+    </div>
+  </div>
+
+  <div id="view-images" style="display:none">
+    <div class="card">
+      <h3 style="margin-bottom:8px">上传一张图，配几个触发词</h3>
+      <div class="row">
+        <input type="file" id="img-file" accept="image/*">
+        <input type="text" id="img-keywords" class="grow" placeholder="触发词，用逗号分隔，例如：晚安, 晚安啦, 睡了">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="img-mode">
+          <option value="contains">包含关键词</option>
+          <option value="exact">完全等于</option>
+          <option value="fuzzy">模糊相似</option>
+        </select>
+        <select id="img-scope">
+          <option value="global">所有人</option>
+          <option value="user">只对某个用户</option>
+        </select>
+        <input type="text" id="img-owner" placeholder="用户 ID" style="display:none">
+        <button id="img-upload" class="primary">上传并保存</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        上传后，一旦有人说中触发词，就会直接把这张图发出去，不再走模型回复。
+        匹配方式选「模糊相似」时，错别字和语序颠倒（比如「安晚」）也能命中。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>已配置的图</h3>
+        <span class="small muted" id="img-stats"></span>
+      </div>
+      <div class="row" id="imgbulk" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+        <label class="small" style="display:flex;align-items:center;gap:5px">
+          <input type="checkbox" id="imgselectall"> 全选
+        </label>
+        <span class="small muted" id="imgselinfo">未选中任何图片</span>
+        <span class="grow"></span>
+        <button class="ghost small" id="imgbulk-on">启用触发词</button>
+        <button class="ghost small" id="imgbulk-off">停用触发词</button>
+        <select id="imgbulk-mode" title="批量改匹配方式">
+          <option value="">改匹配方式…</option>
+          <option value="contains">包含关键词</option>
+          <option value="exact">完全等于</option>
+          <option value="fuzzy">模糊相似</option>
+        </select>
+        <select id="imgbulk-scope" title="批量改作用域">
+          <option value="">改作用域…</option>
+          <option value="global">所有人</option>
+          <option value="user">仅指定用户</option>
+        </select>
+        <button class="danger small" id="imgbulk-del">删除选中</button>
+      </div>
+
+      <div id="img-list" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="view-persona" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">人格预设</h3>
+        <select id="pr-select"></select>
+        <button class="primary small" id="pr-apply">应用</button>
+        <button class="ghost small" id="pr-delete">删除</button>
+        <span class="grow"></span>
+        <button class="ghost small" id="pr-mode">显示高级选项</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="pr-status"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">专属用户</h3>
+        <span class="small muted">主人 / 宝宝 —— 填了才会认人</span>
+        <span class="grow"></span>
+        <button class="ghost small" id="rl-reset">还原成配置文件</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="rl-status"></div>
+      <div class="row" style="margin-top:8px">
+        <label class="small muted">怎么称呼 <input type="text" id="rl-label" placeholder="宝宝" style="width:110px"></label>
+        <label class="small muted">TA 的 ID <input type="text" id="rl-add" placeholder="QQ 号 / 用户 ID" style="width:170px"></label>
+        <button class="primary small" id="rl-addbtn">加为专属</button>
+        <span class="grow"></span>
+        <button class="primary small" id="rl-save">保存</button>
+      </div>
+      <div id="rl-list" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:10px">
+        <label class="small"><input type="checkbox" id="rl-inject"> 告诉她「现在跟谁在说话」</label>
+        <label class="small"><input type="checkbox" id="rl-discretion"> 群里不许透露关系</label>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        这两项关掉之后，她就会重新开始问「你是谁呀」。填了专属用户才会被当成「早就认识的人」。
+      </div>
+      <div class="small muted" style="margin-top:10px">聊过的人（点「设为专属」直接用）：</div>
+      <div id="rl-candidates" style="margin-top:6px"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">她是什么性格</h3>
+      <div class="row" id="pr-archetypes" style="gap:6px"></div>
+      <div class="small muted" style="margin-top:8px">
+        点一下定下底色就行，不用管具体数值。想微调再点右上角「显示高级选项」。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">她该怎么说话</h3>
+      <textarea id="pr-note" style="width:100%;min-height:130px" placeholder="用大白话写，例如：&#10;嘴硬心软。嘴上嫌弃，转头又偷偷关心。&#10;句子很短，爱用「哼」「切」「烦死了」。&#10;被夸会炸毛否认，但心里其实高兴。"></textarea>
+      <div class="small muted" style="margin-top:6px">
+        这段会直接告诉模型「她说话的味儿」，写得越具体越像。留空也不影响。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button class="primary" id="pr-save">保存</button>
+        <input type="text" id="pr-name" placeholder="预设名字" style="min-width:150px">
+        <button class="ghost" id="pr-saveas">另存为</button>
+        <span class="grow"></span>
+        <button class="ghost" id="pr-export">导出</button>
+        <button class="ghost" id="pr-import">导入</button>
+      </div>
+      <textarea id="pr-json" style="width:100%;min-height:110px;margin-top:8px;display:none"></textarea>
+      <div class="small muted" style="margin-top:6px">
+        导出会把整套人设变成一段 JSON，复制给别人；别人粘进上面的框点「导入」就能用。
+      </div>
+    </div>
+    <div id="pr-advanced" style="display:none">
+<div class="card">
+      <h3 style="margin-bottom:8px">基础数值</h3>
+      <div class="slider"><span class="small">愉悦基线 P</span><input type="range" id="pr-p" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="pr-pv">0.00</span></div>
+      <div class="slider"><span class="small">唤醒基线 A</span><input type="range" id="pr-a" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="pr-av">0.00</span></div>
+      <div class="slider"><span class="small">掌控基线 D</span><input type="range" id="pr-d" min="-1" max="1" step="0.01" value="0"><span class="mono small" id="pr-dv">0.00</span></div>
+      <div class="row" style="margin-top:10px">
+        <label class="small muted">情绪半衰期(秒) <input type="number" id="pr-ehl" min="5" step="10" style="width:90px"></label>
+        <label class="small muted">心境半衰期(秒) <input type="number" id="pr-mhl" min="60" step="60" style="width:90px"></label>
+        <label class="small muted">情绪带偏心境 <input type="number" id="pr-couple" min="0" max="1" step="0.01" style="width:80px"></label>
+        <label class="small muted">初始好感度 <input type="number" id="pr-aff" min="-100" max="100" step="1" style="width:80px"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">表达基调</h3>
+      <div class="small muted" style="margin-bottom:10px">
+        每种情绪「该怎么说话」。这就是人设味道的来源 —— 同样是「害羞」，
+        傲娇是炸毛否认，温柔是低头小声。
+      </div>
+      <div id="pr-styles"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">自定义触发规则</h3>
+      <div class="small muted" style="margin-bottom:6px">
+        一行一条：关键词1|关键词2 =&gt; P,A,D =&gt; 好感度增减 =&gt; 说明 =&gt; special/other（最后一段可省略）
+      </div>
+      <textarea id="pr-rules" style="width:100%;min-height:110px" placeholder="宝宝|宝贝 =&gt; 0.7,0.8,-0.6 =&gt; +3 =&gt; 被叫了特别的称呼 =&gt; special"></textarea>
+    </div>
+    </div>
+  </div>
+
+  <!-- ================= 分段 ================= -->
+  <div id="view-split" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">拟人分段</h3>
+        <label class="small"><input type="checkbox" data-sp="enabled"> 开启</label>
+        <label class="small"><input type="checkbox" data-sp="llm_only"> 只切 AI 的回复</label>
+        <span class="grow"></span>
+        <button class="ghost small" id="sp-reload">重新读取</button>
+        <button class="ghost small" id="sp-reset">还原成配置文件</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="sp-status"></div>
+      <div class="small muted">
+        一条回复拆成几口气发出去 —— 人设里写死的「1~3 条气泡」就靠这里兜底。
+        下面全是 <b>模拟</b>：预览只算不发，改坏了点「还原成配置文件」就回去了。
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-bottom:8px">怎么切</h3>
+        <div class="row">
+          <label class="small muted">切分方式 <select data-sp="split_mode" id="sp-mode"></select></label>
+          <label class="small muted">最多几口气 <input type="number" data-sp="max_segments" min="0" max="30" style="width:80px"></label>
+        </div>
+        <div style="margin-top:8px">
+          <div class="small muted">切分正则（默认按句号问号叹号换行切；留空就用默认）</div>
+          <input type="text" data-sp="split_regex" class="mono" style="width:100%">
+        </div>
+        <div style="margin-top:8px">
+          <div class="small muted">简单模式用的字符（一行一个，换行写 \n）</div>
+          <textarea data-sp="split_chars" data-list="1" style="width:100%;min-height:64px"></textarea>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="small"><input type="checkbox" data-sp="smart"> 智能保护（代码块/表格/引号不切）</label>
+          <label class="small"><input type="checkbox" data-sp="balanced_mode"> 均分长度</label>
+        </div>
+        <div class="row">
+          <label class="small"><input type="checkbox" data-sp="trim_edge_blank_lines"> 去掉段首段尾空行</label>
+          <label class="small"><input type="checkbox" data-sp="enable_reply"> 第一段挂引用</label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">目标段长下限 <input type="number" data-sp="min_segment_length" min="0" max="500" style="width:80px"></label>
+          <label class="small muted">短于 <input type="number" data-sp="min_length" min="0" style="width:70px"> 字不切</label>
+          <label class="small muted">长于 <input type="number" data-sp="max_length" min="0" style="width:70px"> 字不切</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:8px">怎么等</h3>
+        <label class="small muted">延迟策略 <select data-sp="delay_strategy" id="sp-delay"></select></label>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">固定 <input type="number" data-sp="fixed_delay" step="0.1" style="width:70px"></label>
+          <label class="small muted">基础 <input type="number" data-sp="linear_base" step="0.1" style="width:70px"></label>
+          <label class="small muted">系数 <input type="number" data-sp="linear_factor" step="0.01" style="width:70px"></label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">对数底 <input type="number" data-sp="log_base" step="0.1" style="width:70px"></label>
+          <label class="small muted">对数系数 <input type="number" data-sp="log_factor" step="0.1" style="width:70px"></label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">随机 <input type="number" data-sp="random_min" step="0.1" style="width:70px"> 到 <input type="number" data-sp="random_max" step="0.1" style="width:70px"> 秒</label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">一口气最多等 <input type="number" data-sp="max_delay" step="0.5" style="width:80px"> 秒</label>
+        </div>
+        <div class="small muted" style="margin-top:6px">延迟按「下一段有多长」算 —— 下一口气越长，停顿越久。</div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-bottom:8px">保护与替换</h3>
+        <div class="small muted">这些词前面不切（一行一个，例如「宝宝」）</div>
+        <textarea data-sp="no_split_around" data-list="1" style="width:100%;min-height:64px"></textarea>
+        <div class="small muted" style="margin-top:8px">发出去之前先替换（一行一条：被替换=&gt;替换成，右边留空就是删掉）</div>
+        <textarea data-sp="replace_rules" data-rules="1" style="width:100%;min-height:64px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">分段前按正则删 <input type="text" data-sp="clean_before_regex" class="mono" style="width:150px"></label>
+          <label class="small muted">分段后按正则删 <input type="text" data-sp="clean_after_regex" class="mono" style="width:150px"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:8px">在哪些会话生效</h3>
+        <label class="small muted">范围 <select data-sp="scope" id="sp-scope"></select></label>
+        <div class="small muted" style="margin-top:8px">只在这些会话里切（支持 * 通配，留空 = 全部）</div>
+        <textarea data-sp="whitelist" data-list="1" style="width:100%;min-height:56px"></textarea>
+        <div class="small muted" style="margin-top:8px">这些会话永远不切</div>
+        <textarea data-sp="blacklist" data-list="1" style="width:100%;min-height:56px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <label class="small muted">图片怎么跟 <select data-sp="image_strategy" id="sp-image"></select></label>
+          <label class="small muted">@ 怎么跟 <select data-sp="at_strategy" id="sp-at"></select></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">语音兼容</h3>
+      <div class="small muted">
+        分段和语音插件很容易打架：语音插件念的是<b>整条</b>回复，分段却把文字切成了好几条，
+        结果就是「语音念一句 + 文字刷一片」。下面这几项就是专治这个的。
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="small"><input type="checkbox" data-sp="voice_tag_disable_split"> 回复里有语音标记就不分段</label>
+        <label class="small"><input type="checkbox" data-sp="tts_for_segments"> 分段也走框架语音</label>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <div>
+          <div class="small muted">这些算语音标记（一行一个，只看回复开头和结尾）</div>
+          <textarea data-sp="voice_tags" data-list="1" style="width:100%;min-height:64px"></textarea>
+        </div>
+        <div>
+          <label class="small muted">语音和文字同时存在时 <select data-sp="voice_conflict_policy" id="sp-voice" style="width:100%"></select></label>
+          <div style="margin-top:8px">
+            <label class="small muted">语音组件怎么跟 <select data-sp="record_strategy" id="sp-record" style="width:100%"></select></label>
+          </div>
+          <div style="margin-top:8px">
+            <label class="small muted">框架语音的触发概率 <select data-sp="tts_probability_mode" id="sp-ttsmode" style="width:100%"></select></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">试切一下</h3>
+      <div class="small muted">写一段她可能会说的话，点「试切」看会被拆成几口气、每口气之间等多久。只算不发。</div>
+      <textarea id="sp-sample" style="width:100%;min-height:90px;margin-top:6px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="sp-preview">试切</button>
+        <button class="ghost small" id="sp-fill">填一句例子</button>
+        <span class="grow"></span>
+        <span class="small muted" id="sp-preview-status"></span>
+      </div>
+      <div id="sp-preview-out" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button class="primary" id="sp-save">保存</button>
+        <span class="grow"></span>
+        <span class="small muted" id="sp-dirty"></span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        保存后立刻生效，存在插件数据目录里（不写回 config），重启也还在。
+      </div>
+    </div>
+  </div>
+  <!-- ================= 去 AI 味 ================= -->
+  <div id="view-humanize" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">去 AI 味</h3>
+        <label class="small"><input type="checkbox" id="hz-enabled"> 开启</label>
+        <label class="small muted">模式 <select id="hz-mode"></select></label>
+        <span class="grow"></span>
+        <button class="ghost small" id="hz-reload">重新读取</button>
+        <button class="ghost small" id="hz-reset">还原成配置文件</button>
+        <button class="primary small" id="hz-save">保存</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="hz-status"></div>
+      <div class="row" style="margin-top:8px">
+        <label class="small muted">打回阈值 <input type="number" id="hz-threshold" min="0" max="100" style="width:80px"></label>
+        <label class="small muted">最多重写 <input type="number" id="hz-rounds" min="1" max="5" style="width:70px"> 轮</label>
+        <label class="small muted">短于 <input type="number" id="hz-minlen" min="2" style="width:70px"> 字不体检</label>
+        <label class="small muted">范围 <select id="hz-scope"></select></label>
+        <label class="small"><input type="checkbox" id="hz-llm"> 只管 AI 的回复</label>
+        <label class="small"><input type="checkbox" id="hz-keep"> 改差了就留原来的</label>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-bottom:8px">试测</h3>
+        <div class="small muted">粘一段话（她可能会这么回），点「体检」看打分和问题清单。只算不改。</div>
+        <textarea id="hz-sample" style="width:100%;min-height:110px;margin-top:6px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="primary small" id="hz-test">体检</button>
+          <button class="ghost small" id="hz-fill">填一段反面教材</button>
+          <span class="grow"></span>
+          <span class="small muted" id="hz-test-status"></span>
+        </div>
+        <div id="hz-report" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:8px">额外词表</h3>
+        <div class="small muted">AI 高频词（一行一个，补在内置词表之上）</div>
+        <textarea id="hz-extra-ai" style="width:100%;min-height:64px"></textarea>
+        <div class="small muted" style="margin-top:8px">套路句型</div>
+        <textarea id="hz-extra-tpl" style="width:100%;min-height:64px"></textarea>
+        <div class="small muted" style="margin-top:8px">白名单（这些词不算 AI 味）</div>
+        <textarea id="hz-allow" style="width:100%;min-height:56px"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">体检记录</h3>
+        <span class="small muted" id="hz-stats"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="hz-clear">清空记录</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        每一次发出的回复都会留一条：多少分、命中哪些问题、有没有被打回重写。
+      </div>
+      <div id="hz-log" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- ================= 表达 ================= -->
+  <div id="view-style" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">表达示例</h3>
+        <label class="small"><input type="checkbox" id="sy-enabled"> 学习</label>
+        <label class="small"><input type="checkbox" id="sy-auto"> 自动批准</label>
+        <label class="small muted">打分门槛 <input type="number" id="sy-score" min="0" max="100" style="width:70px"></label>
+        <label class="small muted">每轮注入 <input type="number" id="sy-inject" min="0" max="8" style="width:60px"> 条</label>
+        <label class="small muted">范围 <select id="sy-scope"></select></label>
+        <span class="grow"></span>
+        <button class="ghost small" id="sy-reload">刷新</button>
+        <button class="primary small" id="sy-save">保存设置</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="sy-note"></div>
+      <div class="row" style="margin-top:10px" id="sy-stats"></div>
+      <div class="small muted" style="margin-top:6px">
+        她每次回复都会被去 AI 味打一次分，够好（且不是"嗯""哦"这种附和）就攒成一条**待审**示例。
+        批准之后才会作为参考注入 —— 只参考语气和句长，不照抄内容。自动学习默认不自动批准，免得越学越偏。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">待审队列</h3>
+        <span class="grow"></span>
+        <label class="small"><input type="checkbox" id="sy-all"> 全选本页</label>
+        <button class="primary small" id="sy-approve">批准选中</button>
+        <button class="ghost small" id="sy-reject">拒绝选中</button>
+        <button class="danger small" id="sy-delete">删除选中</button>
+      </div>
+      <div id="sy-list" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">手动加一条</h3>
+        <input type="text" id="sy-user" placeholder="他会说什么，例如：你怎么才来呀" style="min-width:220px;flex:1">
+        <input type="text" id="sy-reply" placeholder="她该怎么回，例如：哼，你管我。" style="min-width:220px;flex:1">
+        <button class="primary small" id="sy-add">加为已批准</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        手动加的会直接批准。以后遇到**像这句话**的场合，它就会被拎出来当参考。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">全部示例</h3>
+        <select id="sy-filter"></select>
+        <input type="search" id="sy-q" placeholder="搜内容" style="width:160px">
+        <button class="ghost small" id="sy-search">搜索</button>
+        <span class="grow"></span>
+        <button class="danger small" id="sy-clearauto">清空自动学习的</button>
+      </div>
+      <div id="sy-all-list" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+
+  <!-- ================= 提示词 ================= -->
+  <div id="view-prompts" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">提示词</h3>
+        <span class="small muted" id="pt-note"></span>
+        <span class="grow"></span>
+        <button class="ghost small" id="pt-reload">重新读取</button>
+        <button class="ghost small" id="pt-resetall">全部还原默认</button>
+        <button class="ghost small" id="pt-export">导出</button>
+        <button class="ghost small" id="pt-import">导入</button>
+        <button class="primary small" id="pt-save">保存</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        这些就是注入给模型的原话。改完点保存立刻生效，不用重启。
+        只保存和默认值不一样的块；「还原」一按就回到默认。
+      </div>
+      <textarea id="pt-json" style="width:100%;min-height:90px;margin-top:8px;display:none"></textarea>
+      <div class="small muted" id="pt-jsonhint" style="display:none;margin-top:4px">
+        导出：复制上面的 JSON 给别人；导入：把别人的 JSON 粘进去再点「导入」。
+      </div>
+    </div>
+    <div id="pt-groups"></div>
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">预览</h3>
+        <span class="small muted" id="pt-preview-note">点任意一块的「预览」，看它渲染出来长什么样</span>
+      </div>
+      <pre id="pt-preview" class="small mono" style="white-space:pre-wrap;margin-top:8px;word-break:break-word"></pre>
+    </div>
+  </div>
+
+
+  <!-- ================= 理论 ================= -->
+  <div id="view-theory" style="display:none">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">理论基础</h3>
+        <span class="small muted">这套情绪到底是怎么算出来的</span>
+        <span class="grow"></span>
+        <button class="ghost small" id="th-reload">重新读取</button>
+      </div>
+      <div id="th-sources" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>Plutchik 情绪轮 · 8 条基本情绪轴</h3>
+        <span class="small muted" id="th-plutchik-note"></span>
+      </div>
+      <div id="th-plutchik" style="margin-top:10px"></div>
+      <div class="small muted" style="margin-top:10px">
+        四条对立轴：喜悦 ↔ 悲伤 · 信任 ↔ 厌恶 · 恐惧 ↔ 愤怒 · 惊讶 ↔ 期待（Plutchik, 1980）
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>中文情感词汇本体库 · 7 大类 21 小类</h3>
+        <span class="small muted" id="th-lex-note"></span>
+      </div>
+      <div id="th-categories" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">词表命中</h3>
+        <select id="th-hours">
+          <option value="24">最近 24 小时</option>
+          <option value="72" selected>最近 3 天</option>
+          <option value="168">最近 7 天</option>
+          <option value="720">最近 30 天</option>
+        </select>
+        <span class="grow"></span>
+        <button class="ghost small" id="th-clear">清空记录</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="th-hits-note"></div>
+      <div id="th-hits" style="margin-top:10px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="small muted" style="text-align:center;padding:16px 0 6px">
+  AI 心智 · 情绪 + 长期记忆 + 关键词配图 + 拟人分段 + 去 AI 味 + 理论　by 挽风随行+DSH(主代码编写)
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="/api/plugin/page/bridge-sdk.js"></script>
+<script>
+(function () {
+  "use strict";
+  var PLUGIN = "astrbot_plugin_ai_mind";
+  var BASE = "/api/plug/" + PLUGIN + "/";
+
+  var state = {
+    session: "", sessions: [], hours: 72, data: null,
+    pick: null, memOffset: 0, memLimit: 20, memTotal: 0, view: "emotion", selected: {},
+    selectedImages: {}, split: null, relation: null, theory: null, prompts: null, style: null, wizard: null, panelMode: "simple", privacy: null,
+    settings: null, settingsValues: {}, manage: null, humanize: null,
+    graph: null, graphNodes: [], graphEdges: [], graphClusters: [], graphIndex: {},
+    graphSelected: {}, graphClusterHit: [], graphSelect: false,
+    graphView: { scale: 1, x: 0, y: 0 }, graphDrag: null, graphPicked: null
+  };
+
+  // ---------- 工具 ----------
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function toast(msg) {
+    var el = $("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.classList.remove("show"); }, 1800);
+  }
+  function fmtTime(t) {
+    var d = new Date(t * 1000);
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function fmtNum(v, n) { return (v >= 0 ? "+" : "") + Number(v).toFixed(n == null ? 2 : n); }
+
+  // ---------- 请求 ----------
+  // 页面跑在不透明源的沙箱 iframe 里，自己发 fetch 会被判成跨域失败，
+  // 所以首选宿主注入的 postMessage 桥。
+  //
+  // 但桥接受的端点前缀在不同 AstrBot 版本里并不完全一致（有 /api/plug/ 这套，
+  // 也有 /plugins/extensions/ 这套），而且父窗口可能自己再补一个 /api。
+  // 与其赌一个，不如第一次调用时把候选地址逐个试过去，谁通用谁，之后固定。
+  // 注意顺序：第一位是"只给插件相对路径，前缀由宿主自己补"。
+  // 实测（AstrBot v4.28.1）宿主会在我给的地址前面再拼一次 /api/plug/，
+  // 所以传绝对路径会被拼成 /api/plug/api/plug/... 而被判成"未找到该路由"。
+  // 注意第一位是**空前缀**：实测宿主会自己补 /api/plug/<插件名>/，
+  // 我再带上插件名就会变成 .../astrbot_plugin_ai_mind/astrbot_plugin_ai_mind/...，
+  // 具体路由匹配不上，只能靠兜底路由按后缀接 —— 多级路径（如 memory/batch）就会漏。
+  var PREFIXES = [
+    "",
+    PLUGIN + "/",
+    "dsh/" + PLUGIN + "/",
+    "/api/plug/" + PLUGIN + "/",
+    "/plugins/extensions/" + PLUGIN + "/",
+    "/api/plugins/extensions/" + PLUGIN + "/",
+    "/plug/" + PLUGIN + "/"
+  ];
+  var resolved = null;
+  var attemptLog = [];
+  var apiBroken = false;
+  var failureSummary = "";
+
+  function unwrap(res) {
+    if (res && typeof res === "object" && res.status === "error") {
+      throw new Error(res.message || "接口返回错误");
+    }
+    if (res && typeof res === "object" && res.data && res.status === "ok") return res.data;
+    if (typeof res === "string") {
+      throw new Error("返回的不是 JSON，可能是登录页：" + res.slice(0, 80));
+    }
+    return res;
+  }
+
+  function summarizeLog(limit) {
+    var head = attemptLog.slice(0, limit || 3);
+    var text = head.join(" ｜ ");
+    if (attemptLog.length > head.length) {
+      text += " ｜ （共 " + attemptLog.length + " 种组合都失败）";
+    }
+    return text;
+  }
+
+  function setStatus(text, bad) {
+    var el = $("api-status");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "small " + (bad ? "err" : "muted");
+  }
+
+  function viaBridge(prefix, path, method, body, query) {
+    var bridge = window.AstrBotPluginPage;
+    if (!bridge || typeof bridge.apiGet !== "function") {
+      return Promise.reject(new Error("宿主没有注入 AstrBotPluginPage"));
+    }
+    var endpoint = prefix + path;
+    // 查询参数必须走 apiGet 的第二个参数，绝不能拼进 endpoint。
+    // 宿主会校验 endpoint，带 ? 的一律直接判成 "Plugin bridge endpoint is invalid."
+    var call = (method === "GET")
+      ? bridge.apiGet(endpoint, query || {})
+      : bridge.apiPost(endpoint, body || {});
+    return Promise.resolve(call);
+  }
+
+  function viaFetch(prefix, path, method, body, query) {
+    var origin = window.location.origin;
+    if (!origin || origin === "null") {
+      return Promise.reject(new Error("页面是不透明源，无法直接发起请求"));
+    }
+    // 候选前缀可能是"插件相对路径"（不以 / 开头），拼 origin 时要补一个斜杠
+    // 空前缀是给"宿主自己补前缀"用的；真要自己发请求时得把那段补回来
+    var suffix = prefix
+      ? (prefix.charAt(0) === "/" ? prefix : "/" + prefix)
+      : "/api/plug/" + PLUGIN + "/";
+    var url = origin + suffix + path;
+    var pairs = [];
+    if (query) {
+      Object.keys(query).forEach(function (key) {
+        var value = query[key];
+        if (value === undefined || value === null || value === "") return;
+        pairs.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+      });
+    }
+    if (pairs.length) url += "?" + pairs.join("&");
+    return fetch(url, {
+      method: method || "GET",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  function attempt(combo, path, method, body, query) {
+    var fn = combo.transport === "bridge" ? viaBridge : viaFetch;
+    return fn(combo.prefix, path, method, body, query).then(unwrap);
+  }
+
+  function request(path, method, body, query) {
+    if (resolved) return attempt(resolved, path, method, body, query);
+    // 已经确认全都不通：不再把候选重跑一遍，直接复用上次的诊断
+    if (apiBroken) return Promise.reject(new Error(failureSummary));
+
+    var combos = [];
+    PREFIXES.forEach(function (prefix) {
+      combos.push({ prefix: prefix, transport: "bridge" });
+      combos.push({ prefix: prefix, transport: "fetch" });
+    });
+
+    var index = 0;
+    function probe() {
+      if (index >= combos.length) {
+        apiBroken = true;
+        failureSummary = summarizeLog();
+        setStatus("接口不通 —— " + failureSummary, true);
+        return Promise.reject(new Error(failureSummary));
+      }
+      var combo = combos[index++];
+      return attempt(combo, "sessions", "GET").then(function (data) {
+        if (!data || typeof data !== "object" || !Array.isArray(data.sessions)) {
+          throw new Error("返回内容不是会话列表");
+        }
+        resolved = combo;
+        setStatus("接口正常：" + combo.transport + " → " + combo.prefix);
+        if (path === "sessions" && (method || "GET") === "GET") return data;
+        return attempt(combo, path, method, body, query);
+      }).catch(function (err) {
+        var why = (err && err.message) ? err.message : String(err);
+        attemptLog.push(combo.transport + " " + combo.prefix + " → " + why);
+        return probe();
+      });
+    }
+    return probe();
+  }
+
+  function loadSessions() {
+    return request("sessions", "GET").then(function (data) {
+      state.sessions = (data && data.sessions) || [];
+      var sel = $("session");
+      sel.innerHTML = "";
+      state.sessions.forEach(function (s) {
+        var opt = document.createElement("option");
+        opt.value = s.key;
+        opt.textContent = s.label + (s.emotion ? "　" + s.emotion_emoji + s.emotion + " " + s.emotion_level + "/5" : "") + (s.frozen ? "　🧊" : "");
+        sel.appendChild(opt);
+      });
+      if (!state.session && state.sessions.length) state.session = state.sessions[0].key;
+      if (state.session) sel.value = state.session;
+      if (!state.sessions.length) {
+        $("cur-title").textContent = "还没有任何会话";
+      }
+    });
+  }
+
+  // ---------- 情绪 ----------
+  function loadEmotion() {
+    if (!state.session) { drawChart(); return Promise.resolve(); }
+    return request("emotion", "GET", null, { session: state.session, hours: state.hours })
+      .then(function (data) {
+        state.data = data;
+        renderEmotion();
+      });
+  }
+
+  function renderEmotion() {
+    var d = state.data;
+    if (!d || !d.current) return;
+    var c = d.current;
+    $("cur-title").textContent = "此刻心情 · " + d.session.label;
+    $("cur-emoji").textContent = c.emoji;
+    $("cur-label").textContent = c.label;
+    $("cur-level").textContent = "强度 " + c.level + "/5（" + c.level_name + "）";
+    $("mood-label").textContent = d.mood.emoji + " " + d.mood.label;
+    $("idle").textContent = d.idle_seconds > 60 ? "距上次说话 " + human(d.idle_seconds) : "刚刚还在说话";
+    $("cur-cause").textContent = c.cause || "没什么特别的";
+    $("cur-style").textContent = c.style || "—";
+    $("crisis").style.display = c.crisis ? "block" : "none";
+
+    $("sp").value = c.p; $("sa").value = c.a; $("sd").value = c.d;
+    syncSliders();
+
+    $("freeze").textContent = d.frozen ? "🔥 解冻" : "🧊 冻结";
+    $("freeze").className = d.frozen ? "on" : "";
+
+    var note = $("curve-note");
+    if (note) {
+      if (d.curve_source === "history") {
+        note.textContent = "曲线由情绪事件近似还原（真实采样点从这次更新后开始积累，聊几句就会变精确）";
+      } else if (d.curve_source === "samples") {
+        note.textContent = "本会话采样点 " + (d.sample_count || 0) + " 个（全部会话共 " + (d.sample_total || 0) + " 个）";
+      } else {
+        note.textContent = "这个会话还没有任何情绪记录 —— 聊几句，或者用上面的滑块／一键改成设定一下";
+      }
+    }
+
+    var users = $("users");
+    users.innerHTML = d.users && d.users.length ? d.users.map(function (u) {
+      var star = u.special ? " ★" : "";
+      var color = u.affinity >= 65 ? "var(--p)" : (u.affinity >= 25 ? "var(--d)" : "var(--muted)");
+      return '<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--line)">'
+        + '<span>' + esc(u.name || u.uid) + star + ' <span class="muted">' + esc(u.tier) + '</span></span>'
+        + '<span class="mono" style="color:' + color + '">' + u.affinity.toFixed(0) + '/100 · ' + u.msg_count + ' 条</span></div>';
+    }).join("") : '<span class="muted">还没有互动记录</span>';
+
+    var ev = $("events");
+    ev.innerHTML = d.events && d.events.length ? d.events.slice().reverse().map(function (e) {
+      var delta = (e.delta[0] + e.delta[1] + e.delta[2]) / 3;
+      var arrow = delta >= 0 ? "↗" : "↘";
+      var src = { self: "她自己的语气", idle: "没人理她", manual: "手动", crisis: "安全优先" }[e.source] || "";
+      return '<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--line)">'
+        + '<span>' + esc(e.emoji) + " " + esc(e.label) + ' <span class="muted">' + esc(e.cause) + '</span></span>'
+        + '<span class="mono muted">' + arrow + Math.abs(delta).toFixed(2) + (src ? " · " + src : "") + " · " + fmtTime(e.t) + "</span></div>";
+    }).join("") : '<span class="muted">还没有情绪波动记录</span>';
+
+    drawChart();
+  }
+
+  function human(sec) {
+    if (sec < 3600) return Math.round(sec / 60) + " 分钟前";
+    if (sec < 86400) return Math.round(sec / 3600) + " 小时前";
+    return Math.round(sec / 86400) + " 天前";
+  }
+
+  var MOOD_PRESETS = [
+    { name: "开心", p: 0.7, a: 0.5, d: 0.4 },
+    { name: "兴奋", p: 0.7, a: 0.9, d: 0.5 },
+    { name: "平静", p: 0.0, a: -0.3, d: 0.1 },
+    { name: "生气", p: -0.7, a: 0.8, d: 0.6 },
+    { name: "烦躁", p: -0.5, a: 0.65, d: 0.0 },
+    { name: "难过", p: -0.8, a: -0.2, d: -0.6 },
+    { name: "害羞", p: 0.5, a: 0.6, d: -0.5 },
+    { name: "担心", p: -0.45, a: 0.7, d: -0.8 },
+    { name: "冷淡", p: -0.35, a: -0.3, d: 0.3 }
+  ];
+
+  function renderMoodPresets() {
+    var box = $("mood-presets");
+    if (!box) return;
+    box.innerHTML = '<span class="small muted" style="align-self:center;margin-right:4px">一键改成：</span>'
+      + MOOD_PRESETS.map(function (mood, index) {
+        return '<button class="ghost small" data-mood="' + index + '">' + mood.name + "</button>";
+      }).join("");
+  }
+
+  function applyMoodPreset(index) {
+    var preset = MOOD_PRESETS[index];
+    if (!preset) return;
+    $("sp").value = preset.p;
+    $("sa").value = preset.a;
+    $("sd").value = preset.d;
+    syncSliders();
+    request("emotion/set", "POST", {
+      session: state.session, p: preset.p, a: preset.a, d: preset.d
+    }).then(function () {
+      toast("已设成「" + preset.name + "」");
+      return loadEmotion();
+    }).catch(function (e) { toast("失败：" + e.message); });
+  }
+
+  function syncSliders() {
+    renderMoodPresets();
+    $("mood-presets").onclick = function (ev) {
+      var btn = ev.target.closest ? ev.target.closest("button[data-mood]") : null;
+      if (!btn) return;
+      applyMoodPreset(parseInt(btn.dataset.mood, 10));
+    };
+    ["p", "a", "d"].forEach(function (k) {
+      var v = parseFloat($("s" + k).value);
+      $("s" + k + "v").textContent = fmtNum(v, 2);
+    });
+  }
+
+  // ---------- 画图 ----------
+  var chartGeom = null;
+  function drawChart() {
+    var cv = $("chart");
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.max(1, Math.round(w * dpr));
+    cv.height = Math.max(1, Math.round(h * dpr));
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var css = getComputedStyle(document.documentElement);
+    var lineColor = css.getPropertyValue("--line").trim() || "#e5e7eb";
+    var mutedColor = css.getPropertyValue("--muted").trim() || "#6b7280";
+
+    var padL = 34, padR = 10, padT = 10, padB = 22;
+    var plotW = w - padL - padR, plotH = h - padT - padB;
+    var d = state.data;
+
+    var yOf = function (v) { return padT + (1 - (v + 1) / 2) * plotH; };
+    var xOf = function (t) { return padL + ((t - since) / span) * plotW; };
+
+    var since = d && d.since ? d.since : (Date.now() / 1000 - 3600);
+    var span = (d && d.now ? d.now : Date.now() / 1000) - since || 1;
+
+    // 网格
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 1;
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.fillStyle = mutedColor;
+    [-1, -0.5, 0, 0.5, 1].forEach(function (v) {
+      var y = Math.round(yOf(v)) + 0.5;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.fillText(v.toFixed(1), 4, y + 3.5);
+    });
+    chartGeom = { padL: padL, padT: padT, plotW: plotW, plotH: plotH, since: since, span: span, w: w, h: h };
+
+    if (!d || !d.curve || d.curve.length < 2) {
+      ctx.fillStyle = mutedColor;
+      ctx.fillText("还没有曲线数据 —— 聊几句，或者在上面设一个心情", padL + 12, padT + plotH / 2);
+      return;
+    }
+
+    // 基线
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = mutedColor;
+    [["p", "baseline.p"], ["a", "baseline.a"], ["d", "baseline.d"]].forEach(function (pair) {
+      var y = Math.round(yOf(d.baseline[pair[0]])) + 0.5;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    });
+    ctx.restore();
+
+    // 事件竖线
+    (d.events || []).forEach(function (e) {
+      if (e.t < since) return;
+      var x = Math.round(xOf(e.t)) + 0.5;
+      ctx.strokeStyle = lineColor;
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    });
+
+    // 三条曲线
+    var series = [["p", "--p"], ["a", "--a"], ["d", "--d"]];
+    series.forEach(function (pair) {
+      ctx.strokeStyle = css.getPropertyValue(pair[1]).trim();
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      d.curve.forEach(function (pt, i) {
+        var x = xOf(pt.t), y = yOf(pt[pair[0]]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+
+    // 当前点
+    var last = d.curve[d.curve.length - 1];
+    series.forEach(function (pair) {
+      ctx.fillStyle = css.getPropertyValue(pair[1]).trim();
+      ctx.beginPath();
+      ctx.arc(xOf(last.t), yOf(last[pair[0]]), 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // 选中十字线
+    if (state.pick && state.pick.t >= since) {
+      var px = Math.round(xOf(state.pick.t)) + 0.5;
+      ctx.strokeStyle = css.getPropertyValue("--accent").trim();
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, padT + plotH); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 时间轴
+    ctx.fillStyle = mutedColor;
+    ctx.fillText(fmtTime(since), padL, h - 6);
+    var endLabel = fmtTime(since + span);
+    ctx.fillText(endLabel, padL + plotW - ctx.measureText(endLabel).width, h - 6);
+  }
+
+  function pointAt(clientX) {
+    var cv = $("chart");
+    if (!chartGeom || !state.data || !state.data.curve || !state.data.curve.length) return null;
+    var rect = cv.getBoundingClientRect();
+    var x = clientX - rect.left;
+    var g = chartGeom;
+    var ratio = Math.min(1, Math.max(0, (x - g.padL) / g.plotW));
+    var t = g.since + ratio * g.span;
+    var curve = state.data.curve;
+    var best = curve[0], bestDiff = Infinity;
+    for (var i = 0; i < curve.length; i++) {
+      var diff = Math.abs(curve[i].t - t);
+      if (diff < bestDiff) { bestDiff = diff; best = curve[i]; }
+    }
+    return best;
+  }
+
+  function showPick(pt, clientX) {
+    if (!pt) return;
+    state.pick = pt;
+    var existing = (state.data.samples || []).some(function (s) { return Math.abs(s.t - pt.t) < 2; });
+    $("pickbar").style.display = "block";
+    $("pickbar").innerHTML =
+      '<div class="row" style="justify-content:space-between">'
+      + '<span>选中 <b class="mono">' + fmtTime(pt.t) + '</b>　P <span class="mono">' + fmtNum(pt.p) + '</span>'
+      + '　A <span class="mono">' + fmtNum(pt.a) + '</span>　D <span class="mono">' + fmtNum(pt.d) + '</span></span>'
+      + '<span class="muted small">' + (existing ? "这个时刻附近有采样点" : "这是插值出来的时刻") + '</span></div>'
+      + '<div class="row" style="margin-top:8px">'
+      + '<button class="primary" data-act="update">改成当前滑块的值</button>'
+      + '<button data-act="insert">在此插入一个点</button>'
+      + '<button class="danger" data-act="delete">删除附近的点</button>'
+      + '<button class="ghost" data-act="cancel">取消</button></div>';
+    drawChart();
+  }
+
+  function pickAction(act) {
+    var pt = state.pick;
+    if (!pt) return;
+    if (act === "cancel") { state.pick = null; $("pickbar").style.display = "none"; drawChart(); return; }
+    var body = { session: state.session, action: act, t: pt.t, tolerance: 300 };
+    if (act !== "delete") {
+      body.p = parseFloat($("sp").value);
+      body.a = parseFloat($("sa").value);
+      body.d = parseFloat($("sd").value);
+    }
+    request("emotion/point", "POST", body).then(function () {
+      toast(act === "delete" ? "已删除该时刻附近的采样点" : "已修改曲线");
+      state.pick = null;
+      $("pickbar").style.display = "none";
+      return refreshAll();
+    }).catch(function (e) { toast("失败：" + e.message); });
+  }
+
+  // ---------- 记忆 ----------
+  function loadMemory() {
+    var query = {
+      q: $("mq").value.trim(),
+      kind: $("mkind").value,
+      scope: $("mscope").value,
+      limit: state.memLimit,
+      offset: state.memOffset
+    };
+    var flag = $("mflag").value;
+    if (flag === "pinned") query.pinned = 1;
+    if (flag === "sensitive") query.sensitive = 1;
+    return request("memory", "GET", null, query).then(function (data) {
+      state.memTotal = data.total || 0;
+      var st = data.stats || {};
+      $("mstats").textContent = "共 " + (st.total || 0) + " 条 · 常驻 " + (st.pinned || 0)
+        + " · 敏感 " + (st.sensitive || 0) + " · 已向量化 " + (st.embedded || 0)
+        + "　|　当前筛选命中 " + state.memTotal + " 条";
+      renderMemories(data.items || []);
+      var from = state.memTotal ? state.memOffset + 1 : 0;
+      var to = Math.min(state.memOffset + state.memLimit, state.memTotal);
+      $("mpage").textContent = from + "-" + to + " / " + state.memTotal;
+      $("mprev").disabled = state.memOffset <= 0;
+      $("mnext").disabled = state.memOffset + state.memLimit >= state.memTotal;
+      updateSelectionUI();
+    });
+  }
+
+  var KIND_LABEL = { fact: "事实", preference: "喜好", event: "经历", promise: "约定", relation: "关系", other: "其他" };
+  var SCOPE_LABEL = { session: "本会话", user: "该用户", global: "通用" };
+
+  function renderMemories(items) {
+    var box = $("mlist");
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有符合条件的数据</div>'; return; }
+    box.innerHTML = items.map(function (m) {
+      var chips = '<span class="chip">' + esc(KIND_LABEL[m.kind] || m.kind) + "</span>"
+        + '<span class="chip">' + esc(SCOPE_LABEL[m.scope] || m.scope) + "</span>"
+        + (m.pinned ? '<span class="chip pin">常驻</span>' : "")
+        + (m.sensitive ? '<span class="chip lock">🔒 ' + esc((m.sensitive_reasons || []).join("、") || "敏感") + "</span>" : "")
+        + '<span class="chip">重要度 ' + m.importance.toFixed(2) + "</span>"
+        + (m.hit_count ? '<span class="chip">被想起 ' + m.hit_count + " 次</span>" : "")
+        + '<span class="chip">' + esc(m.source === "manual" ? "手动" : "自动抽取") + "</span>";
+      var isChecked = state.selected[m.id] ? " checked" : "";
+      return '<div class="memitem" data-id="' + m.id + '">'
+        + '<div class="head">'
+        + '<input type="checkbox" class="memsel" data-id="' + m.id + '"' + isChecked + ">"
+        + '<span class="muted small mono">#' + m.id + "</span>" + chips
+        + '<span class="muted small" style="margin-left:auto">' + esc(m.ago) + "</span></div>"
+        + '<div class="body">' + esc(m.content) + "</div>"
+        + '<div class="row" style="margin-top:8px">'
+        + '<button class="ghost small" data-act="edit">编辑</button>'
+        + '<button class="ghost small" data-act="del">删除</button>'
+        + "</div></div>";
+    }).join("");
+  }
+
+  function selectedIds() {
+    return Object.keys(state.selected).map(function (key) { return parseInt(key, 10); });
+  }
+
+  function updateSelectionUI() {
+    var ids = selectedIds();
+    var info = $("mselinfo");
+    if (info) info.textContent = ids.length ? ("已选中 " + ids.length + " 条") : "未选中任何条目";
+    var all = $("mselectall");
+    if (!all) return;
+    var boxes = document.querySelectorAll(".memsel");
+    var checked = 0;
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) checked++;
+    all.checked = boxes.length > 0 && checked === boxes.length;
+  }
+
+  function bulkAction(action, extra) {
+    var ids = selectedIds();
+    if (!ids.length) { toast("先勾选几条记忆"); return; }
+    var body = { ids: ids, action: action };
+    if (extra) Object.keys(extra).forEach(function (key) { body[key] = extra[key]; });
+    request("memory/batch", "POST", body)
+      .then(function (res) {
+        toast("已处理 " + ((res && res.affected) || 0) + " 条");
+        ids.forEach(function (id) { delete state.selected[id]; });
+        return loadMemory();
+      })
+      .catch(function (e) { toast("失败：" + e.message); });
+  }
+  // 沙箱 iframe 里 window.confirm 会被浏览器直接拦掉（静默返回 false），
+  // 代码就停在 if (!confirm(...)) return; 那一行 —— 表现是"点了没反应，也不报错"。
+  // 所以改成两步确认：第一次点给个提示，五秒内再点一次才真的执行。
+  var confirmArmed = {};
+
+  function needConfirm(key, hint) {
+    var now = Date.now();
+    if (confirmArmed[key] && now - confirmArmed[key] < 5000) {
+      delete confirmArmed[key];
+      return true;
+    }
+    confirmArmed[key] = now;
+    toast(hint || "再点一次确认");
+    return false;
+  }
+
+  function memoryAction(id, act) {
+    if (act === "del") {
+      if (!needConfirm("mem-del-" + id, "再点一次「删除」确认删掉 #" + id)) return;
+      request("memory/delete", "POST", { id: id }).then(function () {
+        toast("已删除 #" + id);
+        return loadMemory();
+      }).catch(function (e) { toast("失败：" + e.message); });
+      return;
+    }
+    var box = document.querySelector('.memitem[data-id="' + id + '"]');
+    if (!box) return;
+    var body = box.querySelector(".body");
+    if (box.dataset.editing === "1") return;
+    box.dataset.editing = "1";
+    var current = body.textContent;
+    body.innerHTML = '<textarea class="memo-edit"></textarea>';
+    var ta = body.querySelector("textarea");
+    ta.value = current;
+    var bar = document.createElement("div");
+    bar.className = "row";
+    bar.style.marginTop = "6px";
+    bar.innerHTML = '<button class="primary small" data-act="save">保存</button><button class="ghost small" data-act="cancel">取消</button>';
+    body.appendChild(bar);
+    bar.querySelector('[data-act="save"]').onclick = function () {
+      request("memory/update", "POST", { id: id, content: ta.value })
+        .then(function () { toast("已保存"); return loadMemory(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    };
+    bar.querySelector('[data-act="cancel"]').onclick = function () { loadMemory(); };
+  }
+
+  // ---------- 事件绑定 ----------
+  function bind() {
+    $("session").onchange = function () {
+      state.session = this.value; state.pick = null;
+      $("pickbar").style.display = "none";
+      refreshAll();
+    };
+    $("refresh").onclick = function () { refreshAll(); };
+
+    $("tab-emotion").onclick = function () { setView("emotion"); };
+    $("tab-memory").onclick = function () {
+      setView("memory");
+      state.memOffset = 0;
+      loadMemory().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+
+    // 时间范围
+    var ranges = [["1 小时", 1], ["6 小时", 6], ["24 小时", 24], ["3 天", 72], ["7 天", 168], ["30 天", 720]];
+    var rb = $("range-btns");
+    rb.innerHTML = ranges.map(function (r) {
+      return '<button class="ghost small" data-h="' + r[1] + '">' + r[0] + "</button>";
+    }).join("");
+    rb.querySelectorAll("button").forEach(function (b) {
+      if (parseFloat(b.dataset.h) === state.hours) b.classList.add("on");
+      b.onclick = function () {
+        state.hours = parseFloat(b.dataset.h);
+        rb.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+        b.classList.add("on");
+        loadEmotion().catch(function (e) { toast("加载失败：" + e.message); });
+      };
+    });
+
+    ["p", "a", "d"].forEach(function (k) {
+      $("s" + k).oninput = syncSliders;
+    });
+
+    $("apply-set").onclick = function () {
+      request("emotion/set", "POST", {
+        session: state.session,
+        p: parseFloat($("sp").value), a: parseFloat($("sa").value), d: parseFloat($("sd").value)
+      }).then(function () { toast("已设定此刻心情"); return refreshAll(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("load-cur").onclick = function () {
+      if (!state.data || !state.data.current) return;
+      $("sp").value = state.data.current.p;
+      $("sa").value = state.data.current.a;
+      $("sd").value = state.data.current.d;
+      syncSliders();
+    };
+    $("freeze").onclick = function () {
+      var frozen = !(state.data && state.data.frozen);
+      request("emotion/freeze", "POST", { session: state.session, frozen: frozen })
+        .then(function () { toast(frozen ? "已冻结情绪" : "已解冻"); return refreshAll(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("reset").onclick = function () {
+      if (!needConfirm("mood-reset", "再点一次「重置情绪」确认归零")) return;
+      request("emotion/reset", "POST", { session: state.session, keep_relations: true })
+        .then(function () { toast("已重置"); return refreshAll(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("clear-curve").onclick = function () {
+      if (!needConfirm("curve-clear", "再点一次「清空曲线」确认")) return;
+      request("emotion/curve/clear", "POST", { session: state.session })
+        .then(function () { toast("曲线已清空"); return refreshAll(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    };
+
+    var cv = $("chart");
+    cv.onmousemove = function (ev) {
+      var pt = pointAt(ev.clientX);
+      var tip = $("tip");
+      if (!pt) { tip.style.display = "none"; return; }
+      var rect = cv.getBoundingClientRect();
+      tip.style.display = "block";
+      tip.innerHTML = fmtTime(pt.t) + "<br>P " + fmtNum(pt.p) + "　A " + fmtNum(pt.a) + "　D " + fmtNum(pt.d);
+      var left = ev.clientX - rect.left + 12;
+      if (left > rect.width - 150) left -= 165;
+      tip.style.left = left + "px";
+      tip.style.top = Math.max(0, ev.clientY - rect.top - 40) + "px";
+    };
+    cv.onmouseleave = function () { $("tip").style.display = "none"; };
+    cv.onclick = function (ev) { showPick(pointAt(ev.clientX), ev.clientX); };
+
+    $("pickbar").onclick = function (ev) {
+      var act = ev.target && ev.target.dataset ? ev.target.dataset.act : null;
+      if (act) pickAction(act);
+    };
+
+    $("tab-graph").onclick = function () {
+      setView("graph");
+      loadGraph().catch(function (e) { toast("加载图谱失败：" + e.message); });
+    };
+    $("gp-select").onclick = function () {
+      state.graphSelect = !state.graphSelect;
+      if (!state.graphSelect) state.graphSelected = {};
+      gpRefreshSelUI();
+      toast(state.graphSelect ? "多选已开：点节点勾选" : "多选已关");
+    };
+    $("gp-selall").onclick = function () {
+      state.graphSelected = {};
+      (state.graphNodes || []).forEach(function (node) {
+        if (node.type === "memory") state.graphSelected[node.id] = true;
+      });
+      gpRefreshSelUI();
+    };
+    $("gp-selnone").onclick = function () {
+      state.graphSelected = {};
+      gpRefreshSelUI();
+    };
+    $("gp-pin").onclick = function () { gpBatch("pin", null, "设为常驻"); };
+    $("gp-unpin").onclick = function () { gpBatch("unpin", null, "取消常驻"); };
+    $("gp-applyscope").onclick = function () {
+      var scope = $("gp-newscope").value;
+      if (!scope) { toast("先选一个作用域"); return; }
+      gpBatch("scope", { scope: scope }, "改作用域");
+    };
+    $("gp-del").onclick = function () { gpBatch("delete", null, "删除"); };
+    $("gp-reload").onclick = function () {
+      loadGraph().then(function () { toast("已重新布局"); })
+        .catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("gp-kind").onchange = function () { loadGraph().catch(function () {}); };
+    $("gp-scope").onchange = function () { loadGraph().catch(function () {}); };
+    $("graph").onpointerdown = function (ev) {
+      var rect = this.getBoundingClientRect();
+      var x = ev.clientX - rect.left;
+      var y = ev.clientY - rect.top;
+      if (state.graphSelect) {
+        // 多选模式下不拖节点：点谁勾谁，点簇圈整簇勾上
+        var picked = gpHitTest(x, y);
+        if (picked && picked.type === "memory") { gpToggleSelect(picked.id); return; }
+        var cluster = gpClusterAt(x, y);
+        if (cluster) { gpSelectCluster(cluster.id); return; }
+        return;
+      }
+      var node = gpHitTest(x, y);
+      state.graphDrag = node
+        ? { node: node, dx: node.x - (ev.clientX - rect.left - state.graphView.x) / state.graphView.scale,
+            dy: node.y - (ev.clientY - rect.top - state.graphView.y) / state.graphView.scale }
+        : { pan: true, x: ev.clientX, y: ev.clientY };
+      if (node) { state.graphPicked = node; gpShowDetail(node); drawGraph(); }
+      if (this.setPointerCapture) this.setPointerCapture(ev.pointerId);
+    };
+    $("graph").onpointermove = function (ev) {
+      var rect = this.getBoundingClientRect();
+      var drag = state.graphDrag;
+      if (drag && drag.pan) {
+        state.graphView.x += ev.clientX - drag.x;
+        state.graphView.y += ev.clientY - drag.y;
+        drag.x = ev.clientX; drag.y = ev.clientY;
+        drawGraph();
+        return;
+      }
+      if (drag && drag.node) {
+        var view = state.graphView;
+        drag.node.x = (ev.clientX - rect.left - view.x) / view.scale + drag.dx;
+        drag.node.y = (ev.clientY - rect.top - view.y) / view.scale + drag.dy;
+        drawGraph();
+        return;
+      }
+      var hovered = gpHitTest(ev.clientX - rect.left, ev.clientY - rect.top);
+      var tip = $("gp-tip");
+      if (hovered) {
+        tip.style.display = "block";
+        tip.style.left = (ev.clientX - rect.left + 12) + "px";
+        tip.style.top = (ev.clientY - rect.top + 8) + "px";
+        tip.textContent = hovered.type === "memory"
+          ? (hovered.data.content || hovered.label)
+          : hovered.label;
+      } else {
+        tip.style.display = "none";
+      }
+    };
+    $("graph").onpointerup = function () { state.graphDrag = null; };
+    $("graph").onpointerleave = function () { $("gp-tip").style.display = "none"; };
+    $("graph").onwheel = function (ev) {
+      ev.preventDefault();
+      var view = state.graphView;
+      var factor = ev.deltaY < 0 ? 1.12 : 0.89;
+      var next = Math.max(0.25, Math.min(4, view.scale * factor));
+      var rect = this.getBoundingClientRect();
+      var mx = ev.clientX - rect.left;
+      var my = ev.clientY - rect.top;
+      view.x = mx - (mx - view.x) * (next / view.scale);
+      view.y = my - (my - view.y) * (next / view.scale);
+      view.scale = next;
+      drawGraph();
+    };
+    $("tab-images").onclick = function () {
+      setView("images");
+      loadImages().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("imgselectall").onchange = function () {
+      var on = this.checked;
+      var boxes = document.querySelectorAll(".imgsel");
+      for (var i = 0; i < boxes.length; i++) {
+        boxes[i].checked = on;
+        if (on) state.selectedImages[boxes[i].dataset.id] = true;
+        else delete state.selectedImages[boxes[i].dataset.id];
+      }
+      updateImageSelectionUI();
+    };
+    $("img-list").onchange = function (ev) {
+      var box = ev.target;
+      if (!box || !box.classList || !box.classList.contains("imgsel")) return;
+      var id = box.dataset.id;
+      if (box.checked) state.selectedImages[id] = true; else delete state.selectedImages[id];
+      updateImageSelectionUI();
+    };
+    $("imgbulk-on").onclick = function () { imageBulkAction("enable"); };
+    $("imgbulk-off").onclick = function () { imageBulkAction("disable"); };
+    $("imgbulk-del").onclick = function () {
+      if (!needConfirm("img-bulk-del", "再点一次「删除选中」确认删掉这些图")) return;
+      imageBulkAction("delete");
+    };
+    $("imgbulk-mode").onchange = function () {
+      var mode = this.value;
+      this.value = "";
+      if (mode) imageBulkAction("mode", { mode: mode });
+    };
+    $("imgbulk-scope").onchange = function () {
+      var scope = this.value;
+      this.value = "";
+      if (scope) imageBulkAction("scope", { scope: scope });
+    };
+
+    $("img-scope").onchange = function () {
+      $("img-owner").style.display = this.value === "user" ? "" : "none";
+    };
+    $("img-upload").onclick = function () {
+      var input = $("img-file");
+      var file = input.files && input.files[0];
+      if (!file) { toast("先选一张图片"); return; }
+      var keywords = $("img-keywords").value.trim();
+      var mode = $("img-mode").value;
+      var scope = $("img-scope").value;
+      var owner = $("img-owner").value.trim();
+      $("img-upload").disabled = true;
+      uploadImage(file)
+        .then(function (res) {
+          if (!keywords) return res;
+          return request("images/trigger/add", "POST", {
+            image_id: res.image_id, keywords: keywords, mode: mode, scope: scope, owner_id: owner
+          }).then(function () { return res; });
+        })
+        .then(function (res) {
+          toast("已上传（#" + res.image_id + "）");
+          input.value = "";
+          $("img-keywords").value = "";
+          return loadImages();
+        })
+        .catch(function (e) { toast("上传失败：" + (e.message || e)); })
+        .then(function () { $("img-upload").disabled = false; });
+    };
+    $("img-list").onclick = imageAction;
+    $("msearch").onclick = function () { state.memOffset = 0; loadMemory().catch(function (e) { toast("失败：" + e.message); }); };
+    $("mprev").onclick = function () { state.memOffset = Math.max(0, state.memOffset - state.memLimit); loadMemory(); };
+    $("mnext").onclick = function () { state.memOffset += state.memLimit; loadMemory(); };
+    $("tab-persona").onclick = function () {
+      setView("persona");
+      loadPresets().catch(function (e) { toast("加载失败：" + e.message); });
+      loadRelationship().catch(function (e) { toast("加载专属用户失败：" + e.message); });
+    };
+    $("rl-save").onclick = function () {
+      saveRelationship({
+        special_label: $("rl-label").value.trim(),
+        inject_identity: $("rl-inject").checked,
+        group_discretion: $("rl-discretion").checked
+      });
+    };
+    $("rl-addbtn").onclick = function () {
+      var uid = $("rl-add").value.trim();
+      if (!uid) { toast("先填上 TA 的 ID"); return; }
+      $("rl-add").value = "";
+      saveRelationship({ add: uid, special_label: $("rl-label").value.trim() });
+    };
+    $("rl-reset").onclick = function () {
+      if (!needConfirm("rl-reset", "再点一次「还原成配置文件」确认放弃面板上的改动")) return;
+      request("relationship/reset", "POST", {}).then(function (data) {
+        renderRelationship(data);
+        toast("已还原成 config 里的设置");
+      }).catch(function (e) { toast("还原失败：" + e.message); });
+    };
+    $("rl-list").onclick = relationshipAction;
+    $("rl-candidates").onclick = relationshipAction;
+    $("tab-split").onclick = function () {
+      setView("split");
+      loadSplitter().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("tab-humanize").onclick = function () {
+      setView("humanize");
+      loadHumanize().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("hz-save").onclick = saveHumanize;
+    $("hz-test").onclick = testHumanize;
+    $("hz-reload").onclick = function () {
+      loadHumanize().then(function () { toast("已重新读取"); })
+        .catch(function (e) { toast("读取失败：" + e.message); });
+    };
+    $("hz-reset").onclick = function () {
+      if (!needConfirm("hz-reset", "再点一次「还原成配置文件」确认放弃面板上的改动")) return;
+      request("humanize/reset", "POST", {}).then(function (data) {
+        renderHumanize(data);
+        toast("已还原成 config 里的设置");
+      }).catch(function (e) { toast("还原失败：" + e.message); });
+    };
+    $("hz-clear").onclick = function () {
+      if (!needConfirm("hz-clear", "再点一次确认：清空体检记录（不影响她的回复）")) return;
+      request("humanize/clear", "POST", {}).then(function (data) {
+        toast("已清空 " + (data.removed || 0) + " 条");
+        return loadHumanize();
+      }).catch(function (e) { toast("清空失败：" + e.message); });
+    };
+    $("hz-fill").onclick = function () {
+      $("hz-sample").value = "首先，我们需要明确一点：沟通是双向的。其次，情绪的宣泄也是必要的。" +
+        "总之，希望你能够好好照顾自己——毕竟，生活总是充满挑战。如果还有其他问题，欢迎随时告诉我。";
+    };
+    $("pv-reload").onclick = function () {
+      loadPrivacy().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("pv-save").onclick = function () {
+      request("privacy/save", "POST", { settings: {
+        allow_self_delete: $("pv-selfdel").checked,
+        consent_required: $("pv-consent").checked,
+        allow_admin_export: $("pv-export").checked
+      }}).then(function (data) { renderPrivacy(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("pv-deny").onclick = function () {
+      var uid = $("pv-uid").value.trim();
+      if (!uid) { toast("先填用户 ID"); return; }
+      privacyCall("privacy/deny", { uid: uid, action: "add" }, "加入拒绝名单");
+    };
+    $("pv-allow").onclick = function () {
+      var uid = $("pv-uid").value.trim();
+      if (!uid) { toast("先填用户 ID"); return; }
+      privacyCall("privacy/deny", { uid: uid, action: "remove" }, "移出拒绝名单");
+    };
+    $("pv-exportbtn").onclick = function () {
+      var uid = $("pv-uid").value.trim();
+      if (!uid) { toast("先填用户 ID"); return; }
+      request("privacy/export", "POST", { uid: uid }).then(function (data) {
+        var box = $("pv-json");
+        box.style.display = "";
+        box.value = JSON.stringify(data.archive, null, 2);
+        box.focus();
+        box.select();
+        $("pv-result").textContent = "已生成档案 JSON，复制走就行";
+      }).catch(function (e) { toast("导出失败：" + e.message); });
+    };
+    $("pv-forget").onclick = function () {
+      var uid = $("pv-uid").value.trim();
+      if (!uid) { toast("先填用户 ID"); return; }
+      if (!needConfirm("pv-forget", "再点一次确认：把 " + uid + " 的记忆、关系、示例全部删掉")) return;
+      request("privacy/forget", "POST", { uid: uid }).then(function (data) {
+        var r = data.removed || {};
+        $("pv-result").textContent = "已删除：记忆 " + (r.memories || 0) + " 条 · 关系 " +
+          (r.relations || 0) + " 处 · 示例 " + (r.styles || 0) + " 条";
+        toast("删掉了");
+        return loadPrivacy();
+      }).catch(function (e) { toast("删除失败：" + e.message); });
+    };
+    $("tab-wizard").onclick = function () {
+      setView("wizard");
+      loadWizard().catch(function (e) { toast("自检失败：" + e.message); });
+      loadSettings().catch(function (e) { toast("加载设置失败：" + e.message); });
+    };
+    $("mode-btn").onclick = function () {
+      var next = state.panelMode === "simple" ? "expert" : "simple";
+      applyPanelMode(next);
+      request("wizard/mode", "POST", { mode: next }).catch(function () {});
+      if (next === "simple") loadWizard().catch(function () {});
+    };
+    $("wz-reload").onclick = function () {
+      loadWizard().then(function () { toast("自检完成"); })
+        .catch(function (e) { toast("自检失败：" + e.message); });
+    };
+    $("wz-apply").onclick = function () {
+      if (!needConfirm("wz-apply", "再点一次确认：把推荐配置写进面板覆盖层（随时可还原）")) return;
+      request("wizard/apply", "POST", { session: state.session }).then(function (data) {
+        renderWizard(data);
+        toast(data.note || "已套用");
+      }).catch(function (e) { toast("套用失败：" + e.message); });
+    };
+    document.addEventListener("click", function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest("button[data-goto]") : null;
+      if (!btn) return;
+      // 设置已经搬到「上手」页了，这两个入口都指过去
+      var key = btn.dataset.goto;
+      if (key === "settings" || key === "wizard") {
+        setView("wizard");
+        loadSettings().catch(function () {});
+        var card = $("wz-settings-card");
+        if (card && card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      var tab = $("tab-" + key);
+      if (tab && tab.onclick) tab.onclick();
+    });
+    $("tab-style").onclick = function () {
+      setView("style");
+      loadStyle().catch(function (e) { toast("加载表达示例失败：" + e.message); });
+    };
+    $("sy-reload").onclick = function () {
+      loadStyle().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("sy-save").onclick = function () {
+      request("style/save", "POST", { settings: {
+        enabled: $("sy-enabled").checked,
+        auto_approve: $("sy-auto").checked,
+        min_score: Number($("sy-score").value) || 78,
+        inject_count: Number($("sy-inject").value) || 0,
+        scope: $("sy-scope").value
+      }}).then(function (data) { renderStyle(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("sy-approve").onclick = function () { styleReview("approve", sySelected("sy-list"), "已批准"); };
+    $("sy-reject").onclick = function () { styleReview("reject", sySelected("sy-list"), "已拒绝"); };
+    $("sy-delete").onclick = function () { styleReview("delete", sySelected("sy-list"), "已删除"); };
+    $("sy-all").onchange = function () {
+      var on = this.checked;
+      var boxes = document.querySelectorAll("#sy-list .sysel");
+      for (var i = 0; i < boxes.length; i++) boxes[i].checked = on;
+    };
+    $("sy-add").onclick = function () {
+      var user = $("sy-user").value.trim();
+      var reply = $("sy-reply").value.trim();
+      if (!user || !reply) { toast("两栏都要填"); return; }
+      request("style/add", "POST", { user: user, reply: reply })
+        .then(function (data) {
+          renderStyle(data);
+          $("sy-user").value = ""; $("sy-reply").value = "";
+          toast("已加为已批准");
+        })
+        .catch(function (e) { toast("添加失败：" + e.message); });
+    };
+    $("sy-search").onclick = function () {
+      loadStyle().catch(function (e) { toast("搜索失败：" + e.message); });
+    };
+    $("sy-filter").onchange = function () {
+      loadStyle().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("sy-all-list").onclick = function () { };
+    $("sy-clearauto").onclick = function () {
+      if (!needConfirm("sy-clear", "再点一次确认：清空**所有自动学的**示例（手动加的会留着）")) return;
+      request("style/clear", "POST", { only_auto: true }).then(function (data) {
+        renderStyle(data);
+        toast("已清空 " + (data.removed || 0) + " 条");
+      }).catch(function (e) { toast("清空失败：" + e.message); });
+    };
+    $("tab-prompts").onclick = function () {
+      setView("prompts");
+      loadPrompts().catch(function (e) { toast("加载提示词失败：" + e.message); });
+    };
+    $("pt-reload").onclick = function () {
+      loadPrompts().then(function () { toast("已重新读取"); })
+        .catch(function (e) { toast("读取失败：" + e.message); });
+    };
+    $("pt-save").onclick = function () {
+      request("prompts/save", "POST", { blocks: collectPrompts() })
+        .then(function (data) { renderPrompts(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("pt-resetall").onclick = function () {
+      if (!needConfirm("pt-reset", "再点一次确认：把所有提示词还原成默认")) return;
+      request("prompts/reset", "POST", {}).then(function (data) {
+        renderPrompts(data);
+        toast("已全部还原");
+      }).catch(function (e) { toast("还原失败：" + e.message); });
+    };
+    $("pt-groups").onclick = function (ev) {
+      var btn = ev.target.closest ? ev.target.closest("button[data-act]") : null;
+      if (!btn) return;
+      var key = btn.dataset.key;
+      if (btn.dataset.act === "preview") {
+        var box = document.querySelector("[data-block='" + key + "'] textarea");
+        previewPrompt(key, box ? box.value : "");
+        return;
+      }
+      if (!needConfirm("pt-" + key, "再点一次确认：把这一块还原成默认")) return;
+      request("prompts/reset", "POST", { keys: [key] }).then(function (data) {
+        renderPrompts(data);
+        toast("已还原");
+      }).catch(function (e) { toast("还原失败：" + e.message); });
+    };
+    $("pt-export").onclick = function () {
+      var box = $("pt-json");
+      box.style.display = "";
+      $("pt-jsonhint").style.display = "";
+      box.value = JSON.stringify(collectPrompts(), null, 2);
+      box.focus();
+      box.select();
+      toast("已生成 JSON，复制走就行");
+    };
+    $("pt-import").onclick = function () {
+      var box = $("pt-json");
+      box.style.display = "";
+      $("pt-jsonhint").style.display = "";
+      var text = box.value.trim();
+      if (!text) { toast("先把 JSON 粘进上面的框"); box.focus(); return; }
+      var data;
+      try { data = JSON.parse(text); } catch (err) { toast("这段 JSON 读不了：" + err.message); return; }
+      request("prompts/save", "POST", { blocks: data })
+        .then(function (result) { renderPrompts(result); toast("已导入"); })
+        .catch(function (e) { toast("导入失败：" + e.message); });
+    };
+    $("tab-theory").onclick = function () {
+      setView("theory");
+      loadTheory().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("wz-fold-settings").onclick = function () {
+      var body = $("st-groups");
+      var hidden = body.style.display === "none";
+      body.style.display = hidden ? "" : "none";
+      this.textContent = hidden ? "折叠" : "展开";
+    };
+    $("tab-manage").onclick = function () {
+      setView("manage");
+      loadManage().catch(function (e) { toast("加载失败：" + e.message); });
+      loadPrivacy().catch(function () {});
+    };
+    $("st-reload").onclick = function () {
+      loadSettings().then(function () { toast("已重新读取"); })
+        .catch(function (e) { toast("读取失败：" + e.message); });
+    };
+    $("st-save").onclick = saveSettings;
+    $("st-groups").onclick = function (ev) {
+      var btn = ev.target.closest ? ev.target.closest("button[data-fold]") : null;
+      if (!btn) return;
+      var body = document.querySelector("[data-body='" + btn.dataset.fold + "']");
+      if (!body) return;
+      var hidden = body.style.display === "none";
+      body.style.display = hidden ? "" : "none";
+      btn.textContent = hidden ? "折叠" : "展开";
+    };
+    $("st-groups").onchange = function () {
+      var count = Object.keys(stChanged()).length;
+      $("st-dirty").textContent = count ? ("有 " + count + " 项改动还没保存") : "";
+    };
+    $("mg-reload").onclick = function () {
+      loadManage().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    [["mg-p", "mg-pv"], ["mg-a", "mg-av"], ["mg-d", "mg-dv"]].forEach(function (pair) {
+      $(pair[0]).oninput = function () {
+        $(pair[1]).textContent = Number(this.value).toFixed(2);
+      };
+    });
+    $("mg-set").onclick = function () {
+      if (!state.session) { toast("先在上面选一个会话"); return; }
+      manageCall("emotion/set", {
+        session: state.session,
+        p: Number($("mg-p").value), a: Number($("mg-a").value), d: Number($("mg-d").value)
+      }, "设定心情");
+    };
+    $("mg-freeze").onclick = function () {
+      if (!state.session) { toast("先在上面选一个会话"); return; }
+      var frozen = !((state.manage || {}).frozen);
+      manageCall("emotion/freeze", { session: state.session, frozen: frozen }, frozen ? "冻结" : "解冻");
+    };
+    $("mg-reset").onclick = function () {
+      if (!state.session) { toast("先在上面选一个会话"); return; }
+      if (!needConfirm("mg-reset", "再点一次确认：把她的情绪与心境归零（好感度保留）")) return;
+      manageCall("emotion/reset", { session: state.session, keep_relations: true }, "重置情绪");
+    };
+    $("mg-clear-curve").onclick = function () {
+      if (!state.session) { toast("先在上面选一个会话"); return; }
+      if (!needConfirm("mg-curve", "再点一次确认：清空这个会话的情绪曲线采样")) return;
+      manageCall("emotion/curve/clear", { session: state.session }, "清空曲线");
+    };
+    $("mg-prune-samples").onclick = function () {
+      manageCall("manage/data", { action: "prune_samples", keep: Number($("mg-keep").value) || 1500 }, "压缩曲线");
+    };
+    $("mg-clear-lexicon").onclick = function () {
+      if (!needConfirm("mg-lex", "再点一次确认：清空词表命中记录（不影响情绪）")) return;
+      manageCall("manage/data", { action: "clear_lexicon" }, "清空词表命中");
+    };
+    $("mg-thaw").onclick = function () {
+      manageCall("manage/data", { action: "thaw_all" }, "解冻全部");
+    };
+    $("mg-vacuum").onclick = function () {
+      manageCall("manage/data", { action: "vacuum" }, "整理数据库");
+    };
+    $("mg-mem-session").onclick = function () {
+      if (!state.session) { toast("先在上面选一个会话"); return; }
+      if (!needConfirm("mg-mem-1", "再点一次确认：删掉这个会话抽取的全部记忆")) return;
+      manageCall("manage/memory", { action: "clear_session", session: state.session }, "清空本会话记忆");
+    };
+    $("mg-mem-all").onclick = function () {
+      if (!needConfirm("mg-mem-2", "再点一次确认：删掉**全部**记忆（所有会话），不可撤销")) return;
+      manageCall("manage/memory", { action: "clear_all" }, "清空全部记忆");
+    };
+    $("mg-prune").onclick = function () {
+      if (!needConfirm("mg-mem-3", "再点一次确认：按上面的条件批量删除记忆")) return;
+      manageCall("manage/memory", {
+        action: "prune",
+        kind: $("mg-kind").value,
+        scope: $("mg-scope").value,
+        max_importance: $("mg-imp").value,
+        never_used: $("mg-never").checked,
+        keep_pinned: $("mg-keep-pinned").checked
+      }, "按条件清理");
+    };
+    $("th-reload").onclick = function () {
+      loadTheory().then(function () { toast("已重新读取"); })
+        .catch(function (e) { toast("读取失败：" + e.message); });
+    };
+    $("th-hours").onchange = function () {
+      loadTheory().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("th-clear").onclick = function () {
+      if (!needConfirm("th-clear", "再点一次「清空记录」确认删掉词表命中记录（不影响情绪本身）")) return;
+      request("theory/clear", "POST", {}).then(function () {
+        toast("已清空");
+        return loadTheory();
+      }).catch(function (e) { toast("清空失败：" + e.message); });
+    };
+    $("sp-preview").onclick = previewSplitter;
+    $("sp-save").onclick = saveSplitter;
+    $("sp-reset").onclick = resetSplitter;
+    $("sp-reload").onclick = function () {
+      loadSplitter().then(function () { toast("已重新读取"); })
+        .catch(function (e) { toast("读取失败：" + e.message); });
+    };
+    $("sp-fill").onclick = function () {
+      $("sp-sample").value = "哼，你怎么才来。我都等你好久了，还以为你把我忘了呢。今天去哪了呀？";
+    };
+    $("pr-mode").onclick = toggleAdvanced;
+    $("pr-archetypes").onclick = function (ev) {
+      var btn = ev.target.closest ? ev.target.closest("button[data-arch]") : null;
+      if (!btn) return;
+      applyArchetype(parseInt(btn.dataset.arch, 10));
+    };
+    ["p", "a", "d"].forEach(function (key) {
+      $("pr-" + key).oninput = function () { syncPresetSliders(); renderArchetypes(); };
+    });
+    $("pr-apply").onclick = function () {
+      var name = $("pr-select").value;
+      if (!name) return;
+      request("presets/activate", "POST", { name: name }).then(function () {
+        toast("已启用「" + name + "」");
+        return loadPresets();
+      }).catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("pr-delete").onclick = function () {
+      var name = $("pr-select").value;
+      if (!needConfirm("pr-del-" + name, "再点一次「删除」确认删掉预设 " + name)) return;
+      request("presets/delete", "POST", { name: name }).then(function () {
+        toast("已删除");
+        return loadPresets();
+      }).catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("pr-save").onclick = function () {
+      var name = $("pr-select").value;
+      var current = state.presets || {};
+      var isBuiltin = (current.builtin || []).some(function (item) { return item.key === name; });
+      if (isBuiltin) { toast("内置预设改不了，请用「另存为」"); return; }
+      savePreset(name);
+    };
+    $("pr-saveas").onclick = function () { savePreset($("pr-name").value.trim()); };
+    $("pr-export").onclick = function () {
+      var box = $("pr-json");
+      box.style.display = "";
+      box.value = JSON.stringify(collectPreset($("pr-select").value), null, 2);
+      box.focus();
+      box.select();
+      toast("已生成 JSON，复制走就行");
+    };
+    $("pr-import").onclick = function () {
+      var box = $("pr-json");
+      var text = box.value.trim();
+      if (!text) {
+        box.style.display = "";
+        toast("先把别人的 JSON 粘进来");
+        return;
+      }
+      request("presets/import", "POST", { json: text })
+        .then(function (res) {
+          toast("已导入「" + res.name + "」");
+          return loadPresets();
+        })
+        .catch(function (e) { toast("导入失败：" + e.message); });
+    };
+    $("mselectall").onchange = function () {
+      var on = this.checked;
+      var boxes = document.querySelectorAll(".memsel");
+      for (var i = 0; i < boxes.length; i++) {
+        boxes[i].checked = on;
+        if (on) state.selected[boxes[i].dataset.id] = true;
+        else delete state.selected[boxes[i].dataset.id];
+      }
+      updateSelectionUI();
+    };
+    $("mlist").onchange = function (ev) {
+      var box = ev.target;
+      if (!box || !box.classList || !box.classList.contains("memsel")) return;
+      var id = box.dataset.id;
+      if (box.checked) state.selected[id] = true; else delete state.selected[id];
+      updateSelectionUI();
+    };
+    $("mbulk-pin").onclick = function () { bulkAction("pin"); };
+    $("mbulk-unpin").onclick = function () { bulkAction("unpin"); };
+    $("mbulk-del").onclick = function () {
+      if (!needConfirm("mem-bulk-del", "再点一次「删除选中」确认")) return;
+      bulkAction("delete");
+    };
+    $("mbulk-scope").onchange = function () {
+      var scope = this.value;
+      this.value = "";
+      if (scope) bulkAction("scope", { scope: scope });
+    };
+    $("maddbtn").onclick = function () {
+      var v = $("madd").value.trim();
+      if (v.length < 2) { toast("内容太短"); return; }
+      request("memory/add", "POST", {
+        content: v, kind: $("maddkind").value, pinned: $("maddpin").checked, importance: 0.9
+      }).then(function (res) {
+        $("madd").value = "";
+        toast(res && res.sensitive ? "已添加（判定为敏感，仅本人私聊可见）" : "已添加");
+        state.memOffset = 0;
+        return loadMemory();
+      }).catch(function (e) { toast("失败：" + e.message); });
+    };
+    $("mlist").onclick = function (ev) {
+      var btn = ev.target.closest ? ev.target.closest("button[data-act]") : null;
+      if (!btn) return;
+      var box = btn.closest(".memitem");
+      if (!box) return;
+      memoryAction(parseInt(box.dataset.id, 10), btn.dataset.act);
+    };
+
+    window.addEventListener("resize", function () { drawChart(); });
+    if (window.AstrBotPluginPage && window.AstrBotPluginPage.onContext) {
+      window.AstrBotPluginPage.onContext(function () { setTimeout(drawChart, 30); });
+    }
+  }
+
+  // ---------- 配图 ----------
+  function uploadImage(file) {
+    var bridge = window.AstrBotPluginPage;
+    var endpoint = (resolved ? resolved.prefix : "") + "images/upload";
+    if (bridge && typeof bridge.upload === "function") {
+      return Promise.resolve(bridge.upload(endpoint, file)).then(unwrap);
+    }
+    // 没有桥就退回直接表单上传（同源可用时）
+    var origin = window.location.origin;
+    if (!origin || origin === "null") {
+      return Promise.reject(new Error("页面是不透明源，无法直接上传"));
+    }
+    var suffix = endpoint.charAt(0) === "/" ? endpoint : "/" + endpoint;
+    if (!resolved) suffix = "/api/plug/" + PLUGIN + "/images/upload";
+    var form = new FormData();
+    form.append("file", file, file.name);
+    return fetch(origin + suffix, { method: "POST", credentials: "same-origin", body: form })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(unwrap);
+  }
+
+  function loadImages() {
+    return request("images", "GET").then(function (data) {
+      renderImages(data || {});
+    });
+  }
+
+  function renderImages(data) {
+    var st = data.stats || {};
+    var maxMb = Math.round((data.max_bytes || 0) / 1048576);
+    $("img-stats").textContent =
+      "共 " + (st.images || 0) + " 张 · 触发词 " + (st.triggers || 0) +
+      " 个（启用 " + (st.active || 0) + "）" + (maxMb ? "　单张上限 " + maxMb + " MB" : "");
+
+    var box = $("img-list");
+    var images = data.images || [];
+    if (!images.length) {
+      box.innerHTML = '<div class="empty">还没有配图。上传一张，再给它配几个触发词试试。</div>';
+      return;
+    }
+    box.innerHTML = images.map(function (img) {
+      var isChecked = state.selectedImages[img.id] ? " checked" : "";
+      var preview = img.preview
+        ? '<img src="' + img.preview + '" style="max-width:130px;max-height:130px;border-radius:8px;border:1px solid var(--line)">'
+        : '<div style="width:130px;height:90px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line);border-radius:8px" class="small muted">太大，不预览</div>';
+      var chips = (img.triggers || []).map(function (t) {
+        return '<span class="chip' + (t.enabled ? "" : " muted") + '" data-tid="' + t.id + '" data-on="' + (t.enabled ? "1" : "0") + '">'
+          + esc(t.keyword) + ' <span class="muted">' + esc(t.mode_label) + '</span>'
+          + '<a href="#" data-act="toggle" style="margin-left:5px;text-decoration:none" title="启用/停用">' + (t.enabled ? "⏸" : "▶") + '</a>'
+          + '<a href="#" data-act="deltrigger" style="margin-left:5px;text-decoration:none;color:var(--danger)" title="删除这个词">×</a>'
+          + '</span>';
+      }).join(" ");
+      return '<div class="memitem" data-id="' + img.id + '">'
+        + '<div class="row" style="align-items:flex-start;gap:12px">'
+        + preview
+        + '<div class="grow">'
+        + '<div class="row" style="gap:6px;align-items:center">'
+        + '<input type="checkbox" class="imgsel" data-id="' + img.id + '"' + isChecked + ">"
+        + '<span class="small muted">#' + img.id + " · " + esc(img.original_name || img.stored_name) + " · " + esc(img.size_text) + "</span></div>"
+        + '<div style="margin:7px 0">' + (chips || '<span class="muted small">还没有触发词</span>') + "</div>"
+        + '<div class="row">'
+        + '<input type="text" class="img-newkw" placeholder="再加触发词（逗号分隔）" style="min-width:170px">'
+        + '<button class="ghost small" data-act="addtrigger">添加</button>'
+        + '<button class="danger small" data-act="delimage">删除整张</button>'
+        + "</div></div></div></div>";
+    }).join("");
+  }
+
+  function selectedImageIds() {
+    return Object.keys(state.selectedImages).map(function (key) { return parseInt(key, 10); });
+  }
+
+  function updateImageSelectionUI() {
+    var ids = selectedImageIds();
+    var info = $("imgselinfo");
+    if (info) info.textContent = ids.length ? ("已选中 " + ids.length + " 张") : "未选中任何图片";
+    var all = $("imgselectall");
+    if (!all) return;
+    var boxes = document.querySelectorAll(".imgsel");
+    var checked = 0;
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) checked++;
+    all.checked = boxes.length > 0 && checked === boxes.length;
+  }
+
+  function imageBulkAction(action, extra) {
+    var ids = selectedImageIds();
+    if (!ids.length) { toast("先勾选几张图"); return; }
+    var body = { ids: ids, action: action };
+    if (extra) Object.keys(extra).forEach(function (key) { body[key] = extra[key]; });
+    request("images/batch", "POST", body)
+      .then(function (res) {
+        toast("已处理 " + ((res && res.affected) || 0) + " 项");
+        ids.forEach(function (id) { delete state.selectedImages[id]; });
+        return loadImages();
+      })
+      .catch(function (e) { toast("失败：" + e.message); });
+  }
+
+
+  // ---------- 人格预设 ----------
+  var PR_ARCHETYPES = [
+    { name: "温柔", p: 0.35, a: -0.05, d: 0.10 },
+    { name: "傲娇", p: 0.08, a: 0.22, d: 0.30 },
+    { name: "冷淡", p: -0.15, a: -0.25, d: 0.20 },
+    { name: "活泼", p: 0.45, a: 0.45, d: 0.20 },
+    { name: "毒舌", p: -0.05, a: 0.30, d: 0.45 },
+    { name: "沉稳", p: 0.15, a: -0.15, d: 0.40 },
+    { name: "忧郁", p: -0.30, a: -0.30, d: -0.15 },
+  ];
+
+  function renderArchetypes() {
+    var box = $("pr-archetypes");
+    if (!box) return;
+    var p = parseFloat($("pr-p").value) || 0;
+    var a = parseFloat($("pr-a").value) || 0;
+    var d = parseFloat($("pr-d").value) || 0;
+    box.innerHTML = PR_ARCHETYPES.map(function (item, index) {
+      var close = Math.abs(item.p - p) < 0.02 && Math.abs(item.a - a) < 0.02 && Math.abs(item.d - d) < 0.02;
+      return '<button class="' + (close ? "primary" : "ghost") + ' small" data-arch="' + index + '">' + item.name + "</button>";
+    }).join("");
+  }
+
+  function applyArchetype(index) {
+    var item = PR_ARCHETYPES[index];
+    if (!item) return;
+    $("pr-p").value = item.p;
+    $("pr-a").value = item.a;
+    $("pr-d").value = item.d;
+    syncPresetSliders();
+    renderArchetypes();
+    toast("性格底色已设成「" + item.name + "」，别忘了点保存");
+  }
+
+  function toggleAdvanced() {
+    var box = $("pr-advanced");
+    var btn = $("pr-mode");
+    var show = box.style.display === "none";
+    box.style.display = show ? "" : "none";
+    btn.textContent = show ? "收起高级选项" : "显示高级选项";
+  }
+  function presetOption(value, label) {
+    var option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }
+
+  function loadPresets() {
+    return request("presets", "GET").then(function (data) {
+      state.presets = data || {};
+      var select = $("pr-select");
+      select.innerHTML = "";
+      (data.builtin || []).forEach(function (item) {
+        select.appendChild(presetOption(item.key, item.label + "（内置）"));
+      });
+      (data.custom || []).forEach(function (item) {
+        select.appendChild(presetOption(item.key, item.label));
+      });
+      select.value = data.active;
+      fillPresetForm(data.draft || {}, data.emotions || []);
+      $("pr-status").textContent = "当前启用：" + data.active;
+      return data;
+    });
+  }
+
+  function fillPresetForm(draft, emotions) {
+    var base = draft.baseline || {};
+    $("pr-p").value = base.p || 0;
+    $("pr-a").value = base.a || 0;
+    $("pr-d").value = base.d || 0;
+    syncPresetSliders();
+    $("pr-ehl").value = draft.emotion_half_life || 240;
+    $("pr-mhl").value = draft.mood_half_life || 5400;
+    $("pr-couple").value = draft.mood_coupling || 0.1;
+    $("pr-aff").value = draft.affinity_initial || 8;
+    $("pr-name").value = draft.builtin ? "" : (draft.key || "");
+    var styles = draft.styles || {};
+    $("pr-styles").innerHTML = emotions.map(function (item) {
+      var value = styles[item.key] !== undefined ? styles[item.key] : (item.default_style || "");
+      return '<div style="margin-bottom:7px">'
+        + '<div class="small muted">' + esc(item.emoji + " " + item.name) + "</div>"
+        + '<input type="text" class="pr-style" data-key="' + item.key + '" value="' + esc(value) + '" style="width:100%">'
+        + "</div>";
+    }).join("");
+    $("pr-rules").value = (draft.rules || []).join(chr_newline());
+    $("pr-note").value = draft.style_note || "";
+    renderArchetypes();
+  }
+
+  function chr_newline() { return String.fromCharCode(10); }
+
+  function syncPresetSliders() {
+    ["p", "a", "d"].forEach(function (key) {
+      var value = parseFloat($("pr-" + key).value) || 0;
+      $("pr-" + key + "v").textContent = fmtNum(value, 2);
+    });
+  }
+
+  function collectPreset(name) {
+    var styles = {};
+    document.querySelectorAll(".pr-style").forEach(function (el) {
+      var text = el.value.trim();
+      if (text) styles[el.dataset.key] = text;
+    });
+    var rules = $("pr-rules").value.split(chr_newline())
+      .map(function (line) { return line.trim(); })
+      .filter(function (line) { return line.length > 0; });
+    return {
+      name: name,
+      label: name,
+      p: parseFloat($("pr-p").value) || 0,
+      a: parseFloat($("pr-a").value) || 0,
+      d: parseFloat($("pr-d").value) || 0,
+      styles: styles,
+      rules: rules,
+      style_note: $("pr-note").value.trim(),
+      emotion_half_life: parseFloat($("pr-ehl").value) || 240,
+      mood_half_life: parseFloat($("pr-mhl").value) || 5400,
+      mood_coupling: parseFloat($("pr-couple").value) || 0.1,
+      affinity_initial: parseFloat($("pr-aff").value) || 8
+    };
+  }
+
+  function savePreset(name) {
+    if (!name) { toast("先填个预设名字"); return Promise.resolve(); }
+    return request("presets/save", "POST", collectPreset(name)).then(function () {
+      toast("已保存「" + name + "」");
+      return loadPresets();
+    }).catch(function (e) { toast("保存失败：" + e.message); });
+  }
+
+  function imageAction(ev) {
+    var link = ev.target.closest ? ev.target.closest("[data-act]") : null;
+    if (!link) return;
+    var act = link.dataset.act;
+    var chip = link.closest(".chip");
+    var item = link.closest(".memitem");
+    if (!item) return;
+    var imageId = parseInt(item.dataset.id, 10);
+
+    if (act === "deltrigger" && chip) {
+      request("images/trigger/delete", "POST", { id: parseInt(chip.dataset.tid, 10) })
+        .then(function () { toast("已删除触发词"); return loadImages(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+      return;
+    }
+    if (act === "toggle" && chip) {
+      var nowOn = chip.dataset.on === "1";
+      request("images/trigger/update", "POST", { id: parseInt(chip.dataset.tid, 10), enabled: nowOn ? 0 : 1 })
+        .then(function () { return loadImages(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+      return;
+    }
+    if (act === "addtrigger") {
+      var input = item.querySelector(".img-newkw");
+      var value = input ? input.value.trim() : "";
+      if (!value) { toast("先填触发词"); return; }
+      request("images/trigger/add", "POST", { image_id: imageId, keywords: value })
+        .then(function () { toast("已添加"); return loadImages(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+      return;
+    }
+    if (act === "delimage") {
+      if (!needConfirm("img-del-" + imageId, "再点一次「删除整张」确认")) return;
+      request("images/delete", "POST", { id: imageId })
+        .then(function () { toast("已删除"); return loadImages(); })
+        .catch(function (e) { toast("失败：" + e.message); });
+    }
+  }
+
+  // ---------- 认人：专属用户 ----------
+  function rlRow(uid, name, extra, action) {
+    var title = esc(name || "（还没起名字）") + " <span class='mono small muted'>" + esc(uid) + "</span>";
+    var tail = action
+      ? "<button class='ghost small' data-act='" + action + "' data-uid='" + esc(uid) + "'>" +
+        (action === "add" ? "设为专属" : "移除") + "</button>"
+      : "";
+    return "<div class='memitem'><div class='head'>" + title +
+      "<span class='grow'></span>" + tail + "</div>" +
+      (extra ? "<div class='small muted'>" + extra + "</div>" : "") + "</div>";
+  }
+
+  function renderRelationship(data) {
+    state.relation = data || {};
+    var members = data.members || [];
+    var candidates = (data.candidates || []).filter(function (item) { return !item.special; });
+    $("rl-label").value = data.special_label || "";
+    $("rl-inject").checked = !!data.inject_identity;
+    $("rl-discretion").checked = !!data.group_discretion;
+    $("rl-status").textContent = (data.describe || "") +
+      (data.has_overrides ? "（面板改动生效中）" : "（当前用 config 里的设置）");
+
+    $("rl-list").innerHTML = members.length
+      ? members.map(function (item) {
+          var extra = "聊过 " + (item.msg_count || 0) + " 条 · 好感度 " +
+            Number(item.affinity || 0).toFixed(0) + "/100 · 熟悉度 " +
+            Number(item.familiarity || 0).toFixed(0) + "/100";
+          return rlRow(item.uid, item.name, extra, "del");
+        }).join("")
+      : "<div class='empty'>还没有专属用户 —— 她现在谁都不认得，别人问「你是谁」她是真的不知道。</div>";
+
+    $("rl-candidates").innerHTML = candidates.length
+      ? candidates.slice(0, 12).map(function (item) {
+          var extra = "聊过 " + (item.msg_count || 0) + " 条" +
+            (item.private_sessions ? " · 私聊 " + item.private_sessions : "") +
+            (item.group_sessions ? " · 群聊 " + item.group_sessions : "");
+          return rlRow(item.uid, item.name, extra, "add");
+        }).join("")
+      : "<div class='empty small'>还没有聊过的人。</div>";
+  }
+
+  function loadRelationship() {
+    return request("relationship", "GET").then(function (data) {
+      renderRelationship(data);
+      return data;
+    });
+  }
+
+  function saveRelationship(payload) {
+    return request("relationship/save", "POST", payload).then(function (data) {
+      renderRelationship(data);
+      toast("已保存，她立刻就知道你是谁了");
+      return data;
+    }).catch(function (e) { toast("保存失败：" + e.message); });
+  }
+
+  function relationshipAction(ev) {
+    var btn = ev.target.closest ? ev.target.closest("button[data-act]") : null;
+    if (!btn) return;
+    var uid = btn.dataset.uid || "";
+    if (!uid) return;
+    if (btn.dataset.act === "add") {
+      saveRelationship({ add: uid });
+      return;
+    }
+    if (!needConfirm("rl-del-" + uid, "再点一次「移除」确认把 " + uid + " 从专属用户里去掉")) return;
+    saveRelationship({ remove: uid });
+  }
+
+  // ---------- 全部功能设置 ----------
+  function fmtBytes(size) {
+    var value = Number(size || 0);
+    if (value < 1024) return value + " B";
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB";
+    return (value / 1024 / 1024).toFixed(2) + " MB";
+  }
+
+  function stControl(node) {
+    var path = esc(node.path);
+    var value = node.value;
+    if (node.type === "bool") {
+      return "<input type='checkbox' data-path='" + path + "' data-kind='bool'" +
+        (value ? " checked" : "") + ">";
+    }
+    if (node.type === "int" || node.type === "float") {
+      var step = node.type === "int" ? "1" : "0.01";
+      return "<input type='number' data-path='" + path + "' data-kind='" + node.type +
+        "' step='" + step + "' value='" + esc(value == null ? "" : value) + "' style='width:140px'>";
+    }
+    if (node.options && node.options.length) {
+      var opts = node.options.map(function (opt) {
+        return "<option value='" + esc(opt) + "'" +
+          (String(value) === String(opt) ? " selected" : "") + ">" + esc(opt) + "</option>";
+      }).join("");
+      return "<select data-path='" + path + "' data-kind='string' style='min-width:140px'>" + opts + "</select>";
+    }
+    if (node.type === "list") {
+      var lines = (value || []).map(function (item) {
+        return typeof item === "string" ? item : JSON.stringify(item);
+      }).join("\n");
+      return "<textarea data-path='" + path + "' data-kind='list' style='width:100%;min-height:56px'>" +
+        esc(lines) + "</textarea>";
+    }
+    return "<input type='text' data-path='" + path + "' data-kind='string' value='" +
+      esc(value == null ? "" : value) + "' style='width:100%'>";
+  }
+
+  function stFields(fields) {
+    return (fields || []).map(function (node) {
+      if (node.children) {
+        return "<div style='margin-top:10px'><div class='small' style='font-weight:650'>" +
+          esc(node.label) + "</div>" +
+          (node.hint ? "<div class='small muted'>" + esc(node.hint) + "</div>" : "") +
+          stFields(node.children) + "</div>";
+      }
+      return "<div style='margin-top:8px'>" +
+        "<div class='row' style='gap:8px'><span class='small' style='min-width:180px'>" +
+        esc(node.label) + "</span>" + stControl(node) + "</div>" +
+        (node.hint ? "<div class='small muted' style='margin-left:188px'>" + esc(node.hint) + "</div>" : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function renderSettings(data) {
+    state.settings = data || {};
+    state.settingsValues = {};
+    $("st-note").textContent = data.writable
+      ? ("共 " + (data.groups || []).length + " 组，改完记得点保存" + (data.config_file ? "（" + data.config_file + "）" : ""))
+      : "这个版本的插件配置不支持从面板回写，只能看";
+    $("st-dirty").textContent = "";
+    $("st-groups").innerHTML = (data.groups || []).map(function (group, index) {
+      return "<div class='card'><div class='row'><h3 style='margin-right:8px'>" + esc(group.label) + "</h3>" +
+        "<span class='grow'></span><button class='ghost small' data-fold='" + index + "'>折叠</button></div>" +
+        (group.hint ? "<div class='small muted' style='margin-top:6px'>" + esc(group.hint) + "</div>" : "") +
+        "<div data-body='" + index + "'>" + stFields(group.fields) + "</div></div>";
+    }).join("");
+    stSnapshot();
+  }
+
+  function stSnapshot() {
+    var nodes = document.querySelectorAll("[data-path]");
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el.dataset || !el.dataset.path) continue;
+      state.settingsValues[el.dataset.path] = el.type === "checkbox" ? !!el.checked : String(el.value);
+    }
+  }
+
+  function stChanged() {
+    var values = {};
+    var nodes = document.querySelectorAll("[data-path]");
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var path = el.dataset ? el.dataset.path : "";
+      if (!path) continue;
+      var kind = el.dataset.kind || "string";
+      var current;
+      if (kind === "bool") current = !!el.checked;
+      else if (kind === "int") current = Math.round(Number(el.value));
+      else if (kind === "float") current = Number(el.value);
+      else if (kind === "list") {
+        current = String(el.value || "").split("\n").map(function (line) { return line.trim(); })
+          .filter(function (line) { return line.length > 0; })
+          .map(function (line) {
+            var head = line.charAt(0);
+            if (head === "{" || head === "[") { try { return JSON.parse(line); } catch (err) { return line; } }
+            return line;
+          });
+      } else current = String(el.value);
+      var before = state.settingsValues[path];
+      var same = kind === "list"
+        ? JSON.stringify(current) === JSON.stringify(before)
+        : String(current) === String(before);
+      if (!same) values[path] = current;
+    }
+    return values;
+  }
+
+  function loadSettings() {
+    return request("settings", "GET").then(function (data) {
+      renderSettings(data);
+      return data;
+    });
+  }
+
+  function saveSettings() {
+    var values = stChanged();
+    var count = Object.keys(values).length;
+    if (!count) { toast("没有改动"); return; }
+    $("st-dirty").textContent = "正在保存 " + count + " 项…";
+    request("settings/save", "POST", { values: values })
+      .then(function (data) {
+        renderSettings(data);
+        $("st-dirty").textContent = "已保存 " + count + " 项，立刻生效";
+        toast("设置已保存（" + count + " 项）");
+        return refreshAll();
+      })
+      .catch(function (e) {
+        $("st-dirty").textContent = "保存失败，改动还在页面上";
+        toast("保存失败：" + e.message);
+      });
+  }
+
+  // ---------- 管理 ----------
+  function renderManage(data) {
+    state.manage = data || {};
+    var stats = data.stats || {};
+    var memory = stats.memory || {};
+    $("mg-note").textContent = data.session
+      ? ("当前会话：" + data.session + (data.frozen ? "（已冻结）" : ""))
+      : "还没有任何会话";
+    var chips = [
+      ["记忆", memory.total || 0],
+      ["常驻", memory.pinned || 0],
+      ["敏感", memory.sensitive || 0],
+      ["本会话记忆", data.session_memories || 0],
+      ["会话", stats.sessions || 0],
+      ["曲线采样", stats.samples || 0],
+      ["词表命中", stats.lexicon_hits || 0]
+    ].map(function (pair) {
+      return "<span class='chip'>" + pair[0] + " <b>" + pair[1] + "</b></span>";
+    }).join(" ");
+    $("mg-stats").innerHTML = chips;
+    $("mg-db").textContent = "数据库 " + fmtBytes(stats.db_bytes || 0) +
+      " · 冻结中的会话 " + (stats.frozen || 0) + " 个";
+
+    var kinds = ["", ].concat(data.kinds || []);
+    var labels = data.kind_labels || {};
+    $("mg-kind").innerHTML = kinds.map(function (kind) {
+      return "<option value='" + esc(kind) + "'>" + esc(kind ? (labels[kind] || kind) : "全部类型") + "</option>";
+    }).join("");
+    var scopes = [""].concat(data.scopes || []);
+    var scopeLabels = data.scope_labels || {};
+    $("mg-scope").innerHTML = scopes.map(function (scope) {
+      return "<option value='" + esc(scope) + "'>" + esc(scope ? (scopeLabels[scope] || scope) : "全部作用域") + "</option>";
+    }).join("");
+  }
+
+  function loadManage() {
+    return request("manage", "GET", null, { session: state.session }).then(function (data) {
+      renderManage(data);
+      return data;
+    });
+  }
+
+  function manageCall(path, body, label) {
+    request(path, "POST", body || {}).then(function (data) {
+      var extra = data && data.removed !== undefined ? "，影响 " + data.removed + " 条" : "";
+      $("mg-result").textContent = label + "完成" + extra;
+      toast(label + "完成" + extra);
+      return loadManage();
+    }).catch(function (e) { toast(label + "失败：" + e.message); });
+  }
+
+
+  // ---------- 隐私与数据 ----------
+  function renderPrivacy(data) {
+    state.privacy = data || {};
+    var settings = data.settings || {};
+    $("pv-selfdel").checked = settings.allow_self_delete !== false;
+    $("pv-consent").checked = !!settings.consent_required;
+    $("pv-export").checked = settings.allow_admin_export !== false;
+    var denied = data.denied || [];
+    $("pv-note").textContent = denied.length
+      ? ("拒绝名单 " + denied.length + " 人")
+      : "拒绝名单是空的";
+    $("pv-denied").innerHTML = denied.length
+      ? denied.map(function (item) {
+          return "<span class='chip lock'>" + esc(item) + "</span>";
+        }).join(" ")
+      : "<span class='small muted'>没有人在拒绝名单里。</span>";
+    if (data.uid && data.summary) {
+      var s = data.summary;
+      $("pv-result").textContent = data.uid + " 目前留下：记忆 " + (s.memories || 0) +
+        " 条 · 关系 " + (s.relations || 0) + " 处 · 表达示例 " + (s.styles || 0) +
+        " 条 · 情绪记录 " + (s.lexicon_hits || 0) + " 条";
+    }
+    if (!$("pv-uid").value && data.uid) $("pv-uid").value = data.uid;
+  }
+
+  function loadPrivacy() {
+    return request("privacy", "GET", null, { session: state.session, uid: $("pv-uid").value })
+      .then(function (data) { renderPrivacy(data); return data; });
+  }
+
+  function privacyCall(path, body, label) {
+    request(path, "POST", body).then(function (data) {
+      if (data && data.denied) renderPrivacy(data);
+      $("pv-result").textContent = label + "完成";
+      toast(label + "完成");
+      return loadPrivacy();
+    }).catch(function (e) {
+      $("pv-result").textContent = label + "失败：" + e.message;
+      toast(label + "失败：" + e.message);
+    });
+  }
+
+
+
+  // ---------- 上手（傻瓜模式） ----------
+  var WZ_TOGGLES = [
+    ["emotion", "情绪", "persona"],
+    ["memory", "记忆", "memory"],
+    ["lexicon", "词表兜底", "settings"],
+    ["splitter", "分段", "split"],
+    ["humanize", "去 AI 味", "humanize"],
+    ["style", "表达学习", "style"],
+    ["guard", "主人鉴权", "settings"]
+  ];
+
+  function applyPanelMode(mode) {
+    state.panelMode = mode === "expert" ? "expert" : "simple";
+    var body = document.body;
+    if (body && body.classList) {
+      if (state.panelMode === "simple") body.classList.add("simple-mode");
+      else body.classList.remove("simple-mode");
+    }
+    $("mode-btn").textContent = state.panelMode === "simple" ? "切到专家模式" : "切回傻瓜模式";
+    var active = document.querySelector ? document.querySelector(".tabs button.on") : null;
+    var advanced = active && active.dataset ? active.dataset.adv === "1" : false;
+    if (state.panelMode === "simple" && advanced) setView("wizard");
+  }
+
+  function renderWizard(data) {
+    state.wizard = data || {};
+    var checks = data.checks || [];
+    $("wz-summary").textContent = data.summary || "";
+    var toggles = data.toggles || {};
+    $("wz-toggles").innerHTML = WZ_TOGGLES.map(function (item) {
+      var on = !!toggles[item[0]];
+      return "<button class='small " + (on ? "on" : "ghost") + "' data-goto='" + item[2] + "'>" +
+        item[1] + (on ? " 开" : " 关") + "</button>";
+    }).join("");
+    var stats = data.stats || {};
+    var memory = stats.memory || {};
+    $("wz-stats").textContent = "记忆 " + (memory.total || 0) + " 条 · 会话 " +
+      (stats.sessions || 0) + " 个 · 曲线采样 " + (stats.samples || 0) +
+      " 点 · 数据库 " + fmtBytes(stats.db_bytes || 0);
+
+    $("wz-checks").innerHTML = checks.length ? checks.map(function (item) {
+      var chip = item.level === "error" ? "lock" : (item.level === "warn" ? "pin" : "");
+      var mark = item.level === "error" ? "❗" : (item.level === "warn" ? "⚠️" : "✅");
+      return "<div class='memitem'><div class='head'>" +
+        "<span class='chip " + chip + "'>" + mark + " " +
+        (item.level === "error" ? "必须修" : (item.level === "warn" ? "建议" : "正常")) + "</span>" +
+        "<b>" + esc(item.title) + "</b></div>" +
+        (item.detail ? "<div class='small muted'>" + esc(item.detail) + "</div>" : "") +
+        (item.fix ? "<div class='small' style='margin-top:4px'>怎么办：" + esc(item.fix) + "</div>" : "") +
+        (item.action && item.action.indexOf("goto:") === 0
+          ? "<div style='margin-top:6px'><button class='ghost small' data-goto='" +
+            esc(item.action.slice(5)) + "'>去这里</button></div>"
+          : "") +
+        "</div>";
+    }).join("") : "<div class='empty'>没查出问题。</div>";
+
+    var steps = [
+      ["① 让她认得你", "在「人格定制 → 专属用户」把你的 ID 填进去，称呼写「宝宝」或「主人」。", "persona"],
+      ["② 定个性格", "同一个页签里选一种性格，再写一句「她该怎么说话」。", "persona"],
+      ["③ 说句话试试", "回聊天里发一句话给她。她认不认得你、有没有情绪起伏，这一下就看出来了。", ""]
+    ];
+    $("wz-steps").innerHTML = steps.map(function (item) {
+      return "<div class='memitem'><div class='head'><b>" + esc(item[0]) + "</b>" +
+        "<span class='grow'></span>" +
+        (item[2] ? "<button class='ghost small' data-goto='" + item[2] + "'>去这里</button>" : "") +
+        "</div><div class='small muted'>" + esc(item[1]) + "</div></div>";
+    }).join("");
+  }
+
+  function loadWizard() {
+    return request("wizard", "GET", null, { session: state.session }).then(function (data) {
+      renderWizard(data);
+      return data;
+    });
+  }
+
+
+
+  // ---------- 表达示例 ----------
+  function syItem(item, selectable) {
+    var box = selectable
+      ? "<input type='checkbox' class='sysel' data-id='" + item.id + "'> "
+      : "";
+    return "<div class='memitem'><div class='head'>" + box +
+      "<span class='chip'>" + esc(item.status_label) + "</span>" +
+      "<span class='chip'>" + item.score + " 分</span>" +
+      (item.source === "manual" ? "<span class='chip pin'>手动</span>" : "") +
+      "<span class='chip'>" + (item.scene === "group" ? "群聊" : "私聊") + "</span>" +
+      (item.hit_count ? "<span class='chip'>用过 " + item.hit_count + " 次</span>" : "") +
+      "<span class='grow'></span><span class='small muted mono'>" + fmtTime(item.created_at) + "</span></div>" +
+      "<div class='small'><b>他：</b>" + esc(item.user) + "</div>" +
+      "<div class='small' style='margin-top:2px'><b>她：</b>" + esc(item.reply) + "</div></div>";
+  }
+
+  function renderStyle(data) {
+    state.style = data || {};
+    var settings = data.settings || {};
+    $("sy-enabled").checked = !!settings.enabled;
+    $("sy-auto").checked = !!settings.auto_approve;
+    $("sy-score").value = settings.min_score;
+    $("sy-inject").value = settings.inject_count;
+    var scopes = ["both", "private", "group"];
+    var labels = { both: "所有会话", private: "只在私聊", group: "只在群聊" };
+    $("sy-scope").innerHTML = scopes.map(function (key) {
+      return "<option value='" + key + "'" + (settings.scope === key ? " selected" : "") + ">" +
+        labels[key] + "</option>";
+    }).join("");
+    var counts = data.counts || {};
+    $("sy-note").textContent = settings.enabled
+      ? ("门槛 " + settings.min_score + " 分 · 每轮最多注入 " + settings.inject_count + " 条" +
+         (settings.auto_approve ? " · ⚠️ 自动批准已开" : " · 学来的先待审"))
+      : "学习已关闭";
+    $("sy-stats").innerHTML = [
+      ["待审", counts.pending || 0], ["已批准", counts.approved || 0],
+      ["已拒绝", counts.rejected || 0], ["自动学的", counts.auto || 0],
+      ["合计", counts.total || 0]
+    ].map(function (pair) {
+      return "<span class='chip'>" + pair[0] + " <b>" + pair[1] + "</b></span>";
+    }).join(" ");
+
+    var items = data.items || [];
+    var pending = items.filter(function (item) { return item.status === "pending"; });
+    $("sy-list").innerHTML = pending.length
+      ? pending.map(function (item) { return syItem(item, true); }).join("")
+      : "<div class='empty'>待审队列是空的。她表现好的回复会自动攒到这里。</div>";
+
+    $("sy-filter").innerHTML = [["", "全部状态"]].concat(
+      (data.statuses || []).map(function (key) {
+        return [key, (data.status_labels || {})[key] || key];
+      })
+    ).map(function (pair) {
+      return "<option value='" + esc(pair[0]) + "'>" + esc(pair[1]) + "</option>";
+    }).join("");
+    $("sy-all-list").innerHTML = items.length
+      ? items.map(function (item) { return syItem(item, true); }).join("")
+      : "<div class='empty'>还没有任何示例。</div>";
+  }
+
+  function sySelected(scope) {
+    var boxes = document.querySelectorAll("#" + scope + " .sysel");
+    var ids = [];
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) ids.push(Number(boxes[i].dataset.id));
+    }
+    return ids;
+  }
+
+  function loadStyle() {
+    return request("style", "GET", null, {
+      status: $("sy-filter").value || "", q: $("sy-q").value || ""
+    }).then(function (data) {
+      renderStyle(data);
+      return data;
+    });
+  }
+
+  function styleReview(action, ids, label) {
+    if (!ids.length) { toast("先勾选几条"); return; }
+    if (action === "delete" && !needConfirm("sy-del", "再点一次确认：删掉选中的 " + ids.length + " 条")) return;
+    request("style/review", "POST", { action: action, ids: ids })
+      .then(function (data) {
+        renderStyle(data);
+        toast(label + " " + (data.affected || 0) + " 条");
+      })
+      .catch(function (e) { toast(label + "失败：" + e.message); });
+  }
+
+
+
+  // ---------- 提示词 ----------
+  function ptPlaceholders(block) {
+    if (!block.placeholders || !block.placeholders.length) return "";
+    return block.placeholders.map(function (item) {
+      return "<span class='chip' title='" + esc(item.desc) + "'>{" + esc(item.name) + "}</span>";
+    }).join(" ");
+  }
+
+  function ptBlocks() {
+    return document.querySelectorAll("[data-block]");
+  }
+
+  function renderPrompts(data) {
+    state.prompts = data || {};
+    $("pt-note").textContent = (data.block_count || 0) + " 个可改的块，当前有 " +
+      (data.custom_count || 0) + " 个是你改过的";
+    $("pt-groups").innerHTML = (data.groups || []).map(function (group) {
+      var cards = (group.blocks || []).map(function (block) {
+        return "<div class='memitem' data-block='" + esc(block.key) + "'>" +
+          "<div class='head'><b>" + esc(block.label) + "</b>" +
+          (block.custom ? "<span class='chip pin'>已改</span>" : "<span class='chip'>默认</span>") +
+          "<span class='grow'></span>" +
+          "<button class='ghost small' data-act='preview' data-key='" + esc(block.key) + "'>预览</button>" +
+          "<button class='ghost small' data-act='reset' data-key='" + esc(block.key) + "'>还原</button>" +
+          "</div>" +
+          (block.hint ? "<div class='small muted' style='margin-bottom:4px'>" + esc(block.hint) + "</div>" : "") +
+          (ptPlaceholders(block) ? "<div class='small muted' style='margin-bottom:4px'>可用占位符：" +
+            ptPlaceholders(block) + "</div>" : "") +
+          "<textarea data-key='" + esc(block.key) + "' style='width:100%;min-height:120px'>" +
+          esc(block.value) + "</textarea></div>";
+      }).join("");
+      return "<div class='card'><h3 style='margin-bottom:8px'>" + esc(group.group) + "</h3>" + cards + "</div>";
+    }).join("");
+  }
+
+  function collectPrompts() {
+    var out = {};
+    var nodes = ptBlocks();
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].dataset.block;
+      var box = nodes[i].querySelector ? nodes[i].querySelector("textarea") : null;
+      if (key && box) out[key] = box.value;
+    }
+    return out;
+  }
+
+  function loadPrompts() {
+    return request("prompts", "GET").then(function (data) {
+      renderPrompts(data);
+      return data;
+    });
+  }
+
+  function previewPrompt(key, text) {
+    request("prompts/preview", "POST", { key: key, text: text || "" })
+      .then(function (data) {
+        $("pt-preview").textContent = data.rendered || "（渲染结果是空的）";
+        var note = key;
+        if (data.unknown && data.unknown.length) {
+          note += " ｜ ⚠️ 认不出的占位符：" + data.unknown.join("、");
+        }
+        $("pt-preview-note").textContent = note;
+      })
+      .catch(function (e) { toast("预览失败：" + e.message); });
+  }
+
+
+
+  // ---------- 记忆图谱 ----------
+  var GRAPH_COLORS = ["#6366f1", "#ec4899", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6",
+                      "#ef4444", "#14b8a6", "#f97316", "#06b6d4"];
+
+  function gpNodeColor(node) {
+    if (node.type === "memory") return GRAPH_COLORS[(node.cluster - 1 + GRAPH_COLORS.length) % GRAPH_COLORS.length];
+    if (node.type === "keyword") return "#9aa3b2";
+    if (node.type === "user") return "#f59e0b";
+    return "#3b82f6";
+  }
+
+  function gpRadius(node) {
+    if (node.type === "memory") return 3.2 + Math.max(0, node.weight) * 5.5;
+    if (node.type === "keyword") return 2.2 + Math.min(3, Math.log(1 + (node.data.count || 1)) * 1.4);
+    return 6.5;
+  }
+
+  function gpSeed(nodes, width, height) {
+    var buckets = {};
+    nodes.forEach(function (node) {
+      var key = node.cluster || 0;
+      (buckets[key] = buckets[key] || []).push(node);
+    });
+    var keys = Object.keys(buckets).sort(function (a, b) {
+      return buckets[b].length - buckets[a].length;
+    });
+    keys.forEach(function (key, index) {
+      var members = buckets[key];
+      var angle = (index / Math.max(1, keys.length)) * Math.PI * 2;
+      var spread = index === 0 ? 0 : Math.min(width, height) * (0.20 + (index % 3) * 0.08);
+      var cx = width / 2 + Math.cos(angle) * spread;
+      var cy = height / 2 + Math.sin(angle) * spread;
+      members.forEach(function (node, i) {
+        var a = (i / members.length) * Math.PI * 2;
+        var r = 8 + (i % 5) * 5;
+        node.x = cx + Math.cos(a) * r;
+        node.y = cy + Math.sin(a) * r;
+        node.vx = 0;
+        node.vy = 0;
+      });
+    });
+  }
+
+  function gpLayout(nodes, links, width, height) {
+    gpSeed(nodes, width, height);
+    var index = {};
+    nodes.forEach(function (node) { index[node.id] = node; });
+    var k = Math.sqrt((width * height) / Math.max(1, nodes.length)) * 0.55;
+    var steps = nodes.length > 220 ? 140 : 220;
+    for (var step = 0; step < steps; step++) {
+      var alpha = 1 - step / steps;
+      for (var i = 0; i < nodes.length; i++) {
+        var a = nodes[i];
+        for (var j = i + 1; j < nodes.length; j++) {
+          var b = nodes[j];
+          var dx = a.x - b.x;
+          var dy = a.y - b.y;
+          var d2 = dx * dx + dy * dy;
+          if (d2 > k * k * 10) continue;
+          if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.5; }
+          var dist = Math.sqrt(d2);
+          var force = (k * k) / d2 * alpha * 0.85;
+          var fx = (dx / dist) * force;
+          var fy = (dy / dist) * force;
+          a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+        }
+      }
+      links.forEach(function (link) {
+        var a = index[link.source];
+        var b = index[link.target];
+        if (!a || !b) return;
+        var dx = b.x - a.x;
+        var dy = b.y - a.y;
+        var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        var force = (d - k * 0.85) / d * alpha * 0.055;
+        a.vx += dx * force; a.vy += dy * force;
+        b.vx -= dx * force; b.vy -= dy * force;
+      });
+      nodes.forEach(function (node) {
+        node.vx += (width / 2 - node.x) * 0.005 * alpha;
+        node.vy += (height / 2 - node.y) * 0.005 * alpha;
+        node.x += Math.max(-32, Math.min(32, node.vx));
+        node.y += Math.max(-32, Math.min(32, node.vy));
+        node.vx *= 0.80;
+        node.vy *= 0.80;
+        node.x = Math.max(18, Math.min(width - 18, node.x));
+        node.y = Math.max(18, Math.min(height - 18, node.y));
+      });
+    }
+  }
+
+  function drawGraph() {
+    var canvas = $("graph");
+    var ctx = canvas.getContext("2d");
+    var rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 800, height: 460 };
+    var dpr = window.devicePixelRatio || 1;
+    var width = rect.width || 800;
+    var height = rect.height || 460;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    var style = getComputedStyle(document.body);
+    var line = style.getPropertyValue("--line") || "#e5e7eb";
+    var muted = style.getPropertyValue("--muted") || "#6b7280";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    var view = state.graphView || { scale: 1, x: 0, y: 0 };
+    state.graphView = view;
+    ctx.save();
+    ctx.translate(view.x, view.y);
+    ctx.scale(view.scale, view.scale);
+
+    // 网格
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1 / view.scale;
+    for (var gx = 0; gx < width; gx += 48) {
+      ctx.beginPath(); ctx.moveTo(gx, -200); ctx.lineTo(gx, height + 200); ctx.stroke();
+    }
+    for (var gy = 0; gy < height; gy += 48) {
+      ctx.beginPath(); ctx.moveTo(-200, gy); ctx.lineTo(width + 200, gy); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    var index = state.graphIndex || {};
+    (state.graphEdges || []).forEach(function (edge) {
+      var a = index[edge.source];
+      var b = index[edge.target];
+      if (!a || !b) return;
+      ctx.strokeStyle = edge.kind === "has" ? muted : line;
+      ctx.globalAlpha = edge.kind === "has" ? 0.22 : 0.30;
+      ctx.lineWidth = (edge.kind === "has" ? 0.7 : 1.1) / view.scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // 簇的范围圈
+    (state.graphClusters || []).forEach(function (cluster) {
+      var members = (state.graphNodes || []).filter(function (node) {
+        return node.cluster === cluster.id && node.type === "memory";
+      });
+      if (members.length < 3) return;
+      var cx = 0, cy = 0;
+      members.forEach(function (node) { cx += node.x; cy += node.y; });
+      cx /= members.length; cy /= members.length;
+      var radius = 0;
+      members.forEach(function (node) {
+        radius = Math.max(radius, Math.sqrt((node.x - cx) * (node.x - cx) + (node.y - cy) * (node.y - cy)));
+      });
+      radius += 26;
+      ctx.strokeStyle = GRAPH_COLORS[(cluster.id - 1 + GRAPH_COLORS.length) % GRAPH_COLORS.length];
+      ctx.globalAlpha = 0.35;
+      ctx.setLineDash([4 / view.scale, 5 / view.scale]);
+      ctx.lineWidth = 1 / view.scale;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.font = (11 / view.scale) + "px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(cluster.name + " · " + cluster.size, cx, cy - radius - 6 / view.scale);
+      ctx.globalAlpha = 1;
+      // 记下来，多选模式下点这个圈就能整簇选中
+      (state.graphClusterHit = state.graphClusterHit || []).push(
+        { id: cluster.id, cx: cx, cy: cy, r: radius }
+      );
+    });
+
+    (state.graphNodes || []).forEach(function (node) {
+      var radius = gpRadius(node);
+      ctx.fillStyle = gpNodeColor(node);
+      ctx.globalAlpha = node.type === "keyword" ? 0.55 : 0.9;
+      ctx.beginPath();
+      if (node.type === "user") {
+        ctx.rect(node.x - radius, node.y - radius, radius * 2, radius * 2);
+      } else if (node.type === "session") {
+        ctx.moveTo(node.x, node.y - radius);
+        ctx.lineTo(node.x + radius, node.y + radius);
+        ctx.lineTo(node.x - radius, node.y + radius);
+        ctx.closePath();
+      } else {
+        ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      var selected = state.graphSelected && state.graphSelected[node.id];
+      if (selected || node === state.graphPicked) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = selected ? "#10b981" : "#ef4444";
+        ctx.lineWidth = (selected ? 2.4 : 2) / view.scale;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    });
+    ctx.restore();
+  }
+
+  function gpHitTest(sx, sy) {
+    var view = state.graphView || { scale: 1, x: 0, y: 0 };
+    var wx = (sx - view.x) / view.scale;
+    var wy = (sy - view.y) / view.scale;
+    var best = null;
+    var bestDist = 1e9;
+    (state.graphNodes || []).forEach(function (node) {
+      var dx = node.x - wx;
+      var dy = node.y - wy;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < gpRadius(node) + 4 && dist < bestDist) { best = node; bestDist = dist; }
+    });
+    return best;
+  }
+
+  function gpSelectedIds() {
+    return Object.keys(state.graphSelected || {}).map(function (key) {
+      var num = Number(String(key).replace("m:", ""));
+      return isNaN(num) ? 0 : num;
+    }).filter(function (num) { return num > 0; });
+  }
+
+  function gpRefreshSelUI() {
+    var count = gpSelectedIds().length;
+    $("gp-selcount").textContent = state.graphSelect
+      ? (count ? ("已选 " + count + " 条记忆") : "多选模式：点节点勾选，点簇圈整簇选中")
+      : "点节点看详情；开多选后点节点即可勾选，点簇圈可以整簇选中";
+    $("gp-actions").style.display = count ? "" : "none";
+    $("gp-select").classList.remove("on");
+    if (state.graphSelect) $("gp-select").classList.add("on");
+    drawGraph();
+  }
+
+  function gpToggleSelect(nodeId) {
+    state.graphSelected = state.graphSelected || {};
+    if (state.graphSelected[nodeId]) delete state.graphSelected[nodeId];
+    else state.graphSelected[nodeId] = true;
+    gpRefreshSelUI();
+  }
+
+  function gpClusterAt(sx, sy) {
+    var view = state.graphView || { scale: 1, x: 0, y: 0 };
+    var wx = (sx - view.x) / view.scale;
+    var wy = (sy - view.y) / view.scale;
+    var hits = state.graphClusterHit || [];
+    for (var i = hits.length - 1; i >= 0; i--) {
+      var item = hits[i];
+      var dx = item.cx - wx;
+      var dy = item.cy - wy;
+      if (Math.sqrt(dx * dx + dy * dy) <= item.r) return item;
+    }
+    return null;
+  }
+
+  function gpSelectCluster(clusterId) {
+    var added = 0;
+    (state.graphNodes || []).forEach(function (node) {
+      if (node.type !== "memory" || node.cluster !== clusterId) return;
+      state.graphSelected = state.graphSelected || {};
+      if (!state.graphSelected[node.id]) added += 1;
+      state.graphSelected[node.id] = true;
+    });
+    gpRefreshSelUI();
+    if (added) toast("选中了这一簇的 " + added + " 条");
+  }
+
+  function gpBatch(action, extra, label) {
+    var ids = gpSelectedIds();
+    if (!ids.length) { toast("先选几条"); return; }
+    if (action === "delete" &&
+        !needConfirm("gp-del", "再点一次确认：删掉选中的 " + ids.length + " 条记忆")) return;
+    var body = { action: action, ids: ids };
+    Object.keys(extra || {}).forEach(function (key) { body[key] = extra[key]; });
+    request("memory/batch", "POST", body).then(function (data) {
+      toast(label + " " + (data.affected || 0) + " 条");
+      state.graphSelected = {};
+      return loadGraph();
+    }).catch(function (e) { toast(label + "失败：" + e.message); });
+  }
+
+  function gpShowDetail(node) {
+    if (!node) {
+      $("gp-detail").innerHTML = "点图上的任意一个实心圆，这里会显示它的内容、类型、作用域和归属。";
+      return;
+    }
+    if (node.type !== "memory") {
+      $("gp-detail").innerHTML = "<b>" + esc(node.label) + "</b>（" +
+        esc(node.type === "keyword" ? "关键词" : node.type === "user" ? "人" : "会话") + "）";
+      return;
+    }
+    var d = node.data || {};
+    $("gp-detail").innerHTML =
+      "<div class='memitem'><div class='body'>" + esc(d.content || node.label) + "</div>" +
+      "<div class='head' style='margin-top:6px'>" +
+      "<span class='chip'>" + esc(KIND_LABEL[d.kind] || d.kind || "其他") + "</span>" +
+      "<span class='chip'>" + esc({ session: "本会话", user: "本人", global: "全局" }[d.scope] || d.scope) + "</span>" +
+      "<span class='chip'>重要度 " + (d.importance == null ? "-" : d.importance) + "</span>" +
+      "<span class='chip'>被想起 " + (d.hits || 0) + " 次</span>" +
+      (d.pinned ? "<span class='chip pin'>常驻</span>" : "") +
+      (d.sensitive ? "<span class='chip lock'>敏感</span>" : "") +
+      "</div>" +
+      "<div class='small muted' style='margin-top:4px'>会话 " + esc(d.session || "—") +
+      " · 归属 " + esc(d.owner || "—") + "</div></div>";
+  }
+
+  function renderGraph(data) {
+    state.graph = data || {};
+    var nodes = (data.nodes || []).map(function (node) {
+      return Object.assign({}, node);
+    });
+    var edges = (data.edges || []).map(function (edge) {
+      return Object.assign({}, edge);
+    });
+    var stats = data.stats || {};
+    $("gp-stats").innerHTML = [
+      ["总记忆", stats.memories_total || 0],
+      ["图上", stats.memories_shown || 0],
+      ["节点", stats.nodes || 0],
+      ["关系", stats.edges || 0],
+      ["簇", stats.clusters || 0],
+      ["活跃会话", stats.sessions || 0]
+    ].map(function (pair) {
+      return "<span class='chip'>" + pair[0] + " <b>" + pair[1] + "</b></span>";
+    }).join(" ");
+    $("gp-note").textContent = nodes.length
+      ? ("关键词当桥自动聚成 " + (stats.clusters || 0) + " 簇")
+      : "还没有记忆可以画 —— 先聊几句，或者去「长期记忆」手动加一条";
+    state.graphNodes = nodes;
+    state.graphEdges = edges;
+    state.graphClusters = data.clusters || [];
+    state.graphIndex = {};
+    state.graphPicked = null;
+    state.graphClusterHit = [];
+    state.graphSelected = {};
+    state.graphView = { scale: 1, x: 0, y: 0 };
+    nodes.forEach(function (node) { state.graphIndex[node.id] = node; });
+    var canvas = $("graph");
+    var rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 800, height: 460 };
+    gpLayout(nodes, edges, rect.width || 800, rect.height || 460);
+    drawGraph();
+    gpShowDetail(null);
+  }
+
+  function gpFillSelects() {
+    var kinds = [["", "全部类型"]].concat(Object.keys(KIND_LABEL).map(function (key) {
+      return [key, KIND_LABEL[key]];
+    }));
+    $("gp-kind").innerHTML = kinds.map(function (pair) {
+      return "<option value='" + esc(pair[0]) + "'>" + esc(pair[1]) + "</option>";
+    }).join("");
+    $("gp-scope").innerHTML = [["", "全部作用域"], ["session", "本会话"], ["user", "本人"], ["global", "全局"]]
+      .map(function (pair) {
+        return "<option value='" + esc(pair[0]) + "'>" + esc(pair[1]) + "</option>";
+      }).join("");
+  }
+
+  function loadGraph() {
+    return request("graph", "GET", null, {
+      kind: $("gp-kind").value,
+      scope: $("gp-scope").value,
+      limit: Number($("gp-limit").value) || 260
+    }).then(function (data) {
+      renderGraph(data);
+      return data;
+    });
+  }
+
+
+  // ---------- 去 AI 味 ----------
+  function hzLines(id) {
+    return String($(id).value || "").split("\n").map(function (line) { return line.trim(); })
+      .filter(function (line) { return line.length > 0; });
+  }
+
+  function renderHumanize(data) {
+    state.humanize = data || {};
+    var settings = data.settings || {};
+    var modes = data.modes || [];
+    $("hz-mode").innerHTML = modes.map(function (mode) {
+      return "<option value='" + esc(mode) + "'" +
+        (settings.mode === mode ? " selected" : "") + ">" +
+        esc((data.mode_labels || {})[mode] || mode) + "</option>";
+    }).join("");
+    var scopes = data.scopes || [];
+    $("hz-scope").innerHTML = scopes.map(function (scope) {
+      return "<option value='" + esc(scope) + "'" +
+        (settings.scope === scope ? " selected" : "") + ">" +
+        esc((data.scope_labels || {})[scope] || scope) + "</option>";
+    }).join("");
+    $("hz-enabled").checked = !!settings.enabled;
+    $("hz-llm").checked = settings.llm_only !== false;
+    $("hz-keep").checked = settings.keep_best !== false;
+    $("hz-threshold").value = settings.threshold;
+    $("hz-rounds").value = settings.max_rounds;
+    $("hz-minlen").value = settings.min_length;
+    $("hz-extra-ai").value = (settings.extra_ai_words || []).join("\n");
+    $("hz-extra-tpl").value = (settings.extra_templates || []).join("\n");
+    $("hz-allow").value = (settings.allow_words || []).join("\n");
+
+    var notes = [];
+    if (!settings.enabled) notes.push("已关闭");
+    else if (settings.mode === "check") notes.push("现在是「只体检」：不达标只记录，不改她的回复");
+    else if (settings.mode === "rewrite") notes.push("现在是「打回重写」：低于 " + settings.threshold + " 分会让她重说，最多 " + settings.max_rounds + " 轮");
+    notes.push(data.has_overrides ? "面板改动生效中" : "当前用 config 里的设置");
+    $("hz-status").textContent = notes.join(" ｜ ");
+
+    var stats = data.stats || {};
+    var all = data.stats_all || {};
+    $("hz-stats").textContent = "近 7 天体检 " + (stats.count || 0) + " 条，打回 " +
+      (stats.rewritten || 0) + " 条，平均分 " + (stats.avg_before || 0) +
+      " → " + (stats.avg_after || 0) + "（累计 " + (all.count || 0) + " 条）";
+
+    $("hz-log").innerHTML = (data.recent || []).map(function (item) {
+      var arrow = item.rounds > 0
+        ? ("<span class='chip pin'>" + item.before + " → " + item.after + "（" + item.rounds + " 轮）</span>")
+        : ("<span class='chip'>" + item.before + " 分</span>");
+      var issues = item.issues ? "<span class='small muted'>" + esc(item.issues) + "</span>" : "";
+      var body = "<div class='body'>" + esc(item.final || item.original) + "</div>";
+      if (item.rounds > 0 && item.original && item.final && item.original !== item.final) {
+        body += "<div class='small muted' style='margin-top:4px'>原文：" + esc(item.original) + "</div>";
+      }
+      if (item.note) body += "<div class='small err'>" + esc(item.note) + "</div>";
+      return "<div class='memitem'><div class='head'>" + arrow + issues +
+        "<span class='grow'></span><span class='small muted mono'>" + fmtTime(item.t) + "</span></div>" +
+        body + "</div>";
+    }).join("") || "<div class='empty'>还没有记录。</div>";
+  }
+
+  function renderReport(data) {
+    var report = (data && data.report) || {};
+    var score = Number(report.score || 0);
+    var label = score >= 80 ? "很像人话" : score >= 60 ? "还行，有点味道" : "机器味很重";
+    var color = score >= 80 ? "var(--ok)" : score >= 60 ? "var(--warn)" : "var(--danger)";
+    var head = "<div class='row'><span class='bignum' style='color:" + color + "'>" +
+      score.toFixed(1) + "</span><span class='small muted'>" + label +
+      " · " + (report.length || 0) + " 字 / " + (report.sentences || 0) + " 句</span></div>";
+    var issues = (report.issues || []).map(function (item) {
+      return "<div class='memitem'><div class='head'><b>" + esc(item.label) + "</b>" +
+        "<span class='chip'>-" + item.penalty + "</span>" +
+        (item.hits && item.hits.length ? "<span class='small muted'>" + esc(item.hits.join("、")) + "</span>" : "") +
+        (item.detail ? "<span class='small muted'>" + esc(item.detail) + "</span>" : "") +
+        "</div><div class='small'>" + esc(item.hint) + "</div></div>";
+    }).join("");
+    $("hz-report").innerHTML = head + (issues || "<div class='empty'>没查出问题。</div>");
+  }
+
+  function loadHumanize() {
+    return request("humanize", "GET").then(function (data) {
+      renderHumanize(data);
+      return data;
+    });
+  }
+
+  function saveHumanize() {
+    var payload = {
+      enabled: $("hz-enabled").checked,
+      mode: $("hz-mode").value,
+      threshold: Number($("hz-threshold").value) || 60,
+      max_rounds: Number($("hz-rounds").value) || 2,
+      min_length: Number($("hz-minlen").value) || 12,
+      scope: $("hz-scope").value,
+      llm_only: $("hz-llm").checked,
+      keep_best: $("hz-keep").checked,
+      extra_ai_words: hzLines("hz-extra-ai"),
+      extra_templates: hzLines("hz-extra-tpl"),
+      allow_words: hzLines("hz-allow")
+    };
+    request("humanize/save", "POST", { settings: payload })
+      .then(function (data) {
+        renderHumanize(data);
+        toast("已保存");
+      })
+      .catch(function (e) { toast("保存失败：" + e.message); });
+  }
+
+  function testHumanize() {
+    var text = $("hz-sample").value;
+    if (!text || !text.trim()) { toast("先粘一段话"); return; }
+    $("hz-test-status").textContent = "体检中…";
+    request("humanize/test", "POST", { text: text })
+      .then(function (data) {
+        $("hz-test-status").textContent = "";
+        renderReport(data);
+      })
+      .catch(function (e) {
+        $("hz-test-status").textContent = "失败：" + e.message;
+      });
+  }
+
+
+  // ---------- 理论 ----------
+  function thStrip(text) {
+    return String(text == null ? "" : text).replace(/\*\*/g, "");
+  }
+
+  function renderTheory(data) {
+    state.theory = data || {};
+    var lex = data.lexicon || {};
+    var hits = data.hits || {};
+
+    $("th-sources").innerHTML = (data.theory || []).map(function (item) {
+      return "<div class='memitem'><div class='head'><b>" + esc(item.title) + "</b>" +
+        "<span class='chip'>" + esc(item.from) + "</span></div>" +
+        "<div class='small muted'>用途：" + esc(item.use) + "</div>" +
+        "<div class='small' style='margin-top:4px'>在这里：" + esc(thStrip(item.how)) + "</div></div>";
+    }).join("");
+
+    var protos = data.prototypes || [];
+    $("th-plutchik-note").textContent = protos.length + " 个情绪原型挂在 8 条轴上";
+    $("th-plutchik").innerHTML = ((data.plutchik || {}).families || []).map(function (fam) {
+      var chips = (fam.prototypes || []).map(function (item) {
+        return "<span class='chip'>" + esc(item.emoji + " " + item.name) + "</span>";
+      }).join(" ");
+      return "<div class='memitem'><div class='head'><b>" + esc(fam.emoji + " " + fam.name) + "</b>" +
+        "<span class='chip lock'>对立：" + esc(fam.opposite_name) + "</span></div>" +
+        "<div style='margin-top:4px'>" + (chips || "<span class='small muted'>（没有原型）</span>") + "</div></div>";
+    }).join("");
+
+    $("th-lex-note").textContent = (lex.family_count || 0) + " 大类 / " + (lex.subcategory_count || 0) +
+      " 小类 / " + (lex.size || 0) + " 个常用词" +
+      (lex.enabled === false ? " · 已关闭" : " · 只做兜底");
+    $("th-categories").innerHTML = (lex.categories || []).map(function (group) {
+      var subs = (group.subcategories || []).map(function (sub) {
+        return "<div class='small' style='margin-top:6px'><b>" + esc(sub.name) + "</b>" +
+          "<span class='mono small muted'> " + esc(sub.code) + "</span> " +
+          "<span class='chip'>" + esc(sub.polarity_label) + "</span> " +
+          "<span class='small muted'>→ " + esc((sub.proto_emoji || "") + (sub.proto_name || "")) +
+          " · " + sub.word_count + " 词</span>" +
+          "<div class='small muted'>" + esc((sub.samples || []).join("、")) + "</div></div>";
+      }).join("");
+      return "<div class='memitem'><div class='head'><span class='chip pin'>" + esc(group.family) + "</span>" +
+        "<span class='small muted'>" + esc(group.note) + " · " + group.word_count + " 词</span></div>" +
+        subs + "</div>";
+    }).join("");
+
+    $("th-hits-note").textContent = "最近 " + (data.window_hours || 72) + " 小时命中 " +
+      (hits.window || 0) + " 次（累计 " + (hits.total || 0) + " 次）" +
+      (lex.enabled === false ? " —— 词表当前是关闭的" : "");
+    var top = (hits.top_words || []).map(function (item) {
+      return "<span class='chip'>" + esc(item.word) + " ×" + item.count +
+        " <span class='muted'>" + esc(item.name) + "</span></span>";
+    }).join(" ");
+    var recent = (hits.recent || []).map(function (item) {
+      var notes = "强度 " + item.intensity;
+      if (item.negated) notes += " · 被否定";
+      if (item.direction === "targeted") notes += " · 在说她";
+      else if (item.direction === "self") notes += " · 在说他自己";
+      return "<div class='memitem'><div class='head'><b>" + esc(item.word) + "</b>" +
+        "<span class='chip'>" + esc(item.name + " " + item.code) + "</span>" +
+        "<span class='small muted'>" + notes + "</span>" +
+        "<span class='grow'></span>" +
+        "<span class='small muted mono'>" + fmtTime(item.t) + "</span></div></div>";
+    }).join("");
+    $("th-hits").innerHTML =
+      (top ? "<div style='margin-bottom:8px'>" + top + "</div>" : "") +
+      (recent || "<div class='empty'>这段时间还没有词表命中。要么她最近只被规则命中，要么聊得太少。</div>");
+  }
+
+  function loadTheory() {
+    var hours = $("th-hours").value || "72";
+    return request("theory", "GET", null, { hours: hours }).then(function (data) {
+      renderTheory(data);
+      return data;
+    });
+  }
+
+  // ---------- 拟人分段 ----------
+  function spFields() {
+    var nodes = document.querySelectorAll("[data-sp]");
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) out.push(nodes[i]);
+    return out;
+  }
+
+  function spSetOptions(id, values, labels) {
+    var el = $(id);
+    if (!el) return;
+    el.innerHTML = (values || []).map(function (value) {
+      var text = labels && labels[value] ? labels[value] : value;
+      return "<option value=\"" + esc(value) + "\">" + esc(text) + "</option>";
+    }).join("");
+  }
+
+  function spListValue(value) {
+    return (value || []).map(function (item) {
+      var text = String(item);
+      return text === "\n" ? "\\n" : text;
+    }).join("\n");
+  }
+
+  function spRulesValue(value) {
+    return (value || []).map(function (rule) {
+      if (typeof rule === "string") return rule;
+      if (!rule || typeof rule !== "object") return "";
+      return String(rule.find || "") + "=>" + String(rule.replace || "");
+    }).filter(function (line) { return line; }).join("\n");
+  }
+
+  // 面板改的东西存在插件数据目录里，盖在 config 之上；这里显示的是"最终生效值"。
+  function renderSplitter(data) {
+    state.split = data || {};
+    var settings = state.split.settings || {};
+    var schema = state.split.schema || {};
+    spSetOptions("sp-mode", schema.modes, schema.mode_labels);
+    spSetOptions("sp-delay", schema.delay_strategies, schema.delay_labels);
+    spSetOptions("sp-scope", schema.scopes, schema.scope_labels);
+    spSetOptions("sp-image", schema.strategies, null);
+    spSetOptions("sp-at", schema.strategies, null);
+    spSetOptions("sp-record", schema.strategies, null);
+    spSetOptions("sp-voice", schema.voice_policies, schema.voice_policy_labels);
+    spSetOptions("sp-ttsmode", schema.tts_modes, schema.tts_mode_labels);
+    spFields().forEach(function (el) {
+      var key = el.dataset.sp;
+      var value = settings[key];
+      if (value === undefined || value === null) return;
+      if (el.type === "checkbox") { el.checked = !!value; return; }
+      if (el.dataset.rules) { el.value = spRulesValue(value); return; }
+      if (el.dataset.list) { el.value = spListValue(value); return; }
+      el.value = value;
+    });
+    var notes = [state.split.describe || "分段"];
+    notes.push(state.split.has_overrides
+      ? "面板改动生效中（盖在 config 之上）"
+      : "当前用的是 config 里的设置");
+    if (state.split.has_message_chain === false) {
+      notes.push("⚠️ 这个版本找不到 MessageChain，分段发不出去");
+    }
+    if (state.split.sent_segments) notes.push("本次启动已分段发出 " + state.split.sent_segments + " 条");
+    $("sp-status").textContent = notes.join(" ｜ ");
+  }
+
+  function collectSplitter() {
+    var out = {};
+    spFields().forEach(function (el) {
+      var key = el.dataset.sp;
+      if (!key) return;
+      if (el.type === "checkbox") { out[key] = !!el.checked; return; }
+      if (el.dataset.rules) {
+        out[key] = String(el.value || "").split("\n").map(function (line) {
+          var at = line.indexOf("=>");
+          if (at < 0) return { find: line.trim(), replace: "" };
+          return { find: line.slice(0, at).trim(), replace: line.slice(at + 2).trim() };
+        }).filter(function (rule) { return rule.find.length > 0; });
+        return;
+      }
+      if (el.dataset.list) {
+        out[key] = String(el.value || "").split("\n").map(function (line) {
+          return line.trim();
+        }).filter(function (line) { return line.length > 0; });
+        return;
+      }
+      if (el.type === "number") {
+        var num = Number(el.value);
+        if (!isNaN(num)) out[key] = num;
+        return;
+      }
+      out[key] = el.value;
+    });
+    return out;
+  }
+
+  function renderSplitPreview(data) {
+    var box = $("sp-preview-out");
+    var segments = (data && data.segments) || [];
+    if (!segments.length) {
+      box.innerHTML = "<div class=\"empty\">这段话一段都不用切（或者整段都是空白）。</div>";
+      return;
+    }
+    var head = "<div class=\"small muted\" style=\"margin-bottom:6px\">拆成 " + data.count + " 口气"
+      + (data.limit ? "（上限 " + data.limit + "）" : "（不限段数）")
+      + " · 切分正则 <span class=\"mono\">" + esc(data.pattern) + "</span></div>";
+    var body = segments.map(function (seg) {
+      var chips = "<span class=\"chip\">第 " + seg.index + " 口气</span>"
+        + "<span class=\"small muted\">" + seg.chars + " 字</span>";
+      if (seg.delay_before_next > 0) {
+        chips += "<span class=\"chip\">停 " + seg.delay_before_next + " 秒</span>";
+      }
+      if (seg.has_media) chips += "<span class=\"chip pin\">带图/媒体</span>";
+      return "<div class=\"memitem\"><div class=\"head\">" + chips + "</div>"
+        + "<div class=\"body\">" + (esc(seg.text) || "<span class=\"muted\">（没有文字）</span>") + "</div></div>";
+    }).join("");
+    box.innerHTML = head + body;
+  }
+
+  function loadSplitter() {
+    return request("splitter", "GET").then(function (data) {
+      renderSplitter(data);
+      return data;
+    });
+  }
+
+  function previewSplitter() {
+    var text = $("sp-sample").value;
+    if (!text || !text.trim()) { toast("先写一段话再试切"); return; }
+    $("sp-preview-status").textContent = "试切中…";
+    request("splitter/preview", "POST", { text: text, settings: collectSplitter() })
+      .then(function (data) {
+        $("sp-preview-status").textContent = "";
+        renderSplitPreview(data);
+      })
+      .catch(function (e) {
+        $("sp-preview-status").textContent = "试切失败：" + e.message;
+        toast("试切失败：" + e.message);
+      });
+  }
+
+  function saveSplitter() {
+    $("sp-dirty").textContent = "保存中…";
+    request("splitter/save", "POST", { settings: collectSplitter() })
+      .then(function (data) {
+        renderSplitter(data);
+        var count = (data && data.saved) ? data.saved.length : 0;
+        $("sp-dirty").textContent = "已保存 " + count + " 项，立刻生效";
+        toast("分段设置已保存");
+      })
+      .catch(function (e) {
+        $("sp-dirty").textContent = "";
+        toast("保存失败：" + e.message);
+      });
+  }
+
+  function resetSplitter() {
+    if (!needConfirm("sp-reset", "再点一次「还原成配置文件」确认放弃面板上的改动")) return;
+    request("splitter/reset", "POST", {})
+      .then(function (data) {
+        renderSplitter(data);
+        toast("已还原成 config 里的设置");
+      })
+      .catch(function (e) { toast("还原失败：" + e.message); });
+  }
+
+  // 五个页签的显隐/高亮只有这一处，免得以后再加页签时漏掉某个视图。
+  function setView(name) {
+    var views = {
+      emotion: "view-emotion", manage: "view-manage",
+      memory: "view-memory", graph: "view-graph",
+      images: "view-images", persona: "view-persona", split: "view-split",
+      theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
+      style: "view-style", wizard: "view-wizard"
+    };
+    Object.keys(views).forEach(function (key) {
+      var view = $(views[key]);
+      if (view) view.style.display = (key === name) ? "" : "none";
+      var tab = $("tab-" + key);
+      if (!tab) return;
+      if (key === name) tab.classList.add("on");
+      else tab.classList.remove("on");
+    });
+    state.view = name;
+  }
+
+  function refreshAll() {
+    return loadSessions()
+      .then(loadEmotion)
+      .catch(function (e) {
+        var msg = (e && e.message) ? e.message : String(e);
+        toast("加载失败：" + (msg.length > 48 ? msg.slice(0, 48) + "…" : msg));
+        // 探测阶段的诊断更完整，别被这里的短消息覆盖掉
+        if (!apiBroken) setStatus("加载失败 —— " + msg, true);
+      });
+  }
+
+  bind();
+  gpFillSelects();
+  request("wizard/mode", "GET").then(function (data) {
+    applyPanelMode((data && data.mode) || "simple");
+    if (state.panelMode === "simple") {
+      loadWizard().catch(function () {});
+      loadSettings().catch(function () {});
+      return;
+    }
+  }).catch(function () { applyPanelMode("simple"); });
+  if (state.view !== "wizard") setView("emotion");
+  refreshAll();
+})();
+</script>
+</body>
+</html>
+
