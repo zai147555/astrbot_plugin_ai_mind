@@ -789,8 +789,11 @@ def _should_split(
     # 停顿是天然的换气点：她停一下、再接着说，本来就该分两条发。
     # 这里不受长度门槛限制 —— 否则「你...你这什么造型啊」这种十来字的短句
     # 永远切不开，读起来是一口气说完，犹豫的感觉全没了。
-    if weight >= 1 and _delim_weight(delim) >= 1 and PAUSE_DELIM_RE.match(delim):
-        if index + len(delim) < len(text):
+    if _delim_weight(delim) >= 1 and PAUSE_DELIM_RE.match(delim):
+        # 开头就停顿（「...那就再陪你一小会儿」）也要单独成一条：
+        # 那一拍犹豫本身就是内容，本来就该自己占一个气泡。
+        # 以前要求「两边都得有字」，正好把这一种挡在门外。
+        if (index == 0 or weight >= 1) and index + len(delim) < len(text):
             return True
     # 均分模式：这一段还没攒够就先别切。
     # 标点自己的长度也要算进去 —— 否则「下午好。」这种四个字的短句会被判成「不够长」，
