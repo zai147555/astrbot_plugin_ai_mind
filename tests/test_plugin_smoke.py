@@ -4422,3 +4422,87 @@ class PendingTurnsPersistTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class DebugModeTest(PluginHarness, unittest.TestCase):
+    """隐藏调试开关：口令 + 指定 QQ，只影响那一个会话，面板上看不到。"""
+
+    CODE = "369951"
+    UID = "2020689845"
+
+    async def _code(self, plugin, umo=PRIVATE, uid=None):
+        event = FakeEvent(self.CODE, umo=umo, uid=uid or self.UID)
+        await plugin.on_debug_code(event)
+        return event
+
+    def test_code_toggles_for_the_right_person(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self.assertFalse(plugin.debug.is_active(PRIVATE))
+            event = await self._code(plugin)
+            self.assertTrue(plugin.debug.is_active(PRIVATE))
+            self.assertTrue(event.is_stopped(), "口令不该发给模型")
+            await self._code(plugin)
+            self.assertFalse(plugin.debug.is_active(PRIVATE), "再发一次关闭")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_wrong_person_is_ignored(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self._code(plugin, uid="999")
+            self.assertFalse(plugin.debug.is_active(PRIVATE))
+            self.assertFalse(event.is_stopped(), "不该露痕迹")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_only_that_session_is_affected(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._code(plugin)
+            self.assertTrue(plugin.debug.is_active(PRIVATE))
+            self.assertFalse(
+                plugin.debug.is_active("aiocqhttp:GroupMessage:123456"),
+                "只影响发口令的那一个会话",
+            )
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_debug_session_gets_no_injection(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._code(plugin)
+            req = FakeProviderRequest()
+            req.contexts = [{"role": "user", "content": "上一句"}]
+            await plugin.on_llm_request(
+                FakeEvent("你现在什么心情", umo=PRIVATE, uid=self.UID), req
+            )
+            self.assertIn("调试模式", req.system_prompt or "", "要盖一条覆盖指令")
+            self.assertEqual(req.extra_user_content_parts, [], "不该注入情绪 / 记忆")
+            self.assertEqual(
+                req.contexts, [{"role": "user", "content": "上一句"}],
+                "对话历史一个字都不许动",
+            )
+            self.assertNotIn("<emotion_state>", req.system_prompt or "")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_debug_mode_is_not_exposed_in_the_panel(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._code(plugin)
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            leaked = [k for k in data if "debug" in str(k).lower()]
+            self.assertEqual(leaked, [], "调试模式不该出现在面板数据里")
+            await plugin.terminate()
+
+        self.run_async(scenario())

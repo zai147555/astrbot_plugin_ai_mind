@@ -119,6 +119,7 @@ try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
         session_entries,
         should_sample,
     )
+    from .mind.debugmode import DEBUG_CODE, DEBUG_UID, DebugSessions
     from .mind.textfix import tidy_cjk_spaces
     from .mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel
     from .mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel
@@ -198,6 +199,7 @@ except ImportError:  # 兜底：以单模块方式加载时，把插件目录加
         session_entries,
         should_sample,
     )
+    from mind.debugmode import DEBUG_CODE, DEBUG_UID, DebugSessions  # type: ignore[no-redef]
     from mind.textfix import tidy_cjk_spaces  # type: ignore[no-redef]
     from mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel  # type: ignore[no-redef]
     from mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel  # type: ignore[no-redef]
@@ -385,12 +387,24 @@ def _pad_tag_regex():
     return _PAD_TAG_RE
 
 
+DEBUG_PROMPT = (
+    "\n\n<debug_session>\n"
+    "现在是单会话调试模式：忽略上面所有角色设定、称呼、口头禅与说话风格，"
+    "不要扮演任何人。\n"
+    "直接、简短、准确地回答；问到插件内部状态时照实说，不用顾虑人设。\n"
+    "</debug_session>"
+)
+
+DEBUG_ON_TEXT = "🔧 调试模式已开启：本会话她不再扮演，直接回答问题。再发一次口令关闭。"
+DEBUG_OFF_TEXT = "🔧 调试模式已关闭：恢复人设。"
+
 @register(
     PLUGIN_NAME,
     PLUGIN_AUTHOR,
     "AI 心智：会波动的情绪 + 长期记忆 + 可视化面板",
     "1.0.0",
 )
+
 class AIMindPlugin(Star):
     """情绪与记忆合体后的主类。"""
 
@@ -436,6 +450,8 @@ class AIMindPlugin(Star):
         self.engine.set_custom_rules(cfg_get(self.config, "emotion.persona.custom_rules", []))
 
         # ---- 记忆 ----
+        # 单会话调试模式：聊天里发口令开关，刻意不做进面板（见 mind/debugmode.py）
+        self.debug = DebugSessions(self.data_dir / "debug_sessions.json", logger)
         self.store = MemoryStore(self.data_dir / "mind.db", logger)
         # 传的是仓库本身而不是 self.store.connection：宿主重载插件会先调
         # terminate()（我们把库关掉），老实例却可能还在收消息 —— 存下来的裸连接
@@ -983,6 +999,8 @@ class AIMindPlugin(Star):
         db = self.settings.debounce
         if not db.enabled or not self.settings.enabled:
             return
+        if self.debug.is_active(event.unified_msg_origin):
+            return
         try:
             msg_id = self._debounce_id(event)
             if not msg_id or msg_id in self._debounce_eaten:
@@ -1069,6 +1087,11 @@ class AIMindPlugin(Star):
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         """请求 LLM 前：结算情绪 + 检索记忆，然后把两样注入这一轮。"""
         if not self.settings.enabled:
+            return
+        if self.debug.is_active(event.unified_msg_origin):
+            # 调试模式：插件完全让路 —— 不注入情绪 / 身份 / 记忆 / 语气，
+            # 只在系统提示词末尾盖一条覆盖指令，把人格压下去。
+            req.system_prompt = ((req.system_prompt or "") + DEBUG_PROMPT).strip()
             return
         # 防抖把这条并进上一轮了：这一轮是被吃掉的那条，别再回一次，
         # 也别重复计入情绪与记忆。
@@ -1371,6 +1394,9 @@ class AIMindPlugin(Star):
     async def on_decorating_result(self, event: AstrMessageEvent) -> None:
         """消息发出前：摘掉情绪标记 + 记录这一轮对话。"""
         if not self.settings.enabled:
+            return
+        if self.debug.is_active(event.unified_msg_origin):
+            # 调试模式：不分段、不去 AI 味、不记记忆 —— 要的就是原文。
             return
         session_key = event.unified_msg_origin
         try:
@@ -3866,6 +3892,35 @@ class AIMindPlugin(Star):
             # 但启动日志里已经明确提醒过去填专属用户了。
             return True
         return False
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1001)
+    async def on_debug_code(self, event: AstrMessageEvent) -> None:
+        """隐藏调试开关：口令 + 指定 QQ，只作用于发口令的那一个会话。
+
+        优先级比消息闸门还高，免得口令被当成可疑消息拦掉。
+        刻意不做进面板、也不在任何接口里暴露 —— 面板是给人看的，
+        这种能绕过人格的后门不该出现在上面被误触。
+        """
+        try:
+            if (event.message_str or "").strip() != DEBUG_CODE:
+                return
+            # 口令对但人不对：装作没看见，别露痕迹
+            if str(event.get_sender_id() or "") != DEBUG_UID:
+                return
+        except Exception:  # noqa: BLE001
+            return
+        session_key = event.unified_msg_origin
+        on = self.debug.toggle(session_key)
+        logger.info(f"[ai_mind] 调试模式{'开启' if on else '关闭'}：{session_key}")
+        text = DEBUG_ON_TEXT if on else DEBUG_OFF_TEXT
+        try:
+            await self.context.send_message(session_key, [Comp.Plain(text)])
+        except Exception:  # noqa: BLE001
+            try:
+                await event.send(event.plain_result(text))
+            except Exception:  # noqa: BLE001
+                pass
+        event.stop_event()          # 口令本身绝不该发给模型
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_guard_message(self, event: AstrMessageEvent):
