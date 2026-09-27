@@ -25,6 +25,7 @@ from .emotion.engine import Settings as EmotionSettings
 from .memory.config import Settings as MemorySettings
 from .memory.config import cfg_get
 from .guard import DEFAULT_TOOL_BLACKLIST
+from .debounce import DebounceSettings
 
 
 def _f(value: Any, default: float, low: float, high: float) -> float:
@@ -403,6 +404,7 @@ class MindSettings:
     guard: GuardSettings = None  # type: ignore[assignment]
     style: StyleSettings = None  # type: ignore[assignment]
     privacy: PrivacySettings = None  # type: ignore[assignment]
+    debounce: DebounceSettings = None  # type: ignore[assignment]
 
     @staticmethod
     def from_config(
@@ -413,6 +415,7 @@ class MindSettings:
         guard: Mapping[str, Any] | None = None,
         style: Mapping[str, Any] | None = None,
         privacy: Mapping[str, Any] | None = None,
+        debounce: Mapping[str, Any] | None = None,
     ) -> "MindSettings":
         emotion_raw = dict(cfg_get(config, "emotion", {}) or {})
         # 面板上填的"专属用户 / 称呼"盖在配置之上：不懂 JSON 的人也能认人
@@ -441,6 +444,7 @@ class MindSettings:
             guard=GuardSettings.from_config(config, guard),
             style=StyleSettings.from_config(config, style),
             privacy=PrivacySettings.from_config(config, privacy),
+            debounce=DebounceSettings.from_config(config, debounce),
         )
 
 
@@ -448,6 +452,7 @@ __all__ = [
     "HUMANIZE_MODE_LABELS",
     "HUMANIZE_MODES",
     "GuardSettings",
+    "DebounceSettings",
     "PrivacySettings",
     "StyleSettings",
     "HumanizeSettings",

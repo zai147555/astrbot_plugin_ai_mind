@@ -105,6 +105,7 @@
     <button id="tab-images" data-adv="1">关键词配图</button>
     <button id="tab-persona">人格定制</button>
     <button id="tab-split">分段拟人</button>
+    <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
     <button id="tab-theory" data-adv="1">理论</button>
     <button id="tab-style">表达</button>
@@ -781,6 +782,50 @@
       </div>
     </div>
   </div>
+  <!-- ================= 消息防抖 ================= -->
+  <div id="view-debounce" style="display:none">
+    <div class="card">
+      <h3 style="margin-bottom:8px">消息防抖</h3>
+      <div class="small muted">
+        用户连着发好几条的时候，先攒一攒再交给她 —— 她就不会在你话说到一半的时候抢答。
+      </div>
+      <div id="db-status" class="small" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary small" id="db-toggle">打开防抖</button>
+        <button class="ghost small" id="db-goto-settings">改参数</button>
+        <span class="grow"></span>
+        <span class="small muted">参数在「上手 → 全部功能设置 → 消息防抖」里</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">试判一下</h3>
+      <div class="small muted">写一句用户可能会发的话，看它是「立刻发」还是「先等一等」。只算不发。</div>
+      <textarea id="db-sample" style="width:100%;min-height:70px;margin-top:6px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="db-preview">试判</button>
+        <button class="ghost small" id="db-fill">填一句例子</button>
+        <span class="grow"></span>
+        <span class="small muted" id="db-preview-status"></span>
+      </div>
+      <div id="db-preview-out" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">它怎么判的</h3>
+      <div class="small muted">
+        原版 astrbot_plugin_debounce 用一个微调过的模型判断「说完了没」；本插件坚持零第三方依赖，
+        所以换成了本地规则 —— 看结尾标点、看是不是停在连接词上、看长度。规则不如模型准，
+        但不用下模型、也不额外花时间，而且<b>判不准时默认放行</b>：宁可早回一句，也不能把话吞了。
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        结尾是「，」「、」，或者停在「然后」「因为」这种连接词上 → 等 2 个窗口；
+        短句又没有句末标点 → 等 1 个窗口；结尾是「。！」「吗」「吧」，或者已经够长 → 立刻发。
+        等的过程中用户补了新消息就并进来，攒够上限或超过总时长就直接发。
+      </div>
+    </div>
+  </div>
+
   <!-- ================= 去 AI 味 ================= -->
   <div id="view-humanize" style="display:none">
     <div class="card">
@@ -1881,6 +1926,26 @@
     $("tab-split").onclick = function () {
       setView("split");
       loadSplitter().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("tab-debounce").onclick = function () {
+      setView("debounce");
+      loadDebounce().catch(function (e) { toast("加载失败：" + e.message); });
+    };
+    $("db-fill").onclick = function () { $("db-sample").value = "今天晚上"; };
+    $("db-preview").onclick = runDebouncePreview;
+    $("db-toggle").onclick = function () {
+      var conf = (state.debounce && state.debounce.settings) || {};
+      dbSave({ enabled: !conf.enabled })
+        .then(function () { toast(conf.enabled ? "已关掉防抖" : "已打开防抖"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("db-goto-settings").onclick = function () {
+      setView("wizard");
+      var body = $("st-groups");
+      if (body) body.style.display = "";
+      var fold = $("wz-fold-settings");
+      if (fold) fold.textContent = "折叠";
+      if (body && body.scrollIntoView) body.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     $("tab-humanize").onclick = function () {
       setView("humanize");
@@ -3873,6 +3938,84 @@
       .catch(function (e) { toast("还原失败：" + e.message); });
   }
 
+  // ---------------- 消息防抖 ----------------
+  var DB_VERDICT_LABEL = {
+    send: "立刻发",
+    grace: "等一小会儿",
+    hold: "等你说完",
+    disabled: "防抖关着（立刻发）"
+  };
+
+  function renderDebounceState(data) {
+    state.debounce = data || {};
+    var conf = (data && data.settings) || {};
+    var on = !!conf.enabled;
+    $("db-status").innerHTML =
+      '<b style="color:' + (on ? "#3ddc97" : "#ff8080") + '">' +
+      (on ? "● 开着" : "○ 关着") + "</b> ｜ " +
+      escapeText((data && data.describe) || "");
+    $("db-status").innerHTML +=
+      '<div class="small muted" style="margin-top:6px">' +
+      (on
+        ? "看着没说完的消息会先攒一攒，用户补一句就并进来。"
+        : "现在所有消息都是立刻发 —— 想让机器人等你把话说完，点左边的按钮。") +
+      "</div>";
+    $("db-toggle").textContent = on ? "关掉防抖" : "打开防抖";
+    $("db-toggle").className = on ? "ghost small" : "primary small";
+  }
+
+  function escapeText(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function loadDebounce() {
+    return request("debounce", "GET").then(function (data) {
+      renderDebounceState(data);
+      return data;
+    });
+  }
+
+  function dbSave(payload) {
+    return request("debounce/save", "POST", { settings: payload }).then(function (data) {
+      renderDebounceState(data);
+      return data;
+    });
+  }
+
+  function renderDebouncePreview(data) {
+    var verdict = data.verdict;
+    var label = DB_VERDICT_LABEL[verdict] || verdict;
+    var color = (verdict === "hold") ? "#ffb84d" : (verdict === "grace" ? "#6fb3ff" : "#3ddc97");
+    var html = '<div style="font-size:15px"><b style="color:' + color + '">' + label + "</b>";
+    if (data.wait_seconds > 0) {
+      html += ' <span class="small muted">大约等 ' + data.wait_seconds + " 秒";
+      html += "（" + data.windows + " 个窗口 x " + data.grace_seconds + " 秒）</span>";
+    } else {
+      html += ' <span class="small muted">不等</span>';
+    }
+    html += "</div>";
+    html += '<div class="small muted" style="margin-top:6px">' + escapeText(data.note || "") + "</div>";
+    html += '<div class="small muted" style="margin-top:6px">判定依据：' +
+      (data.incomplete ? "结尾没说完" : (data.complete ? "看着说完了" : "拿不准")) + "</div>";
+    $("db-preview-out").innerHTML = html;
+  }
+
+  function runDebouncePreview() {
+    var text = $("db-sample").value;
+    if (!text || !text.trim()) { toast("先写一句话再试判"); return; }
+    $("db-preview-status").textContent = "判断中…";
+    request("debounce/preview", "POST", { text: text })
+      .then(function (data) {
+        renderDebouncePreview(data);
+        $("db-preview-status").textContent = "";
+      })
+      .catch(function (e) {
+        $("db-preview-status").textContent = "试判失败：" + e.message;
+        toast("试判失败：" + e.message);
+      });
+  }
+
   // 五个页签的显隐/高亮只有这一处，免得以后再加页签时漏掉某个视图。
   function setView(name) {
     var views = {
@@ -3880,7 +4023,7 @@
       memory: "view-memory", graph: "view-graph",
       images: "view-images", persona: "view-persona", split: "view-split",
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
-      style: "view-style", wizard: "view-wizard"
+      style: "view-style", wizard: "view-wizard", debounce: "view-debounce"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);
