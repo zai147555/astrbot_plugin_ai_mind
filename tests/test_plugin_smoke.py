@@ -3929,3 +3929,37 @@ class DeniedMemoryFilterTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class CurveDiagnosticsTest(PluginHarness, unittest.TestCase):
+    """画不出曲线时，面板要能说清楚卡在哪一步。"""
+
+    def test_payload_carries_the_counts(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "今天好累啊")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE, "hours": "72"}))["data"]
+            for key in ("sample_count", "sample_total", "samples_broken", "curve_source"):
+                self.assertIn(key, data, f"面板要用 {key} 来判断该显示哪句提示")
+            self.assertGreater(data["sample_count"], 0, "聊过之后本会话该有采样点")
+            self.assertFalse(data["samples_broken"])
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_broken_store_is_reported_not_silent(self) -> None:
+        """采样表坏掉时要报出来，而不是静默地什么都不写。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.samples.conn = None          # 模拟曲线表没建起来
+            await self.send(plugin, "喂")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertTrue(data["samples_broken"], "要如实报告采样不可用")
+            warnings = [r for r in self.log.records if r[0] == "warning" and "曲线" in r[1]]
+            self.assertTrue(warnings, f"要留下能查的日志：{self.log.records[-5:]}")
+            await plugin.terminate()
+
+        self.run_async(scenario())
