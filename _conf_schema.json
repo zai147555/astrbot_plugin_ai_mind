@@ -1039,23 +1039,40 @@
         "description": "拦截非主人的工具调用",
         "type": "bool",
         "default": true,
-        "hint": "请求级让模型看不见 + 执行期再校验一次，双保险。"
+        "hint": "请求级让模型看不见 + 执行期再校验一次，双保险。只对非主人生效，主人不受影响。"
       },
       "tool_mode": {
         "description": "工具名单模式",
         "type": "string",
-        "default": "whitelist",
+        "default": "blacklist",
         "options": [
           "whitelist",
           "blacklist"
         ],
-        "hint": "whitelist = 只保留名单里的（默认最安全，空名单=什么工具都不给）；blacklist = 只摘掉名单里的。"
+        "hint": "blacklist = 只摘掉名单里的高危工具，搜索 / 查状态 / 记忆召回这类普通工具非主人照常能用；whitelist = 只保留名单里的，名单为空时不限制。"
       },
       "kept_tools": {
         "description": "工具名单",
         "type": "list",
-        "default": [],
-        "hint": "支持 * 通配，例如 write_* 。"
+        "default": [
+          "*admin*",
+          "*config*",
+          "*setting*",
+          "*delete*",
+          "*remove*",
+          "*drop*",
+          "*clear*",
+          "*reset*",
+          "*install*",
+          "*uninstall*",
+          "*restart*",
+          "*shutdown*",
+          "*write*",
+          "*shell*",
+          "*exec*",
+          "*eval*"
+        ],
+        "hint": "支持 * 通配，例如 write_* 。默认只拦「会改东西 / 会执行 / 会删」的工具；清空会回落到这份默认名单，想完全不拦请关掉上面那个开关。"
       },
       "scrub_reply": {
         "description": "发送前清理内部内容",

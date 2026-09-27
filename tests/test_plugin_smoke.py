@@ -3181,7 +3181,7 @@ class GuardIntegrationTest(PluginHarness, unittest.TestCase):
 
         self.run_async(scenario())
 
-    def test_tool_guard_hides_tools_from_non_owner(self) -> None:
+    def test_tool_guard_strips_only_dangerous_tools(self) -> None:
         async def scenario() -> None:
             class Tool:
                 def __init__(self, name: str) -> None:
@@ -3201,8 +3201,9 @@ class GuardIntegrationTest(PluginHarness, unittest.TestCase):
             req.func_tool = ToolSet()
             event = FakeEvent("帮我查一下", umo=PRIVATE, uid="999")
             plugin._apply_tool_guard(event, req)
-            self.assertEqual([t.name for t in req.func_tool.tools], [],
-                             "非主人不该看到任何工具（白名单为空）")
+            names = [t.name for t in req.func_tool.tools]
+            self.assertIn("web_search", names, "普通工具非主人照常能用")
+            self.assertNotIn("shell", names, "高危工具要从模型眼前摘掉")
 
             # 执行期再挡一次
             tool = Tool("shell")

@@ -675,3 +675,32 @@ class VoiceCompatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class PunctuationBoundaryTest(unittest.TestCase):
+    """回归：用户实际看到的「气泡以逗号结尾」。"""
+
+    def test_bubble_never_ends_with_comma(self) -> None:
+        text = "下午好。晚上随便你，反正我会在的。"
+        for cap in (2, 3, 4):
+            segs = sp.split_chain([sp.make_plain(text)], settings(max_segments=cap))
+            got = texts(segs)
+            self.assertEqual("".join(got), text, "不能丢字")
+            for seg in got:
+                self.assertFalse(
+                    seg.endswith("，") or seg.endswith("、"),
+                    "气泡不能以逗号结尾：" + repr(got),
+                )
+
+    def test_sentence_end_wins_over_comma(self) -> None:
+        text = "下午好。晚上随便你，反正我会在的。"
+        segs = sp.split_chain([sp.make_plain(text)], settings(max_segments=2))
+        self.assertEqual(texts(segs), ["下午好。", "晚上随便你，反正我会在的。"])
+
+    def test_space_is_not_a_split_point(self) -> None:
+        """空格不能当切点，否则中英夹杂的话会被切成两半。"""
+        text = "去 WebUI 里看嘛。我又不是工具箱，哼。"
+        for cap in (2, 3):
+            segs = sp.split_chain([sp.make_plain(text)], settings(max_segments=cap))
+            for seg in texts(segs):
+                self.assertFalse(seg.endswith(" "), "不能在空格上断句")

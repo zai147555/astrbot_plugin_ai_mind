@@ -24,6 +24,7 @@ from typing import Any, Mapping
 from .emotion.engine import Settings as EmotionSettings
 from .memory.config import Settings as MemorySettings
 from .memory.config import cfg_get
+from .guard import DEFAULT_TOOL_BLACKLIST
 
 
 def _f(value: Any, default: float, low: float, high: float) -> float:
@@ -234,10 +235,10 @@ class GuardSettings:
     block_all_commands: bool = False
     #: 拦截后回一句（留空就静默不理）
     reply: str = "这个我不能帮你做。"
-    #: 工具调用拦截
+    #: 工具调用拦截：默认只拦高危工具（见 guard.DEFAULT_TOOL_BLACKLIST）
     block_tools: bool = True
-    tool_mode: str = "whitelist"
-    kept_tools: list[str] = field(default_factory=list)
+    tool_mode: str = "blacklist"
+    kept_tools: list[str] = field(default_factory=lambda: list(DEFAULT_TOOL_BLACKLIST))
     #: 发送前护栏：把内部标记和"说破机制"的话清掉
     scrub_reply: bool = True
     #: 额外要拦的正则
@@ -250,9 +251,17 @@ class GuardSettings:
         raw = dict(cfg_get(config, "guard", {}) or {})
         if overrides:
             raw.update({k: v for k, v in overrides.items() if v is not None})
-        mode = str(raw.get("tool_mode") or "whitelist").strip().lower()
+        mode = str(raw.get("tool_mode") or "blacklist").strip().lower()
         if mode not in ("whitelist", "blacklist"):
-            mode = "whitelist"
+            mode = "blacklist"
+        kept = _str_list(raw.get("kept_tools"))
+        if not kept:
+            # 名单空着 = 没配过（或者是从老版本升上来的）。
+            # 白名单为空会让非主人一个工具都用不了（连「检查插件状态」都被摘），
+            # 黑名单为空又等于完全不拦 —— 两种都不是用户想要的，
+            # 一律回落到默认高危名单。真想完全不拦，请关掉 block_tools。
+            mode = "blacklist"
+            kept = list(DEFAULT_TOOL_BLACKLIST)
         return GuardSettings(
             enabled=_b(raw.get("enabled"), True),
             extra_masters=_str_list(raw.get("extra_masters")),
@@ -262,7 +271,7 @@ class GuardSettings:
             reply=str(raw.get("reply") if raw.get("reply") is not None else "这个我不能帮你做。"),
             block_tools=_b(raw.get("block_tools"), True),
             tool_mode=mode,
-            kept_tools=_str_list(raw.get("kept_tools")),
+            kept_tools=kept,
             scrub_reply=_b(raw.get("scrub_reply"), True),
             extra_patterns=_str_list(raw.get("extra_patterns")),
             allow_patterns=_str_list(raw.get("allow_patterns")),
