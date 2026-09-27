@@ -3126,13 +3126,21 @@
       ? pending.map(function (item) { return syItem(item, true); }).join("")
       : "<div class='empty'>待审队列是空的。她表现好的回复会自动攒到这里。</div>";
 
-    $("sy-filter").innerHTML = [["", "全部状态"]].concat(
+    // 选项只在真的变了才重建。重建 <select> 的 innerHTML 会把用户手选的
+    // 值冲回第一项 —— onchange 又会触发一次 render，于是「选完之后下拉框
+    // 自己跳回『全部状态』」，列表筛过了但框里显示的是全部。
+    var filter = $("sy-filter");
+    var keep = filter.value || "";
+    var options = [["", "全部状态"]].concat(
       (data.statuses || []).map(function (key) {
         return [key, (data.status_labels || {})[key] || key];
       })
     ).map(function (pair) {
       return "<option value='" + esc(pair[0]) + "'>" + esc(pair[1]) + "</option>";
     }).join("");
+    if (filter.innerHTML !== options) filter.innerHTML = options;
+    filter.value = keep;
+    if (filter.value !== keep) filter.value = "";
     $("sy-all-list").innerHTML = items.length
       ? items.map(function (item) { return syItem(item, true); }).join("")
       : "<div class='empty'>还没有任何示例。</div>";

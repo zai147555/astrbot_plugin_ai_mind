@@ -100,6 +100,7 @@ def render_relationship_block(
     group: bool = False,
     min_messages: int = 1,
     discretion: bool = True,
+    stable: bool = False,
 ) -> str:
     """渲染「正在跟你说话的人是谁」。
 
@@ -122,11 +123,15 @@ def render_relationship_block(
     if special:
         label = str(snapshot.special_label or "").strip() or "特别的人"
         lines = [f"现在跟你说话的人是 {who} —— 他是你的{label}。"]
-        lines.append(
-            f"你们已经聊过 {count} 次，好感度 {relation.affinity:.0f}/100"
-            f"「{snapshot.affinity_title()}」，熟悉度 {relation.familiarity:.0f}/100"
-            f"「{snapshot.familiarity_title()}」。"
-        )
+        if not stable:
+            # 这些数字每轮都在变（聊过几次、好感度涨没涨），
+            # stable=True 时留给 render_relationship_meter 贴到请求最后，
+            # 免得把前面的历史记录一起拖出缓存。
+            lines.append(
+                f"你们已经聊过 {count} 次，好感度 {relation.affinity:.0f}/100"
+                f"「{snapshot.affinity_title()}」，熟悉度 {relation.familiarity:.0f}/100"
+                f"「{snapshot.familiarity_title()}」。"
+            )
         lines.append("你早就认识他，别问「你是谁」，也别让他自报姓名、报上名号。")
         if group and discretion:
             lines.append(
@@ -135,13 +140,36 @@ def render_relationship_block(
             )
     else:
         lines = [f"现在跟你说话的人是 {who}。"]
-        lines.append(
-            f"你们聊过 {count} 次，好感度 {relation.affinity:.0f}/100"
-            f"「{snapshot.affinity_title()}」。"
-        )
+        if not stable:
+            lines.append(
+                f"你们聊过 {count} 次，好感度 {relation.affinity:.0f}/100"
+                f"「{snapshot.affinity_title()}」。"
+            )
         lines.append("你认识他，不用问他是谁。")
     lines.append("怎么称呼他、用什么态度，完全按你原本的设定来 —— 这里只告诉你他是谁。")
     return "<relationship>\n" + "\n".join(lines) + "\n</relationship>"
+
+
+def render_relationship_meter(snapshot: Snapshot) -> str:
+    """关系读数：**每轮都会变**的那部分（聊过几次、好感度、熟悉度）。
+
+    单独拆出来是为了前缀缓存：这一坨必须贴在请求的最后，绝不能混进
+    System Prompt 或受信任位 —— 否则每轮一变，后面的历史记录全部落不进缓存。
+    身份呢？在 render_relationship_block(stable=True) 里，那部分是不变的。
+    """
+    relation = snapshot.relation
+    if relation is None:
+        return ""
+    count = int(getattr(relation, "msg_count", 0) or 0)
+    affinity = float(getattr(relation, "affinity", 0.0) or 0.0)
+    familiarity = float(getattr(relation, "familiarity", 0.0) or 0.0)
+    return (
+        "<relationship_meter>\n"
+        f"跟 TA 聊过 {count} 次 · 好感度 {affinity:.0f}/100"
+        f"「{snapshot.affinity_title()}」 · 熟悉度 {familiarity:.0f}/100"
+        f"「{snapshot.familiarity_title()}」\n"
+        "</relationship_meter>"
+    )
 
 
 def render_trace(snapshot: Snapshot, limit: int = 4) -> str:

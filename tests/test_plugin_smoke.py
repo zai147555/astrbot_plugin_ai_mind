@@ -527,7 +527,10 @@ class PluginHarness:
     @staticmethod
     def all_injected(req) -> str:
         """本轮注入给模型的全部内容：用户消息附加块 + 系统级受信任位。"""
-        parts = [getattr(p, "text", "") for p in getattr(req, "extra_user_content_parts", [])]
+        parts = [
+            getattr(p, "text", "")
+            for p in (getattr(req, "extra_user_content_parts", None) or [])
+        ]
         for item in getattr(req, "contexts", []) or []:
             content = item.get("content") if isinstance(item, dict) else None
             if isinstance(content, str):
@@ -996,15 +999,20 @@ class MergedPluginTest(PluginHarness, unittest.TestCase):
         self.run_async(scenario())
 
     def test_gallery_is_injected_into_system_prompt(self) -> None:
-        """不把可用图清单告诉模型，它压根不知道"点图"这回事。"""
+        """不把可用图清单告诉模型，它压根不知道"点图"这回事。
+
+        放在哪一段不重要（默认贴在消息最后，理由见 PrefixCacheTest），
+        重要的是模型真的能看见。
+        """
         async def scenario() -> None:
             plugin = self.make_plugin()
             await plugin.initialize()
             await self.upload_image(plugin, keywords="晚安")
             req = await self.send(plugin, "在吗")
-            self.assertIn("<available_images>", req.system_prompt)
-            self.assertIn("晚安", req.system_prompt)
-            self.assertIn("<pic>关键词</pic>", req.system_prompt)
+            seen = (req.system_prompt or "") + self.all_injected(req)
+            self.assertIn("<available_images>", seen)
+            self.assertIn("晚安", seen)
+            self.assertIn("<pic>关键词</pic>", seen)
             # 顺带盯住"异常被外层兜住、只留日志"这种静默失败
             errors = [r for r in self.log.records if r[0] == "error"]
             self.assertEqual(errors, [], f"注入图库时出错了：{errors}")
@@ -3652,6 +3660,102 @@ class RelationshipEditTest(PluginHarness, unittest.TestCase):
             await self.send(plugin, "你好", uid=self.UID)
             out = await self.api(plugin, "relationship/relation", body={"uid": self.UID})
             self.assertFalse(out["ok"], "没给数值就该拒绝")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+
+class PrefixCacheTest(PluginHarness, unittest.TestCase):
+    """前缀缓存：两轮之间开头必须一模一样，否则 DeepSeek 一次都命中不了。
+
+    以前情绪块、认人块塞在 System Prompt 后面的受信任位，每轮都变 ——
+    前缀一破，后面的整段历史全都落不进缓存，越聊越贵也越聊越慢。
+    """
+
+    @staticmethod
+    def prefix_of(req) -> str:
+        """前缀 = System Prompt + 受信任位（历史记录之前的那一段）。"""
+        parts = [req.system_prompt or ""]
+        for item in getattr(req, "contexts", []) or []:
+            content = item.get("content") if isinstance(item, dict) else None
+            if isinstance(content, str):
+                parts.append(content)
+        return "\n".join(parts)
+
+    @staticmethod
+    def tail_of(req) -> str:
+        """贴在当前用户消息后面的那一坨。"""
+        return "".join(
+            getattr(p, "text", "") for p in getattr(req, "extra_user_content_parts", [])
+        )
+
+    def test_prefix_is_byte_identical_across_turns(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            first = await self.send(plugin, "你好")
+            second = await self.send(plugin, "今天过得怎么样")
+            self.assertEqual(
+                self.prefix_of(first), self.prefix_of(second),
+                "两轮的开头必须一模一样，否则前缀缓存一次都命中不了",
+            )
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_dynamic_blocks_land_in_tail(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            req = await self.send(plugin, "你好")
+            tail = self.tail_of(req)
+            self.assertIn("<emotion_state>", tail, "情绪块要贴到尾部")
+            self.assertNotIn("<emotion_state>", self.prefix_of(req), "不能留在前缀里")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_identity_is_split_into_stable_and_meter(self) -> None:
+        """不变的身份留在受信任位，会变的数字贴到尾部。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            req = await self.send(plugin, "你好")
+            prefix = self.prefix_of(req)
+            self.assertIn("<relationship>", prefix, "身份还是要留在受信任位")
+            self.assertNotIn("好感度", prefix, "会变的数字不该出现在前缀里")
+            self.assertIn("<relationship_meter>", self.tail_of(req))
+            self.assertIn("好感度", self.tail_of(req))
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_turning_it_off_restores_old_position(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin({"advanced": {"cache_friendly": False}})
+            await plugin.initialize()
+            req = await self.send(plugin, "你好")
+            self.assertIn("<emotion_state>", self.all_injected(req), "退回受信任位")
+            self.assertEqual(self.tail_of(req), "", "旧行为下尾部是空的")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_tail_failure_falls_back_instead_of_losing_content(self) -> None:
+        """附加到用户消息失败时，宁可少省点 token，也不能把情绪弄丢。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            req = await self.send(plugin, "你好")
+            # 模拟新版本 AstrBot 改了字段名
+            req.extra_user_content_parts = None
+            await plugin.on_llm_request(FakeEvent("再来一句"), req)
+            self.assertIn(
+                "<emotion_state>", self.all_injected(req),
+                "尾部贴不上去就得退回受信任位，绝不能静默丢掉",
+            )
             await plugin.terminate()
 
         self.run_async(scenario())

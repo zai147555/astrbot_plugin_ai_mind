@@ -394,6 +394,8 @@ class MindSettings:
     commands_enabled: bool = True
     admin_only_mutations: bool = True
     debug_log: bool = False
+    #: 省 token：把每轮都变的内容贴到请求最后，让前缀缓存能命中
+    cache_friendly: bool = True
     maintenance_interval: float = 20.0
 
     emotion: EmotionSettings = None  # type: ignore[assignment]
@@ -433,6 +435,7 @@ class MindSettings:
             commands_enabled=_b(cfg_get(config, "commands.enabled", True), True),
             admin_only_mutations=_b(cfg_get(config, "commands.admin_only_mutations", True), True),
             debug_log=_b(cfg_get(config, "advanced.debug_log", False), False),
+            cache_friendly=_b(cfg_get(config, "advanced.cache_friendly", True), True),
             maintenance_interval=_f(
                 cfg_get(config, "advanced.maintenance_interval", 20), 20.0, 5.0, 600.0
             ),

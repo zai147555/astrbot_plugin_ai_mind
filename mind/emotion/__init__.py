@@ -59,6 +59,7 @@ from .prompt import (
     RULES_MARKER,
     build_injection,
     render_relationship_block,
+    render_relationship_meter,
     render_state_block,
     render_trace,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "affinity_tier",
     "build_injection",
     "render_relationship_block",
+    "render_relationship_meter",
     "cfg_get",
     "clamp",
     "classify",
