@@ -2728,12 +2728,40 @@
       this.value = "";
       if (scope) bulkAction("scope", { scope: scope });
     };
+    // 「关于谁」：手动加记忆时指定这条记的是谁。
+    // 后端本来就收 owner_id，只是面板一直没送 —— 于是手动加的全成了「本人」。
+    (function () {
+      var anchor = $("maddkind") ? $("maddkind").closest("label") : null;
+      if (!anchor || !anchor.parentNode || $("maddwho")) return;
+      var sel = document.createElement("select");
+      sel.id = "maddwho";
+      sel.title = "这条记忆是关于谁的；选「全局」就是跟谁都无关的事实";
+      sel.innerHTML = '<option value="">关于：默认（本人）</option>' +
+        '<option value="__global__">关于：全局</option>';
+      anchor.parentNode.insertBefore(sel, anchor);
+    })();
+
     $("maddbtn").onclick = function () {
       var v = $("madd").value.trim();
       if (v.length < 2) { toast("内容太短"); return; }
-      request("memory/add", "POST", {
-        content: v, kind: $("maddkind").value, pinned: $("maddpin").checked, importance: 0.9
-      }).then(function (res) {
+      // 把本会话出现过的人填进「关于谁」（面板数据里就有）
+      var who = $("maddwho");
+      if (who) {
+        var users = (state.data && state.data.users) || [];
+        var keep = who.value;
+        var opts = '<option value="">关于：默认（本人）</option>'
+          + '<option value="__global__">关于：全局</option>';
+        users.forEach(function (u) {
+          opts += '<option value="' + esc(u.uid) + '">关于：' + esc(u.name || u.uid) + '</option>';
+        });
+        who.innerHTML = opts;
+        who.value = keep;
+      }
+      var body = { content: v, kind: $("maddkind").value, pinned: $("maddpin").checked, importance: 0.9 };
+      var picked = who ? who.value : "";
+      if (picked === "__global__") { body.scope = "global"; }
+      else if (picked) { body.scope = "user"; body.owner_id = picked; }
+      request("memory/add", "POST", body).then(function (res) {
         $("madd").value = "";
         toast(res && res.sensitive ? "已添加（判定为敏感，仅本人私聊可见）" : "已添加");
         state.memOffset = 0;
