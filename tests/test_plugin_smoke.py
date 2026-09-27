@@ -4513,3 +4513,19 @@ class DebugModeTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+    def test_last_resort_writes_when_everything_else_is_dead(self) -> None:
+        """现有连接、来源、备用连接全废时，最后一招也要把数据写进去。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            before = plugin.samples.count()
+            plugin.store._conn.close()          # 主连接死了
+            plugin.samples._spare_conn = None
+            plugin.samples._source = None       # 来源也不给了
+            plugin.samples.append(PRIVATE, 1.0, __import__("mind.emotion.model", fromlist=["PAD"]).PAD(), "auto")
+            self.assertGreater(plugin.samples.count(), before, "最后一招得写进去")
+            await plugin.terminate()
+
+        self.run_async(scenario())

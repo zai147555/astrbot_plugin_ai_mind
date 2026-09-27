@@ -69,6 +69,7 @@ class SampleStore(ConnectionSource):
         #: 最近一次写失败的原因。面板要拿它说话 —— 光说「采样没生效」
         #: 帮不上忙，得说清是 database is locked 还是表没建起来。
         self.last_error = ""
+        self._isolated_warned = False
         # 建表交给 ConnectionSource：谁取连接谁顺手建，
         # 构造那一刻连不上的话也不会漏掉这张表。
         self.ensure_schema()
@@ -81,6 +82,17 @@ class SampleStore(ConnectionSource):
         try:
             return self.execute(sql, params)
         except (sqlite3.Error, OSError) as exc:
+            # 现有连接、来源、备用连接全不行了 —— 自己单开一个把这条跑完。
+            # 曲线不该因为连接对象的生命周期问题而永远是空的。
+            cursor = self.run_isolated(sql, params)
+            if cursor is not None:
+                if not self._isolated_warned:
+                    self._isolated_warned = True
+                    if self.logger is not None:
+                        self.logger.warning(
+                            f"[ai_mind] 曲线连接已失效（{exc}），改用自带连接继续写"
+                        )
+                return cursor
             self.last_error = f"曲线 SQL 失败：{exc}"
             if self.logger is not None:
                 self.logger.warning(f"[ai_mind] {self.last_error}")
