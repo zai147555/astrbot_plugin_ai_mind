@@ -1,89 +1,239 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN" data-theme="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>心智面板 · 情绪与记忆</title>
 <style>
+  /* ===================== 设计令牌 ===================== */
   :root {
-    --bg: #f5f6f8; --card: #ffffff; --fg: #1f2430; --muted: #6b7280;
-    --line: #e5e7eb; --accent: #6366f1; --accent-fg: #ffffff;
+    --bg: #f4f5f9; --bg-soft: #eceef4; --card: #ffffff; --card-2: #fafbfd;
+    --fg: #1c2028; --muted: #6b7280;
+    --line: #e3e6ed; --line-strong: #d2d7e2;
+    --accent: #6366f1; --accent-2: #8b5cf6; --accent-fg: #ffffff;
+    --accent-soft: rgba(99,102,241,.1);
     --p: #ec4899; --a: #f59e0b; --d: #3b82f6;
     --ok: #10b981; --warn: #f59e0b; --danger: #ef4444;
-    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1);
+    --shadow-1: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --shadow-2: 0 6px 18px rgba(16,24,40,.07), 0 2px 6px rgba(16,24,40,.05);
+    --hover: rgba(16,24,40,.045);
+    --radius: 14px; --radius-sm: 10px;
   }
+  /* 深色：手动切到深色，或者「跟随系统」时系统是深色 */
   html[data-theme="dark"] {
-    --bg: #0f1115; --card: #171a21; --fg: #e6e8ee; --muted: #9aa3b2;
-    --line: #262b36; --accent: #818cf8; --accent-fg: #10131a;
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+    --bg: #0e1016; --bg-soft: #171a22; --card: #161a22; --card-2: #1b2029;
+    --fg: #e7e9f0; --muted: #98a1b2;
+    --line: #262c38; --line-strong: #333b4a;
+    --accent: #818cf8; --accent-2: #a78bfa; --accent-fg: #0e1016;
+    --accent-soft: rgba(129,140,248,.14);
+    --hover: rgba(255,255,255,.07);
+    --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
+    --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
   }
+  @media (prefers-color-scheme: dark) {
+    html[data-theme="auto"] {
+      --bg: #0e1016; --bg-soft: #171a22; --card: #161a22; --card-2: #1b2029;
+      --fg: #e7e9f0; --muted: #98a1b2;
+      --line: #262c38; --line-strong: #333b4a;
+      --accent: #818cf8; --accent-2: #a78bfa; --accent-fg: #0e1016;
+      --accent-soft: rgba(129,140,248,.14);
+      --hover: rgba(255,255,255,.07);
+      --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
+      --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
+    }
+  }
+
+  /* ===================== 基础 ===================== */
   * { box-sizing: border-box; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong); border-radius: 999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
   body {
-    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
-    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 18px;
+    background: var(--bg); color: var(--fg);
+    background-image: radial-gradient(900px 320px at 50% -160px, var(--accent-soft), transparent 72%);
+    background-attachment: fixed; background-repeat: no-repeat;
+    font: 14px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
-  h1, h2, h3 { margin: 0; font-weight: 650; }
+  h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: .005em; }
+  h3 { font-size: 15px; }
   .wrap { max-width: 1180px; margin: 0 auto; }
-  .top { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .top h1 { font-size: 18px; margin-right: auto; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 14px; box-shadow: var(--shadow); margin-bottom: 14px;
+
+  /* ===================== 顶栏 ===================== */
+  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .top h1 { font-size: 18px; margin-right: auto; display: flex; align-items: center; gap: 6px; }
+  .top select { min-width: 200px; }
+
+  /* ===================== 页签 ===================== */
+  /* 手机上一行放不下十几个页签：以前会被挤成一列竖排的字，
+     现在改成横向滚动 + 不换行，滑一下就能看到后面的。 */
+  .tabs {
+    display: flex; gap: 6px; margin-bottom: 16px;
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; -ms-overflow-style: none;
+    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+    padding: 2px 2px 4px; margin-left: -2px;
   }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button {
+    flex: 0 0 auto; white-space: nowrap; scroll-snap-align: start;
+    padding: 7px 15px; border-radius: 999px;
+    border-color: transparent; background: transparent;
+    color: var(--muted); font-weight: 500;
+  }
+  .tabs button:hover { background: var(--accent-soft); color: var(--fg); border-color: transparent; }
+  .tabs button.on {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff; border-color: transparent;
+    box-shadow: 0 2px 10px rgba(99,102,241,.3);
+  }
+  html[data-theme="dark"] .tabs button.on { color: var(--accent-fg); }
+
+  /* ===================== 卡片 ===================== */
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; box-shadow: var(--shadow-1); margin-bottom: 14px;
+    transition: box-shadow .18s ease, border-color .18s ease;
+  }
+  @media (hover: hover) {
+    .card:hover { box-shadow: var(--shadow-2); border-color: var(--line-strong); }
+  }
+
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .grow { flex: 1 1 auto; }
-  button, select, input[type=text], input[type=search], textarea {
+
+  /* ===================== 控件 ===================== */
+  button, select, input[type=text], input[type=search], input[type=number], textarea {
     font: inherit; color: var(--fg); background: var(--card);
-    border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; outline: none;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 7px 12px; outline: none;
+    transition: background .15s, border-color .15s, box-shadow .15s, color .15s;
   }
-  button { cursor: pointer; transition: filter .12s; }
-  button:hover { filter: brightness(1.06); }
-  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-  button.ghost { background: transparent; }
-  button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
-  button.on { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
-  .tabs button { padding: 8px 18px; border-radius: 999px; }
+  select { padding-right: 8px; cursor: pointer; }
+  input[type=number] { text-align: center; }
+  input:hover, select:hover, textarea:hover { border-color: var(--line-strong); }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  button { cursor: pointer; font-weight: 500; }
+  button:hover { background: var(--hover); border-color: var(--line-strong); }
+  button:active { transform: translateY(1px); }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff; border-color: transparent;
+    box-shadow: 0 1px 3px rgba(99,102,241,.32);
+  }
+  html[data-theme="dark"] button.primary { color: var(--accent-fg); }
+  button.primary:hover { filter: brightness(1.07); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+  button.ghost { background: transparent; color: var(--muted); border-color: var(--line); }
+  button.ghost:hover { background: var(--accent-soft); color: var(--fg); }
+  button.danger { color: var(--danger); border-color: var(--line); background: transparent; }
+  button.danger:hover { background: rgba(239,68,68,.1); border-color: var(--danger); }
+  button.on {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff; border-color: transparent;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
   .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* ===================== 布局 ===================== */
   .grid2 { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; }
   @media (max-width: 940px) { .grid2 { grid-template-columns: 1fr; } }
-  .bignum { font-size: 34px; line-height: 1.15; font-weight: 700; }
+  .bignum { font-size: 34px; line-height: 1.15; font-weight: 700; letter-spacing: -.02em; }
+
   .chip {
-    display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px;
-    border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
+    border-radius: 999px; border: 1px solid transparent;
+    background: var(--bg-soft); font-size: 12px; color: var(--muted); font-weight: 500;
   }
-  .chip.lock { color: var(--warn); border-color: var(--warn); }
-  .chip.pin { color: var(--accent); border-color: var(--accent); }
+  .chip.lock { color: var(--warn); background: rgba(245,158,11,.12); }
+  .chip.pin { color: var(--accent); background: var(--accent-soft); }
+
   .chartbox { position: relative; }
   canvas { width: 100%; height: 300px; display: block; cursor: crosshair; touch-action: none; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
   .slider { display: grid; grid-template-columns: 62px 1fr 62px; gap: 8px; align-items: center; margin: 6px 0; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
-  .memitem { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+
+  /* ===================== 列表项 ===================== */
+  .memitem {
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 11px 13px; margin-bottom: 8px; background: var(--card-2);
+    transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  @media (hover: hover) {
+    .memitem:hover { border-color: var(--accent); background: var(--card); box-shadow: var(--shadow-1); }
+  }
   .memitem .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
   .memitem .body { white-space: pre-wrap; word-break: break-word; }
   .memitem textarea { width: 100%; min-height: 54px; margin-top: 6px; }
+
   .tip {
     position: absolute; pointer-events: none; background: var(--card); color: var(--fg);
-    border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px;
-    box-shadow: var(--shadow); display: none; z-index: 5; white-space: nowrap;
+    border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 9px;
+    font-size: 12px; box-shadow: var(--shadow-2); display: none; z-index: 5; white-space: nowrap;
   }
-  .actionbar { margin-top: 10px; padding: 10px; border: 1px dashed var(--accent); border-radius: 10px; }
+  .actionbar {
+    margin-top: 10px; padding: 11px; border-radius: var(--radius-sm);
+    border: 1px dashed var(--accent); background: var(--accent-soft);
+  }
   .err { color: var(--danger); }
+
   .toast {
-    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-    background: var(--fg); color: var(--bg); padding: 8px 16px; border-radius: 999px;
-    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 99; font-size: 13px;
+    position: fixed; left: 50%; bottom: 24px; z-index: 99; font-size: 13px;
+    background: var(--fg); color: var(--bg); padding: 9px 18px; border-radius: 999px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.2);
+    opacity: 0; pointer-events: none;
+    transform: translateX(-50%) translateY(10px);
+    transition: opacity .2s ease, transform .2s ease;
   }
-  .toast.show { opacity: .94; }
-  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .empty { padding: 26px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* 切页签时轻轻淡入，不要生硬地闪一下 */
+  @keyframes viewIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  .view-in { animation: viewIn .18s ease-out; }
+
   body.simple-mode .tabs button[data-adv="1"] { display: none; }
+
+  /* ===================== 窄屏 ===================== */
+  @media (max-width: 640px) {
+    body { padding: 12px 10px; }
+    .card { padding: 13px; border-radius: 12px; }
+    .top { gap: 6px; }
+    .top h1 { font-size: 16px; }
+    .top select { min-width: 0 !important; flex: 1 1 130px; }
+    .bignum { font-size: 28px; }
+    canvas { height: 240px; }
+    .tabs { margin-bottom: 12px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 </style>
+<script>
+  // 尽早把存过的主题贴上，免得深色用户先看到一下白闪
+  try {
+    var savedTheme = localStorage.getItem("ai-mind-theme");
+    if (savedTheme === "light" || savedTheme === "dark") {
+      document.documentElement.setAttribute("data-theme", savedTheme);
+    }
+  } catch (e) { /* 沙箱里不让读，跟随系统就行 */ }
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -92,6 +242,7 @@
     <span class="small muted">会话</span>
     <select id="session" title="选择要看的群聊或私聊" style="min-width:210px"></select>
     <button id="mode-btn" class="ghost small" title="傻瓜模式只留必要的东西">切到专家模式</button>
+    <button id="theme-btn" class="ghost small" title="深浅色：跟随系统 / 浅色 / 深色">🌗 自动</button>
     <button id="refresh" class="ghost" title="重新拉取数据">刷新</button>
     <span id="api-status" class="small muted" style="flex-basis:100%"></span>
   </div>
@@ -2036,6 +2187,7 @@
       request("wizard/mode", "POST", { mode: next }).catch(function () {});
       if (next === "simple") loadWizard().catch(function () {});
     };
+    $("theme-btn").onclick = cycleTheme;
     $("wz-reload").onclick = function () {
       loadWizard().then(function () { toast("自检完成"); })
         .catch(function (e) { toast("自检失败：" + e.message); });
@@ -3010,6 +3162,47 @@
     ["style", "表达学习", "style"],
     ["guard", "主人鉴权", "settings"]
   ];
+
+  // ---------- 深浅色 ----------
+  // 面板跑在不透明源的沙箱 iframe 里：读不到宿主的主题设置，localStorage
+  // 也可能直接抛异常。所以默认「跟随系统」（CSS 里的 prefers-color-scheme），
+  // 再给一个手动三档开关。
+  var THEME_KEY = "ai-mind-theme";
+  var THEME_ORDER = ["auto", "light", "dark"];
+  var THEME_LABEL = { auto: "🌗 自动", light: "☀️ 浅色", dark: "🌙 深色" };
+
+  function readStoredTheme() {
+    try {
+      var value = window.localStorage.getItem(THEME_KEY);
+      return THEME_LABEL[value] ? value : "auto";
+    } catch (e) {
+      return "auto";   // 沙箱里读 localStorage 会抛，别让它把面板带崩
+    }
+  }
+
+  function applyTheme(mode) {
+    var value = THEME_LABEL[mode] ? mode : "auto";
+    if (document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute("data-theme", value);
+    }
+    var btn = $("theme-btn");
+    if (btn) btn.textContent = THEME_LABEL[value];
+    try {
+      window.localStorage.setItem(THEME_KEY, value);
+    } catch (e) {
+      // 存不了就本次会话有效，不影响使用
+    }
+    // 曲线图的颜色是从 CSS 变量里读的，不重绘就还是旧主题的配色
+    try { drawChart(); } catch (e) {}
+    return value;
+  }
+
+  function cycleTheme() {
+    var now = document.documentElement.getAttribute("data-theme") || "auto";
+    var next = THEME_ORDER[(THEME_ORDER.indexOf(now) + 1) % THEME_ORDER.length];
+    applyTheme(next);
+    toast("主题：" + THEME_LABEL[next]);
+  }
 
   function applyPanelMode(mode) {
     state.panelMode = mode === "expert" ? "expert" : "simple";
@@ -4066,11 +4259,32 @@
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);
-      if (view) view.style.display = (key === name) ? "" : "none";
+      var isCurrent = (key === name);
+      if (view) {
+        view.style.display = isCurrent ? "" : "none";
+        if (view.classList) {
+          view.classList.remove("view-in");
+          if (isCurrent) {
+            void view.offsetWidth;   // 强制重排，否则动画不会重放
+            view.classList.add("view-in");
+          }
+        }
+      }
       var tab = $("tab-" + key);
       if (!tab) return;
-      if (key === name) tab.classList.add("on");
-      else tab.classList.remove("on");
+      if (isCurrent) {
+        tab.classList.add("on");
+        // 页签栏在窄屏上是横向滚动的，切过去之后把它带进视野
+        if (tab.scrollIntoView) {
+          try {
+            tab.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+          } catch (e) {
+            tab.scrollIntoView(false);
+          }
+        }
+      } else {
+        tab.classList.remove("on");
+      }
     });
     state.view = name;
   }
@@ -4088,6 +4302,7 @@
 
   bind();
   gpFillSelects();
+  applyTheme(readStoredTheme());
   request("wizard/mode", "GET").then(function (data) {
     applyPanelMode((data && data.mode) || "simple");
     if (state.panelMode === "simple") {
