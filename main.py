@@ -919,6 +919,10 @@ class AIMindPlugin(Star):
                         max_memories=self.settings.memory.max_memories,
                         importance_floor=self.settings.memory.prune_importance_floor,
                     )
+                    # 垃圾桶留 1 天，过期才真正删掉
+                    purged = self.store.purge_trash(now - 24 * 3600.0)
+                    if purged:
+                        logger.info(f"[ai_mind] 垃圾桶到期：真正删除 {purged} 条记忆")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -2517,6 +2521,7 @@ class AIMindPlugin(Star):
             ("memory", self._api_memory, "记忆列表"),
             ("graph", self._api_graph, "记忆图谱"),
             ("memory/add", self._api_memory_add, "手动添加记忆"),
+            ("memory/trash", self._api_memory_trash, "垃圾桶：列表 / 恢复 / 彻底删除"),
             ("memory/update", self._api_memory_update, "修改记忆"),
             ("memory/delete", self._api_memory_delete, "删除记忆"),
             ("memory/batch", self._api_memory_batch, "批量管理记忆"),
@@ -2905,6 +2910,43 @@ class AIMindPlugin(Star):
             )
         )
 
+    async def _api_memory_trash(self) -> Any:
+        """垃圾桶：GET 列表，POST 恢复或彻底删除。
+
+        删除先进垃圾桶、1 天后后台才真正清掉。
+        注意：/忘我 那种隐私擦除**不走这里**，它是立即真删。"""
+        request = self._request()
+        method = str(getattr(request, "method", "GET") or "GET").upper()
+        params = await self._params()
+        if method == "GET":
+            items = self.store.trash_list(limit=200)
+            now = time.time()
+            out = []
+            for item in items:
+                gone = float(item.get("deleted_at") or 0.0)
+                out.append({
+                    "id": int(item.get("id") or 0),
+                    "content": str(item.get("content") or ""),
+                    "kind": str(item.get("kind") or ""),
+                    "scope": str(item.get("scope") or ""),
+                    "deleted_at": gone,
+                    # 还剩几小时被真正清掉
+                    "expires_in_hours": max(0.0, 24.0 - (now - gone) / 3600.0),
+                })
+            return json_response({"items": out, "keep_hours": 24})
+        action = str(params.get("action") or "").strip().lower()
+        raw_id = params.get("id")
+        try:
+            memory_id = int(raw_id)
+        except (TypeError, ValueError):
+            return error_response("缺少 id", status_code=400)
+        if action == "restore":
+            return json_response({"ok": bool(self.store.restore(memory_id))})
+        if action == "purge":
+            removed = self.store.purge_trash(time.time() + 1.0)
+            return json_response({"ok": True, "purged": removed})
+        return error_response("未知操作", status_code=400)
+
     async def _api_memory_add(self) -> Any:
         params = await self._params()
         content = str(params.get("content") or "").strip()
@@ -2982,7 +3024,7 @@ class AIMindPlugin(Star):
             return error_response("没有选中任何记忆", status_code=400)
         action = str(params.get("action") or "").strip().lower()
         if action in {"delete", "remove", "删除"}:
-            affected = self.store.delete_many(ids)
+            affected = self.store.trash_many(ids)
         elif action in {"pin", "set_pinned", "常驻"}:
             affected = self.store.update_many(ids, pinned=True)
         elif action in {"unpin", "unset_pinned", "取消常驻"}:
@@ -3012,7 +3054,7 @@ class AIMindPlugin(Star):
         memory_id, why = self._int_param(params, "id")
         if memory_id is None:
             return error_response(why, status_code=400)
-        return json_response({"ok": bool(self.store.delete(memory_id))})
+        return json_response({"ok": bool(self.store.trash(memory_id))})
 
     def _session_from_request(self) -> str:
         sessions = self.engine.session_keys()

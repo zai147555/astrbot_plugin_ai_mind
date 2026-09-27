@@ -508,6 +508,8 @@ class PanelWiringTest(unittest.TestCase):
         declared = set(re.findall(r'id="([a-z0-9-]+)"', self.html))
         # 有的元素是脚本自己建的（createElement 之后 .id = "xxx"），这些也算声明过。
         declared |= set(re.findall(r'[.]id\s*=\s*"([^"]+)"', script))
+        # innerHTML 字符串里写的 id='xxx' / id="xxx" 同样是脚本自己建的
+        declared |= set(re.findall(r"id\s*=\s*['\"]([a-z0-9-]+)['\"]", script))
         self.assertTrue(used, "脚本里没引用任何控件，八成是接线断了")
         self.assertEqual(used - declared, set(), "脚本引用了不存在的 id")
 
