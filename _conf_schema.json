@@ -643,6 +643,12 @@
         "type": "bool",
         "default": false,
         "hint": "想看每批记住了什么、每次触发了什么情绪就打开它。"
+      },
+      "cache_friendly": {
+        "description": "省 token：让前缀缓存能命中",
+        "type": "bool",
+        "default": true,
+        "hint": "情绪、记忆这些每轮都会变的内容默认贴在消息最后，前面的 System Prompt 和历史记录保持不动 —— DeepSeek / OpenAI 的前缀缓存才能命中，命中部分便宜很多也快很多。关掉就退回旧位置。"
       }
     }
   },

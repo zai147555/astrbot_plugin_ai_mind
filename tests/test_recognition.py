@@ -13,7 +13,11 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from mind import RELATION_RULES_BLOCK, render_relationship_block
+from mind import (
+    RELATION_RULES_BLOCK,
+    render_relationship_block,
+    render_relationship_meter,
+)
 from mind.emotion.engine import Relation
 
 
@@ -141,3 +145,26 @@ class RelationshipBlockTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+    def test_stable_block_has_no_changing_numbers(self) -> None:
+        """stable=True 的那半块是给前缀缓存用的，不能出现会变的数字。"""
+        block = render_relationship_block(snapshot(special=True), stable=True)
+        self.assertIn("<relationship>", block)
+        self.assertNotIn("好感度", block)
+        self.assertNotIn("熟悉度", block)
+        self.assertNotIn("聊过", block)
+        self.assertIn("你早就认识他", block)
+
+    def test_stable_block_keeps_group_discretion(self) -> None:
+        block = render_relationship_block(snapshot(special=True), group=True, stable=True)
+        self.assertIn("现在是在群里", block)
+
+    def test_meter_carries_the_numbers(self) -> None:
+        meter = render_relationship_meter(snapshot(special=True))
+        self.assertIn("<relationship_meter>", meter)
+        self.assertIn("好感度", meter)
+        self.assertIn("熟悉度", meter)
+
+    def test_meter_is_empty_without_relation(self) -> None:
+        self.assertEqual(render_relationship_meter(snapshot(relation=None)), "")

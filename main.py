@@ -102,6 +102,7 @@ try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
         RELATION_RULES_BLOCK,
         build_emotion_injection,
         render_relationship_block,
+        render_relationship_meter,
         cfg_get,
         classify,
         decide_scope,
@@ -179,6 +180,7 @@ except ImportError:  # 兜底：以单模块方式加载时，把插件目录加
         RELATION_RULES_BLOCK,
         build_emotion_injection,
         render_relationship_block,
+        render_relationship_meter,
         cfg_get,
         classify,
         decide_scope,
@@ -987,6 +989,9 @@ class AIMindPlugin(Star):
             self._last_sender[session_key] = sender_id
             self._mark_llm(event)
 
+            # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
+            cache_tail: list[str] = []
+
             # ---------- 情绪 ----------
             if self.settings.emotion.enabled:
                 _session, _relation, snapshot = self._prepare_emotion(event)
@@ -1010,10 +1015,10 @@ class AIMindPlugin(Star):
                         if self.prompts.is_custom("emotion.state") else ""
                     ),
                 )
-                if self.emotion_trusted:
-                    self._place_trusted(req, block)
-                else:
-                    self._place(req, block, self.emotion_injection_mode)
+                self._cache_or_place(
+                    req, block, cache_tail,
+                    trusted=self.emotion_trusted, mode=self.emotion_injection_mode,
+                )
 
                 # ---------- 认人：告诉模型"现在跟它说话的人是谁" ----------
                 # 少了这一块，模型只知道"好感度 63/100 · ★宝宝"这种仪表盘读数，
@@ -1038,7 +1043,23 @@ class AIMindPlugin(Star):
                                     + chr(10) + chr(10)
                                     + self._prompt("relation.rules", RELATION_RULES_BLOCK)
                                 ).strip()
-                        if self.emotion_trusted:
+                        if self.settings.cache_friendly:
+                            # 身份块拆两半：**不变的**部分留在受信任位
+                            # （群里任何人都覆盖不了、伪造不了），
+                            # 会变的数字（聊过几次、好感度）贴到尾部。
+                            stable_block = render_relationship_block(
+                                snapshot,
+                                group=bool(is_group_session(session_key)),
+                                min_messages=int(self.settings.emotion.identity_min_messages),
+                                discretion=bool(self.settings.emotion.group_discretion),
+                                stable=True,
+                            )
+                            if stable_block:
+                                self._place_trusted(req, stable_block)
+                            meter = render_relationship_meter(snapshot)
+                            if meter:
+                                cache_tail.append(meter)
+                        elif self.emotion_trusted:
                             self._place_trusted(req, relation_block)
                         else:
                             self._place(req, relation_block, self.emotion_injection_mode)
@@ -1072,7 +1093,10 @@ class AIMindPlugin(Star):
                             + chr(10) + chr(10)
                             + self._prompt("memory.rules", MEMORY_RULES_BLOCK)
                         ).strip()
-                    self._place(req, memory_block, self.memory_injection_mode)
+                    self._cache_or_place(
+                        req, memory_block, cache_tail,
+                        trusted=False, mode=self.memory_injection_mode,
+                    )
                     self.store.touch(result.ids())
 
             # ---------- 表达示例（先审后注入） ----------
@@ -1082,10 +1106,10 @@ class AIMindPlugin(Star):
                 logger.warning(f"[ai_mind] 组装表达示例失败：{exc}")
                 style_block = ""
             if style_block:
-                if self.emotion_trusted:
-                    self._place_trusted(req, style_block)
-                else:
-                    self._place(req, style_block, "content_part")
+                self._cache_or_place(
+                    req, style_block, cache_tail,
+                    trusted=self.emotion_trusted, mode="content_part",
+                )
 
             # ---------- 工具守卫（请求级） ----------
             self._apply_tool_guard(event, req)
@@ -1100,8 +1124,21 @@ class AIMindPlugin(Star):
                     self.images.enabled_triggers(sender_id),
                     max_per_message=self.settings.images.ai_send_max,
                 )
-                if gallery and IMAGES_MARKER not in (req.system_prompt or ""):
+                # 图库是按「谁在说话」挑的，群里换个人就变 —— 也算动态内容
+                if gallery and self.settings.cache_friendly:
+                    cache_tail.append(gallery)
+                elif gallery and IMAGES_MARKER not in (req.system_prompt or ""):
                     req.system_prompt = ((req.system_prompt or "") + "\n\n" + gallery).strip()
+
+            # ---------- 把每轮都变的内容贴到请求最后 ----------
+            # 放这里而不是开头，是为了让前缀（persona + 历史）保持稳定，
+            # 前缀缓存才命得中。
+            if cache_tail:
+                joined = "\n\n".join(cache_tail)
+                if not self._append_content_part(req, joined):
+                    # 这个 AstrBot 版本不支持附加到用户消息：退回受信任位。
+                    # 宁可少省点 token，也不能把情绪和记忆弄丢。
+                    self._place_trusted(req, joined)
         except Exception as exc:  # noqa: BLE001 - 钩子里的异常绝不能打断对话
             logger.error(f"[ai_mind] 注入失败：{exc}", exc_info=True)
 
@@ -1126,6 +1163,34 @@ class AIMindPlugin(Star):
             block + "\n\n<persona_style>\n"
             "这是作者为她定下的说话味道，优先遵守：\n" + note + "\n</persona_style>"
         )
+
+    def _cache_or_place(
+        self,
+        req: ProviderRequest,
+        block: str,
+        tail: list[str],
+        *,
+        trusted: bool = True,
+        mode: str = "content_part",
+    ) -> None:
+        """放一块「每轮都会变」的内容。
+
+        为什么要有这个：DeepSeek / OpenAI 的前缀缓存是按「从头开始的最长公共
+        前缀」命中的。以前这些块塞在 System Prompt 后面（受信任位），每轮一变
+        就把后面的整段历史全废掉，缓存一次都命中不了 —— 越聊越贵、越聊越慢。
+
+        缓存友好模式（默认开）下攒进 tail，最后统一贴到当前用户消息后面；
+        这样前缀 = persona + 历史记录，稳定不动，缓存能一直吃到。
+        """
+        if not block:
+            return
+        if self.settings.cache_friendly:
+            tail.append(block)
+            return
+        if trusted:
+            self._place_trusted(req, block)
+        else:
+            self._place(req, block, mode)
 
     @staticmethod
     def _place_trusted(req: ProviderRequest, block: str) -> bool:

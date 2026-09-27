@@ -103,6 +103,7 @@ from .emotion.prompt import (  # noqa: F401
     RELATION_MARKER,
     RELATION_RULES_BLOCK,
     render_relationship_block,
+    render_relationship_meter,
 )
 
 # 记忆内核
@@ -195,6 +196,7 @@ __all__ = [
     "RELATION_MARKER",
     "RELATION_RULES_BLOCK",
     "render_relationship_block",
+    "render_relationship_meter",
     "describe_session",
     "emotion_payload",
     "memory_payload",
