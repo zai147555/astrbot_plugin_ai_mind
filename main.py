@@ -29,6 +29,7 @@ import asyncio
 import base64
 import json
 import os
+import sqlite3
 import random
 import sys
 import time
@@ -411,6 +412,261 @@ DEBUG_HELP = "\n".join([
     "再发一次 " + DEBUG_CODE + " 退出。",
 ])
 
+class _SampleRow:
+    """一条采样点。面板那边是按**属性**读的（.t / .pad()），所以不能给 dict。"""
+
+    __slots__ = ("id", "session_id", "t", "p", "a", "d", "kind")
+
+    def __init__(self, item: Any) -> None:
+        self.id = int(item["id"])
+        self.session_id = str(item["session_id"])
+        self.t = float(item["t"])
+        self.p = float(item["p"])
+        self.a = float(item["a"])
+        self.d = float(item["d"])
+        self.kind = str(item["kind"] or "auto")
+
+    def pad(self) -> Any:
+        try:
+            from .mind.emotion.model import PAD
+        except ImportError:  # pragma: no cover
+            from mind.emotion.model import PAD  # type: ignore[no-redef]
+        return PAD(p=self.p, a=self.a, d=self.d)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id, "t": self.t, "p": self.p, "a": self.a,
+            "d": self.d, "kind": self.kind,
+        }
+
+
+class _SampleStore:
+    """情绪曲线采样点仓库（自足版）。
+
+    为什么不放在 mind/samples.py：那个包曾经被另一个插件的同名 mind 包顶替过
+    （sys.modules 里先注册的那个赢），于是 mind/samples.py 换了多少次都不生效 ——
+    采样一路写进「已关闭的数据库」，日志里只有一句 warning。main.py 不会认错，
+    它就在插件目录里。所以曲线这块改成自足：自己的连接、自己的表、坏了就丢开重连。
+    """
+
+    _DDL = (
+        "CREATE TABLE IF NOT EXISTS emotion_samples ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " session_id TEXT NOT NULL, t REAL NOT NULL,"
+        " p REAL NOT NULL, a REAL NOT NULL, d REAL NOT NULL,"
+        " kind TEXT NOT NULL DEFAULT {q}auto{q});"
+        "CREATE INDEX IF NOT EXISTS idx_sample_session"
+        " ON emotion_samples (session_id, t);"
+    ).format(q=chr(39))
+
+    # 兼容旧的测试钩子：以前这些字段挂在 ConnectionSource 上。
+    # _db_path 非空时以它为准 —— 测试靠它模拟「这个路径写不进去」。
+    _db_path: Any = None
+    _source: Any = None
+    _spare_conn: Any = None
+    _schema_ready: bool = False
+
+    def __init__(self, path: Any, logger: Any = None) -> None:
+        self.path = Path(path)
+        self.logger = logger
+        self.last_error = ""
+        self._conn: Any = None
+
+    def _file(self) -> str:
+        return str(self._db_path or self.path)
+
+    # -- 连接 -----------------------------------------------------------
+    def _open(self) -> Any:
+        try:
+            conn = sqlite3.connect(self._file(), check_same_thread=False, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(self._DDL)
+            conn.commit()
+        except (sqlite3.Error, OSError) as exc:
+            self.last_error = f"打开曲线库失败：{type(exc).__name__}: {exc}"
+            if self.logger is not None:
+                self.logger.warning(f"[ai_mind] {self.last_error}")
+            return None
+        self._conn = conn
+        self.last_error = ""
+        return conn
+
+    @property
+    def conn(self) -> Any:
+        conn = self._conn
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+        return self._open()
+
+    @conn.setter
+    def conn(self, value: Any) -> None:
+        self._conn = value
+
+    def _sql(self, sql: str, params: Iterable[Any] = ()) -> Any:
+        for attempt in (0, 1):
+            conn = self.conn
+            if conn is None:
+                return None
+            try:
+                cursor = conn.execute(sql, tuple(params))
+                conn.commit()
+                return cursor
+            except sqlite3.Error as exc:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+                if attempt:
+                    self.last_error = f"曲线 SQL 失败：{type(exc).__name__}: {exc}"
+                    if self.logger is not None:
+                        self.logger.warning(f"[ai_mind] {self.last_error}")
+                    return None
+        return None
+
+    def _rows(self, sql: str, params: Iterable[Any] = ()) -> list[Any]:
+        cursor = self._sql(sql, params)
+        if cursor is None:
+            return []
+        try:
+            return list(cursor.fetchall())
+        except sqlite3.Error:
+            return []
+
+    @staticmethod
+    def _row(item: Any) -> _SampleRow:
+        return _SampleRow(item)
+
+    # -- 写 -------------------------------------------------------------
+    def append(self, session_id: str, t: float, pad: Any, kind: str = "auto") -> None:
+        self._sql(
+            "INSERT INTO emotion_samples (session_id, t, p, a, d, kind)"
+            " VALUES (?,?,?,?,?,?)",
+            (str(session_id), float(t), float(pad.p), float(pad.a), float(pad.d), str(kind)),
+        )
+
+    def replace_at(self, session_id: str, t: float, pad: Any,
+                   *, tolerance: float = 1.0) -> int:
+        cursor = self._sql(
+            "UPDATE emotion_samples SET p = ?, a = ?, d = ?, kind = ?"
+            " WHERE session_id = ? AND t BETWEEN ? AND ?",
+            (float(pad.p), float(pad.a), float(pad.d), "manual", str(session_id),
+             float(t) - float(tolerance), float(t) + float(tolerance)),
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def delete_at(self, session_id: str, t: float, *, tolerance: float = 1.0) -> int:
+        cursor = self._sql(
+            "DELETE FROM emotion_samples WHERE session_id = ? AND t BETWEEN ? AND ?",
+            (str(session_id), float(t) - float(tolerance), float(t) + float(tolerance)),
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def clear(self, session_id: str | None = None) -> int:
+        if session_id is None:
+            cursor = self._sql("DELETE FROM emotion_samples")
+        else:
+            cursor = self._sql(
+                "DELETE FROM emotion_samples WHERE session_id = ?", (str(session_id),)
+            )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def prune_all(self, max_points: int) -> int:
+        if int(max_points) <= 0:
+            return 0
+        removed = 0
+        for key in self.sessions():
+            cursor = self._sql(
+                "DELETE FROM emotion_samples WHERE session_id = ? AND id NOT IN ("
+                " SELECT id FROM emotion_samples WHERE session_id = ?"
+                " ORDER BY t DESC LIMIT ?)",
+                (key, key, int(max_points)),
+            )
+            if cursor is not None:
+                removed += int(cursor.rowcount)
+        return removed
+
+    # -- 读 -------------------------------------------------------------
+    def since(self, session_id: str, since: float, limit: int = 1500) -> list[Any]:
+        rows = self._rows(
+            "SELECT * FROM emotion_samples WHERE session_id = ? AND t >= ?"
+            " ORDER BY t ASC LIMIT ?",
+            (str(session_id), float(since), int(limit)),
+        )
+        return [self._row(item) for item in rows]
+
+    def latest(self, session_id: str) -> Any:
+        rows = self._rows(
+            "SELECT * FROM emotion_samples WHERE session_id = ?"
+            " ORDER BY t DESC LIMIT 1",
+            (str(session_id),),
+        )
+        return self._row(rows[0]) if rows else None
+
+    def count(self, session_id: str | None = None) -> int:
+        if session_id is None:
+            rows = self._rows("SELECT COUNT(*) AS c FROM emotion_samples")
+        else:
+            rows = self._rows(
+                "SELECT COUNT(*) AS c FROM emotion_samples WHERE session_id = ?",
+                (str(session_id),),
+            )
+        return int(rows[0]["c"]) if rows else 0
+
+    def sessions(self) -> list[str]:
+        rows = self._rows("SELECT DISTINCT session_id FROM emotion_samples")
+        return [
+            str(item["session_id"]) for item in rows
+            if item["session_id"] and not str(item["session_id"]).startswith("__")
+        ]
+
+    def selfcheck(self) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "ok": False, "conn": self.conn is not None, "table": True,
+            "write": False, "rows": 0, "error": "", "path": self._file(),
+            "exists": False, "size": 0,
+        }
+        try:
+            target = Path(self._file())
+            info["exists"] = target.exists()
+            info["size"] = target.stat().st_size if info["exists"] else 0
+        except OSError:
+            pass
+        conn = self.conn
+        if conn is None:
+            info["error"] = self.last_error or "曲线库打不开"
+            return info
+        probe = "__selfcheck__"
+        err = ""
+        try:
+            conn.execute("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+            conn.execute(
+                "INSERT INTO emotion_samples (session_id, t, p, a, d, kind)"
+                " VALUES (?,?,?,?,?,?)",
+                (probe, time.time(), 0.0, 0.0, 0.0, "probe"),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM emotion_samples WHERE session_id = ?", (probe,)
+            ).fetchone()
+            info["write"] = bool(row and int(row[0]) > 0)
+            conn.execute("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+            conn.commit()
+        except (sqlite3.Error, OSError) as exc:
+            err = f"{type(exc).__name__}: {exc}"
+        info["ok"] = bool(info["write"])
+        info["error"] = "" if info["write"] else (err or self.last_error or "插入没有生效")
+        info["rows"] = self.count()
+        return info
+
 @register(
     PLUGIN_NAME,
     PLUGIN_AUTHOR,
@@ -471,7 +727,9 @@ class AIMindPlugin(Star):
         # terminate()（我们把库关掉），老实例却可能还在收消息 —— 存下来的裸连接
         # 就成了「已关闭的数据库」，之后所有写入静默失败（曲线永远空、记忆写不进）。
         # 传仓库进去，每次都现取连接，库被重开也能跟上。
-        self.samples = SampleStore(self.store, logger)
+        # 曲线存储自足：自己的连接、自己的表 —— 不再和别人共用连接对象
+        # （以前那个 mind/samples.py 会被别的插件的同名包顶替，改了也不生效）
+        self.samples = _SampleStore(db_file, logger)
         self.lexicons = LexiconStore(self.store, logger)
         self.humanize_log = HumanizeStore(self.store, logger)
         self.styles = StyleStore(self.store, logger)
