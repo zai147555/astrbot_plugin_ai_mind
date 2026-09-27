@@ -1130,6 +1130,21 @@ class AIMindPlugin(Star):
 
             # ---------- 工具守卫（请求级） ----------
             self._apply_tool_guard(event, req)
+            # 排查「某个工具到底在不在」用的：打开 debug_log 后，这一行会列出
+            # 模型这一轮真正拿到的工具名。如果那个工具压根不在列表里，
+            # 就说明它没注册成功；如果被我们摘掉了，上面会另有一条日志。
+            if self.settings.debug_log:
+                try:
+                    tool_set = getattr(req, "func_tool", None)
+                    names = [
+                        str(getattr(item, "name", "") or "?")
+                        for item in (getattr(tool_set, "tools", None) or [])
+                    ]
+                    logger.info(
+                        f"[ai_mind] 本轮模型可用工具 {len(names)} 个：{', '.join(names) or '（一个都没有）'}"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
             # ---------- 让 AI 知道它自己能发图 ----------
             if (
@@ -2753,7 +2768,9 @@ class AIMindPlugin(Star):
             {
                 "n": index,
                 "count": len(names),
-                "data": "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii"),
+                # 字段名故意不叫 data —— 响应本身是 {"status":"ok","data":{...}}，
+                # 再套一个 "data" 会让某些中转层拆错一层，把 base64 直接当结果返回。
+                "image": "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii"),
             }
         )
 

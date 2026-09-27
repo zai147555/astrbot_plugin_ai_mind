@@ -3527,8 +3527,10 @@ class BackgroundApiTest(PluginHarness, unittest.TestCase):
             self.assertTrue(res["ok"], res)
             data = res["data"]
             self.assertGreater(data["count"], 0, "一张背景图都没有")
-            self.assertTrue(data["data"].startswith("data:image/jpeg;base64,"))
-            self.assertGreater(len(data["data"]), 1000, "图片数据太小了，不对劲")
+            # 字段名必须是 image：叫 data 会被中转层多拆一层，只剩一串 base64
+            self.assertNotIn("data", data, "别用 data 当字段名")
+            self.assertTrue(data["image"].startswith("data:image/jpeg;base64,"))
+            self.assertGreater(len(data["image"]), 1000, "图片数据太小了，不对劲")
             self.assertTrue(1 <= data["n"] <= data["count"])
             await plugin.terminate()
 
@@ -3541,7 +3543,7 @@ class BackgroundApiTest(PluginHarness, unittest.TestCase):
             first = (await self.api(plugin, "background", query={"n": "1"}))["data"]
             self.assertEqual(first["n"], 1)
             again = (await self.api(plugin, "background", query={"n": "1"}))["data"]
-            self.assertEqual(first["data"], again["data"], "同一编号应该给同一张图")
+            self.assertEqual(first["image"], again["image"], "同一编号应该给同一张图")
             await plugin.terminate()
 
         self.run_async(scenario())
