@@ -1,0 +1,572 @@
+"""情绪曲线的采样存储。
+
+为什么曲线数据不放在情绪状态的那个 JSON 里
+------------------------------------------
+情绪状态本身很小（当前值 + 心境 + 关系），但曲线是**时间序列**：
+随着时间推移会无限增长。把它塞进 JSON 意味着每次保存都要重写整条曲线，
+几千个点之后就不可接受了。
+
+所以这里用 SQLite 单开一张表，只追加、可按时间区间查询、可单点修改。
+合并之后记忆也用同一个数据库文件，省得开两个。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+from .emotion.model import PAD, now_ts
+
+SAMPLE_KINDS = ("auto", "stimulus", "self", "idle", "manual")
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS emotion_samples (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    t          REAL NOT NULL,
+    p          REAL NOT NULL,
+    a          REAL NOT NULL,
+    d          REAL NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'auto'
+);
+CREATE INDEX IF NOT EXISTS idx_sample_session ON emotion_samples(session_id, t);
+"""
+
+
+@dataclass
+class Sample:
+    t: float
+    p: float
+    a: float
+    d: float
+    kind: str = "auto"
+    id: int = 0
+
+    def pad(self) -> PAD:
+        return PAD(self.p, self.a, self.d)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "t": round(self.t, 2),
+            "p": round(self.p, 4),
+            "a": round(self.a, 4),
+            "d": round(self.d, 4),
+            "kind": self.kind,
+        }
+
+
+class SampleStore:
+    """情绪曲线采样点仓库。所有异常都降级为空结果，不让插件崩掉。"""
+
+    def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
+        self.conn = connection
+        self.logger = logger
+        if self.conn is not None:
+            try:
+                self.conn.executescript(_SCHEMA)
+                self.conn.commit()
+            except sqlite3.Error as exc:
+                if self.logger is not None:
+                    self.logger.warning(f"[ai_mind] 曲线表初始化失败：{exc}")
+                self.conn = None
+
+    # -- 基础 ---------------------------------------------------------------
+    def _run(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor | None:
+        if self.conn is None:
+            return None
+        try:
+            cursor = self.conn.execute(sql, tuple(params))
+            self.conn.commit()
+            return cursor
+        except (sqlite3.Error, OSError) as exc:
+            if self.logger is not None:
+                self.logger.warning(f"[ai_mind] 曲线 SQL 失败：{exc}")
+            return None
+
+    def _all(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
+        cursor = self._run(sql, params)
+        if cursor is None:
+            return []
+        try:
+            return list(cursor.fetchall())
+        except sqlite3.Error:
+            return []
+
+    # -- 写 -----------------------------------------------------------------
+    def append(self, session_id: str, t: float, pad: PAD, kind: str = "auto") -> None:
+        self._run(
+            "INSERT INTO emotion_samples (session_id, t, p, a, d, kind) VALUES (?,?,?,?,?,?)",
+            (str(session_id), float(t), float(pad.p), float(pad.a), float(pad.d), kind),
+        )
+
+    def replace_at(self, session_id: str, t: float, pad: PAD, *, tolerance: float = 1.0) -> int:
+        """把某个时刻附近的采样点改成新的值（面板上拖点用）。返回改动条数。"""
+        cursor = self._run(
+            """
+            UPDATE emotion_samples SET p = ?, a = ?, d = ?, kind = 'manual'
+            WHERE session_id = ? AND t BETWEEN ? AND ?
+            """,
+            (float(pad.p), float(pad.a), float(pad.d), str(session_id), t - tolerance, t + tolerance),
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def delete_at(self, session_id: str, t: float, *, tolerance: float = 1.0) -> int:
+        cursor = self._run(
+            "DELETE FROM emotion_samples WHERE session_id = ? AND t BETWEEN ? AND ?",
+            (str(session_id), t - tolerance, t + tolerance),
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def clear(self, session_id: str) -> int:
+        cursor = self._run("DELETE FROM emotion_samples WHERE session_id = ?", (str(session_id),))
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def clear_all(self) -> int:
+        cursor = self._run("DELETE FROM emotion_samples")
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def prune(self, session_id: str, max_points: int) -> int:
+        """只保留最新的 max_points 个点。"""
+        if max_points <= 0:
+            return 0
+        cursor = self._run(
+            """
+            DELETE FROM emotion_samples WHERE session_id = ? AND id NOT IN (
+                SELECT id FROM emotion_samples WHERE session_id = ?
+                ORDER BY t DESC LIMIT ?
+            )
+            """,
+            (str(session_id), str(session_id), int(max_points)),
+        )
+        return int(cursor.rowcount) if cursor is not None else 0
+
+    def prune_all(self, max_points: int) -> int:
+        removed = 0
+        for session_id in self.sessions():
+            removed += self.prune(session_id, max_points)
+        return removed
+
+    # -- 读 -----------------------------------------------------------------
+    def since(self, session_id: str, since: float, limit: int = 1500) -> list[Sample]:
+        rows = self._all(
+            """
+            SELECT id, t, p, a, d, kind FROM emotion_samples
+            WHERE session_id = ? AND t >= ?
+            ORDER BY t ASC LIMIT ?
+            """,
+            (str(session_id), float(since), int(limit)),
+        )
+        return [
+            Sample(
+                id=int(r["id"]),
+                t=float(r["t"]),
+                p=float(r["p"]),
+                a=float(r["a"]),
+                d=float(r["d"]),
+                kind=str(r["kind"] or "auto"),
+            )
+            for r in rows
+        ]
+
+    def latest(self, session_id: str) -> Sample | None:
+        rows = self._all(
+            "SELECT id, t, p, a, d, kind FROM emotion_samples WHERE session_id = ? ORDER BY t DESC LIMIT 1",
+            (str(session_id),),
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return Sample(
+            id=int(r["id"]), t=float(r["t"]), p=float(r["p"]), a=float(r["a"]),
+            d=float(r["d"]), kind=str(r["kind"] or "auto"),
+        )
+
+    def count(self, session_id: str | None = None) -> int:
+        if session_id is None:
+            rows = self._all("SELECT COUNT(*) AS c FROM emotion_samples")
+        else:
+            rows = self._all(
+                "SELECT COUNT(*) AS c FROM emotion_samples WHERE session_id = ?", (str(session_id),)
+            )
+        return int(rows[0]["c"]) if rows else 0
+
+    def sessions(self) -> list[str]:
+        rows = self._all("SELECT DISTINCT session_id FROM emotion_samples")
+        return [str(r["session_id"]) for r in rows if r["session_id"]]
+
+
+# ---------------------------------------------------------------------------
+# 词表命中记录（面板上的「理论基础 / 词表命中」要用）
+# ---------------------------------------------------------------------------
+_LEXICON_SCHEMA = """
+CREATE TABLE IF NOT EXISTS lexicon_hits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    t          REAL NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    uid        TEXT NOT NULL DEFAULT '',
+    word       TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
+    family     TEXT NOT NULL DEFAULT '',
+    intensity  INTEGER NOT NULL DEFAULT 5,
+    direction  TEXT NOT NULL DEFAULT 'mirror',
+    negated    INTEGER NOT NULL DEFAULT 0,
+    proto      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_lexicon_t ON lexicon_hits(t);
+CREATE INDEX IF NOT EXISTS idx_lexicon_word ON lexicon_hits(word);
+"""
+
+
+@dataclass
+class LexiconHit:
+    """一次词表命中的落库记录。"""
+
+    t: float
+    word: str
+    code: str
+    name: str = ""
+    family: str = ""
+    intensity: int = 5
+    direction: str = "mirror"
+    negated: bool = False
+    proto: str = ""
+    session_id: str = ""
+    uid: str = ""
+    id: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "t": round(self.t, 2),
+            "word": self.word,
+            "code": self.code,
+            "name": self.name,
+            "family": self.family,
+            "intensity": self.intensity,
+            "direction": self.direction,
+            "negated": bool(self.negated),
+            "proto": self.proto,
+            "session": self.session_id,
+        }
+
+
+class LexiconStore:
+    """词表命中记录。只追加，按时间和词聚合查询。"""
+
+    def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
+        self.conn = connection
+        self.logger = logger
+        if self.conn is not None:
+            try:
+                self.conn.executescript(_LEXICON_SCHEMA)
+                self.conn.commit()
+            except sqlite3.Error as exc:
+                if self.logger is not None:
+                    self.logger.warning(f"[ai_mind] 词表命中表初始化失败：{exc}")
+                self.conn = None
+
+    def record(
+        self,
+        hits: Iterable[Any],
+        *,
+        session_id: str = "",
+        uid: str = "",
+        proto: str = "",
+        now: float | None = None,
+    ) -> int:
+        """把一次评估里命中的词写下来。hits 是 lexicon.Hit 的序列。"""
+        if self.conn is None:
+            return 0
+        rows = []
+        stamp = float(now if now is not None else now_ts())
+        for hit in hits or ():
+            word = str(getattr(hit, "word", "") or "")
+            if not word:
+                continue
+            rows.append(
+                (
+                    stamp,
+                    str(session_id or ""),
+                    str(uid or ""),
+                    word,
+                    str(getattr(hit, "code", "") or ""),
+                    str(getattr(hit, "name", "") or ""),
+                    str(getattr(hit, "family", "") or ""),
+                    int(getattr(hit, "intensity", 5) or 5),
+                    str(getattr(hit, "direction", "mirror") or "mirror"),
+                    1 if getattr(hit, "negated", False) else 0,
+                    str(proto or ""),
+                )
+            )
+        if not rows:
+            return 0
+        try:
+            self.conn.executemany(
+                "INSERT INTO lexicon_hits (t, session_id, uid, word, code, name, family,"
+                " intensity, direction, negated, proto) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+            self.conn.commit()
+            return len(rows)
+        except sqlite3.Error as exc:
+            if self.logger is not None:
+                self.logger.warning(f"[ai_mind] 记录词表命中失败：{exc}")
+            return 0
+
+    def recent(self, limit: int = 30) -> list[LexiconHit]:
+        if self.conn is None:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM lexicon_hits ORDER BY t DESC, id DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [self._row(row) for row in rows]
+
+    def top_words(self, since: float = 0.0, limit: int = 24) -> list[dict[str, Any]]:
+        if self.conn is None:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT word, code, name, COUNT(*) AS n, AVG(intensity) AS strength"
+                " FROM lexicon_hits WHERE t >= ? GROUP BY word ORDER BY n DESC, word LIMIT ?",
+                (float(since), max(1, int(limit))),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "word": str(row["word"]),
+                "code": str(row["code"]),
+                "name": str(row["name"]),
+                "count": int(row["n"] or 0),
+                "intensity": round(float(row["strength"] or 5.0), 1),
+            }
+            for row in rows
+        ]
+
+    def count(self, since: float = 0.0) -> int:
+        if self.conn is None:
+            return 0
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM lexicon_hits WHERE t >= ?", (float(since),)
+            ).fetchone()
+        except sqlite3.Error:
+            return 0
+        return int(row["n"] or 0) if row else 0
+
+    def clear_by_uid(self, uid: str) -> int:
+        """删掉某个人触发的词表命中记录。"""
+        if self.conn is None or not str(uid or "").strip():
+            return 0
+        try:
+            cursor = self.conn.execute("DELETE FROM lexicon_hits WHERE uid = ?", (str(uid),))
+            self.conn.commit()
+            return int(cursor.rowcount or 0)
+        except sqlite3.Error:
+            return 0
+
+    def clear(self) -> int:
+        if self.conn is None:
+            return 0
+        try:
+            cursor = self.conn.execute("DELETE FROM lexicon_hits")
+            self.conn.commit()
+            return int(cursor.rowcount or 0)
+        except sqlite3.Error:
+            return 0
+
+    @staticmethod
+    def _row(row: sqlite3.Row) -> LexiconHit:
+        return LexiconHit(
+            id=int(row["id"]),
+            t=float(row["t"]),
+            session_id=str(row["session_id"] or ""),
+            uid=str(row["uid"] or ""),
+            word=str(row["word"]),
+            code=str(row["code"]),
+            name=str(row["name"] or ""),
+            family=str(row["family"] or ""),
+            intensity=int(row["intensity"] or 5),
+            direction=str(row["direction"] or "mirror"),
+            negated=bool(row["negated"]),
+            proto=str(row["proto"] or ""),
+        )
+
+
+# ---------------------------------------------------------------------------
+# 去 AI 味：体检记录
+# ---------------------------------------------------------------------------
+_HUMANIZE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS humanize_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    t            REAL NOT NULL,
+    session_id   TEXT NOT NULL DEFAULT '',
+    before_score REAL NOT NULL DEFAULT 0,
+    after_score  REAL NOT NULL DEFAULT 0,
+    rounds       INTEGER NOT NULL DEFAULT 0,
+    mode         TEXT NOT NULL DEFAULT 'check',
+    issues       TEXT NOT NULL DEFAULT '',
+    original     TEXT NOT NULL DEFAULT '',
+    final        TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_humanize_t ON humanize_log(t);
+"""
+
+
+@dataclass
+class HumanizeEntry:
+    """一次"去 AI 味"体检（可能顺带改写）。"""
+
+    t: float
+    before_score: float
+    after_score: float
+    rounds: int = 0
+    mode: str = "check"
+    issues: str = ""
+    original: str = ""
+    final: str = ""
+    note: str = ""
+    session_id: str = ""
+    id: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "t": round(self.t, 2),
+            "session": self.session_id,
+            "before": round(self.before_score, 1),
+            "after": round(self.after_score, 1),
+            "rounds": int(self.rounds),
+            "mode": self.mode,
+            "issues": self.issues,
+            "original": self.original,
+            "final": self.final,
+            "note": self.note,
+        }
+
+
+class HumanizeStore:
+    """去 AI 味的体检日志。只追加，按时间倒序读。"""
+
+    def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
+        self.conn = connection
+        self.logger = logger
+        if self.conn is not None:
+            try:
+                self.conn.executescript(_HUMANIZE_SCHEMA)
+                self.conn.commit()
+            except sqlite3.Error as exc:
+                if self.logger is not None:
+                    self.logger.warning(f"[ai_mind] 去 AI 味日志表初始化失败：{exc}")
+                self.conn = None
+
+    def record(self, entry: HumanizeEntry) -> int:
+        if self.conn is None:
+            return 0
+        try:
+            cursor = self.conn.execute(
+                "INSERT INTO humanize_log (t, session_id, before_score, after_score, rounds,"
+                " mode, issues, original, final, note) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    float(entry.t),
+                    str(entry.session_id or ""),
+                    float(entry.before_score),
+                    float(entry.after_score),
+                    int(entry.rounds),
+                    str(entry.mode or "check"),
+                    str(entry.issues or ""),
+                    str(entry.original or "")[:2000],
+                    str(entry.final or "")[:2000],
+                    str(entry.note or ""),
+                ),
+            )
+            self.conn.commit()
+            return int(cursor.lastrowid or 0)
+        except sqlite3.Error as exc:
+            if self.logger is not None:
+                self.logger.warning(f"[ai_mind] 记录去 AI 味日志失败：{exc}")
+            return 0
+
+    def recent(self, limit: int = 30) -> list[HumanizeEntry]:
+        if self.conn is None:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM humanize_log ORDER BY t DESC, id DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [self._row(row) for row in rows]
+
+    def stats(self, since: float = 0.0) -> dict[str, Any]:
+        if self.conn is None:
+            return {"count": 0, "rewritten": 0, "avg_before": 0.0, "avg_after": 0.0, "rounds": 0}
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n, SUM(CASE WHEN rounds > 0 THEN 1 ELSE 0 END) AS rw,"
+                " AVG(before_score) AS b, AVG(after_score) AS a, SUM(rounds) AS rounds"
+                " FROM humanize_log WHERE t >= ?",
+                (float(since),),
+            ).fetchone()
+        except sqlite3.Error:
+            return {"count": 0, "rewritten": 0, "avg_before": 0.0, "avg_after": 0.0, "rounds": 0}
+        if row is None:
+            return {"count": 0, "rewritten": 0, "avg_before": 0.0, "avg_after": 0.0, "rounds": 0}
+        return {
+            "count": int(row["n"] or 0),
+            "rewritten": int(row["rw"] or 0),
+            "avg_before": round(float(row["b"] or 0.0), 1),
+            "avg_after": round(float(row["a"] or 0.0), 1),
+            "rounds": int(row["rounds"] or 0),
+        }
+
+    def clear(self) -> int:
+        if self.conn is None:
+            return 0
+        try:
+            cursor = self.conn.execute("DELETE FROM humanize_log")
+            self.conn.commit()
+            return int(cursor.rowcount or 0)
+        except sqlite3.Error:
+            return 0
+
+    @staticmethod
+    def _row(row: sqlite3.Row) -> HumanizeEntry:
+        return HumanizeEntry(
+            id=int(row["id"]),
+            t=float(row["t"]),
+            session_id=str(row["session_id"] or ""),
+            before_score=float(row["before_score"] or 0.0),
+            after_score=float(row["after_score"] or 0.0),
+            rounds=int(row["rounds"] or 0),
+            mode=str(row["mode"] or "check"),
+            issues=str(row["issues"] or ""),
+            original=str(row["original"] or ""),
+            final=str(row["final"] or ""),
+            note=str(row["note"] or ""),
+        )
+
+
+def should_sample(previous: PAD | None, current: PAD, epsilon: float, force: bool = False) -> bool:
+    """变化太小就不采样 —— 否则心跳会把曲线填成一条噪声带。"""
+    if force or previous is None:
+        return True
+    if epsilon <= 0:
+        return True
+    return (
+        abs(current.p - previous.p) >= epsilon
+        or abs(current.a - previous.a) >= epsilon
+        or abs(current.d - previous.d) >= epsilon
+    )
+
+
+__all__ = ["SAMPLE_KINDS", "Sample", "SampleStore", "should_sample", "now_ts"]
+

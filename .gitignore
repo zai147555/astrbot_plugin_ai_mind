@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 插件运行时数据（真实记忆/情绪/画像，绝不入库）
+data/
+*.db
+*.sqlite3
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 打包产物
+*.zip
