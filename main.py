@@ -542,6 +542,19 @@ class AIMindPlugin(Star):
             f"[ai_mind] 已就绪：{self.engine.session_count} 个会话的情绪、"
             f"{stats['total']} 条记忆、{self.samples.count()} 个曲线采样点"
         )
+        # 代码指纹 + 代码目录：装的是不是新代码、加载的是哪个文件夹，
+        # 一眼就能看出来（混装过，查了好几轮才发现）。
+        try:
+            from .mind import dbconn as _dbconn
+            from .mind import samples as _samples
+        except ImportError:  # pragma: no cover
+            import mind.dbconn as _dbconn  # type: ignore[no-redef]
+            import mind.samples as _samples  # type: ignore[no-redef]
+        logger.info(
+            "[ai_mind] 代码指纹："
+            f"{getattr(_dbconn, 'STAMP', '?')} / {getattr(_samples, 'STAMP', '?')}"
+            f"｜目录 {os.path.dirname(os.path.abspath(__file__))}"
+        )
         logger.info(f"[ai_mind] {splitter_engine.describe(self.splitter)}")
         logger.info(f"[ai_mind] {debounce_engine.describe(self.settings.debounce)}")
         try:

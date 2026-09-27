@@ -20,6 +20,9 @@ from typing import Any, Iterable
 from .dbconn import ConnectionSource
 from .emotion.model import PAD, now_ts
 
+#: 代码指纹，启动时会打到日志里（换了新代码这里就该变）
+STAMP = "samples/建表自愈+连接自愈+最后一招/3"
+
 SAMPLE_KINDS = ("auto", "stimulus", "self", "idle", "manual")
 
 _SCHEMA = """
