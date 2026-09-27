@@ -514,6 +514,7 @@ class AIMindPlugin(Star):
         except ImportError:  # pragma: no cover
             from mind.emotion import lexicon as _lexicon
         logger.info(f"[ai_mind] {_lexicon.describe_lexicon()}")
+        self._load_pending()
         self._warn_missing_special()
         self._ensure_task()
 
@@ -658,6 +659,56 @@ class AIMindPlugin(Star):
         if overflow > 0:
             del buffer[:overflow]
         self._last_append[session_id] = time.time()
+        self._save_pending()
+
+    def _save_pending(self) -> None:
+        """把还没抽取的对话写到磁盘。
+
+        这些对话原来只存在内存里：攒够 6 轮、或者静默 3 分钟才会被抽取，
+        中途重启一次就全没了 —— 表现就是「手动写入可以，自动写入从来不见效」，
+        而且越常重启越明显（更新插件就是在重启）。
+        """
+        try:
+            path = self.data_dir / "pending_turns.json"
+            data = {
+                key: [
+                    {"user": t.user, "assistant": t.assistant, "at": t.at}
+                    for t in turns
+                ]
+                for key, turns in self._buffers.items() if turns
+            }
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - 存不下不能影响聊天
+            if self.settings.debug_log:
+                logger.debug(f"[ai_mind] 暂存待抽取对话失败：{exc}")
+
+    def _load_pending(self) -> None:
+        """把上次没来得及抽取的对话捡回来。"""
+        try:
+            path = self.data_dir / "pending_turns.json"
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 读取待抽取对话失败：{exc}")
+            return
+        restored = 0
+        for key, items in (data or {}).items():
+            if not isinstance(items, list):
+                continue
+            turns = [
+                Turn(
+                    user=str(item.get("user") or ""),
+                    assistant=str(item.get("assistant") or ""),
+                    at=float(item.get("at") or 0.0),
+                )
+                for item in items if isinstance(item, dict)
+            ]
+            if turns:
+                self._buffers[str(key)] = turns
+                restored += len(turns)
+        if restored:
+            logger.info(f"[ai_mind] 捡回上次没抽取的 {restored} 轮对话，稍后一起抽记忆")
 
     def _ready_sessions(self, now: float, force: bool = False) -> list[str]:
         memory = self.settings.memory
@@ -680,6 +731,7 @@ class AIMindPlugin(Star):
                 continue
             sender_id = str(self._last_sender.get(session_id, "") or "")
             self._buffers[session_id] = []
+            self._save_pending()
             task = asyncio.create_task(self._extract_session(session_id, sender_id, list(turns)))
             self._extract_tasks.add(task)
             task.add_done_callback(self._extract_tasks.discard)
@@ -691,6 +743,12 @@ class AIMindPlugin(Star):
         try:
             provider = await self._resolve_provider(session_id)
             if provider is None:
+                # 静默返回过一次就够难受的了：用户看到的是「自动写入从来不生效」，
+                # 却没有任何线索指向「拿不到对话模型」。
+                logger.warning(
+                    "[ai_mind] 记忆抽取：拿不到对话模型，这一批先跳过"
+                    "（去 AstrBot 里确认默认对话模型设置好了）"
+                )
                 return
             existing = [m for m in self.store.list_memories(limit=40) if not m.sensitive]
             prompt = self.extractor.build_prompt(turns, format_existing_for_prompt(existing, 40))
@@ -703,8 +761,10 @@ class AIMindPlugin(Star):
             added, merged, skipped = self.extractor.integrate(
                 self.store, items, session_id=session_id, sender_id=sender_id
             )
-            if self.settings.debug_log:
+            if added or merged:
                 logger.info(f"[ai_mind] 记忆抽取：新增 {added} / 合并 {merged} / 跳过 {skipped}")
+            elif self.settings.debug_log:
+                logger.debug(f"[ai_mind] 记忆抽取：这一批没什么可记的（跳过 {skipped}）")
         except Exception as exc:  # noqa: BLE001
             logger.error(f"[ai_mind] 记忆抽取出错：{exc}", exc_info=True)
         finally:

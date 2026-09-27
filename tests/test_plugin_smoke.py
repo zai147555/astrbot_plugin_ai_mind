@@ -4400,3 +4400,25 @@ class ExternallyClosedTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class PendingTurnsPersistTest(PluginHarness, unittest.TestCase):
+    """攒着还没抽取的对话必须落盘 —— 否则越常重启，自动记忆越不见效。
+
+    原来这些对话只存在内存里：要攒够 batch_turns 轮、或者静默几分钟才抽一次，
+    中途重启一次全没了。用户看到的就是「手动写入可以，自动写入从来不见效」。"""
+
+    def test_pending_is_written_and_reloadable(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "我喜欢喝冰美式")
+            self.assertTrue(plugin._buffers, "说了一句就该攒着")
+            path = Path(plugin.data_dir) / "pending_turns.json"
+            self.assertTrue(path.exists(), "攒着的对话必须落盘，不然一重启就没了")
+            plugin._buffers.clear()
+            plugin._load_pending()
+            self.assertTrue(plugin._buffers, "重启后要能捡回来")
+            await plugin.terminate()
+
+        self.run_async(scenario())
