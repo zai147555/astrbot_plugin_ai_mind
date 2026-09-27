@@ -50,6 +50,30 @@ class PanelBackgroundTest(unittest.TestCase):
         """图片必须走插件接口拿，不能再靠页面资源链路。"""
         self.assertIn('request("background", "GET"', self.html)
 
+    def test_glass_blur_is_opt_in(self) -> None:
+        """backdrop-filter 必须挂在 body.glass-blur 下。
+
+        直接挂在卡片上会让滚动逐帧重算背后那一片的模糊 —— 手机上卡成幻灯。
+        """
+        self.assertIn("body.glass-blur:not(.no-bg) .card", self.html)
+        start = self.html.index("body:not(.no-bg) .card {")
+        block = self.html[start:self.html.index("}", start)]
+        self.assertNotIn("backdrop-filter", block, "卡片的基础样式里不能带 backdrop-filter")
+
+    def test_no_fixed_background_attachment(self) -> None:
+        """background-attachment: fixed 在手机浏览器上是出了名的滚动性能杀手。
+
+        注意要先剥掉 CSS 注释 —— 注释里正好写着「这里原来有
+        background-attachment: fixed」，直接查字符串会误报。
+        """
+        bare = re.sub(r"/\*.*?\*/", "", self.html, flags=re.S)
+        self.assertNotIn("background-attachment", bare,
+                         "背景图那层已经是 position: fixed，body 不需要 background-attachment")
+
+    def test_glass_toggle_exists(self) -> None:
+        self.assertIn('id="glass-toggle"', self.html)
+        self.assertIn("function setGlass", self.html)
+
     def test_script_tags_balanced(self) -> None:
         """踩过坑：补丁多插了一个 <script>，把引导脚本整段变成语法错误。"""
         opens = len(re.findall(r"<script\b", self.html))

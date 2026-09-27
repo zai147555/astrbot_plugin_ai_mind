@@ -3963,3 +3963,20 @@ class CurveDiagnosticsTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class GlassToggleTest(PluginHarness, unittest.TestCase):
+    """真·毛玻璃是可选开关，默认关（很吃性能）。"""
+
+    def test_glass_round_trips(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            before = (await self.api(plugin, "wizard/mode"))["data"]
+            self.assertIn("glass", before)
+            self.assertFalse(before["glass"], "默认必须关着，否则滚动会卡")
+            await self.api(plugin, "wizard/mode", body={"glass": True})
+            self.assertTrue((await self.api(plugin, "wizard/mode"))["data"]["glass"])
+            await plugin.terminate()
+
+        self.run_async(scenario())

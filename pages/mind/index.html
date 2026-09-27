@@ -26,6 +26,7 @@
     --glass-solid: rgba(255,255,255,.94);
     --glass-solid-2: rgba(255,255,255,.88);
     --glass-line: rgba(16,24,40,.07);
+    --glass-hi: rgba(255,255,255,.75);
   }
   /* 深色：手动切到深色，或者「跟随系统」时系统是深色 */
   html[data-theme="dark"] {
@@ -41,6 +42,7 @@
     --glass-solid: rgba(22,26,34,.95);
     --glass-solid-2: rgba(28,33,43,.92);
     --glass-line: rgba(255,255,255,.09);
+    --glass-hi: rgba(255,255,255,.07);
     --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
     --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
   }
@@ -58,6 +60,7 @@
       --glass-solid: rgba(22,26,34,.95);
       --glass-solid-2: rgba(28,33,43,.92);
       --glass-line: rgba(255,255,255,.09);
+    --glass-hi: rgba(255,255,255,.07);
       --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
       --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
     }
@@ -78,7 +81,9 @@
     margin: 0; padding: 18px;
     background: var(--bg); color: var(--fg);
     background-image: radial-gradient(900px 320px at 50% -160px, var(--accent-soft), transparent 72%);
-    background-attachment: fixed; background-repeat: no-repeat;
+    background-repeat: no-repeat;
+    /* 这里原来有 background-attachment: fixed —— 手机浏览器上它会让滚动逐帧重绘，
+       是出了名的卡顿来源，去掉。反正背景图那层是 position: fixed，效果一样。 */
     font: 14px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
@@ -247,8 +252,7 @@
     margin: -6px 0 12px; padding: 9px 13px;
     border-radius: var(--radius-sm);
     background: var(--glass); border: 1px solid var(--glass-line);
-    -webkit-backdrop-filter: blur(16px) saturate(1.6);
-    backdrop-filter: blur(16px) saturate(1.6);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
   }
   .bg-bar input[type=range] { width: 150px; }
   @media (max-width: 640px) { .bg-bar input[type=range] { width: 110px; } }
@@ -275,12 +279,18 @@
   }
   body.no-bg .bg-layer, body.no-bg .bg-veil { display: none; }
 
-  /* 卡片变成毛玻璃：背后那张虚化的图透过一层磨砂传上来 */
+  /* 卡片变成「玻璃」：半透明 + 上沿一道高光。
+     ⚠️ 这里**故意不用 backdrop-filter** —— 卡片在滚动内容里，一滚动就要对
+     每张卡片逐帧重算「背后那一片」的模糊，手机上直接卡成幻灯。
+     真·毛玻璃挪到 body.glass-blur 下，由「背景」设置条里的开关控制，默认关。 */
   body:not(.no-bg) .card {
     background: var(--glass);
+    border-color: var(--glass-line);
+    box-shadow: var(--shadow-1), inset 0 1px 0 var(--glass-hi);
+  }
+  body.glass-blur:not(.no-bg) .card {
     -webkit-backdrop-filter: blur(16px) saturate(1.6);
     backdrop-filter: blur(16px) saturate(1.6);
-    border-color: var(--glass-line);
   }
   body:not(.no-bg) .memitem {
     background: var(--glass-2);
@@ -327,6 +337,9 @@
     <span class="small muted mono" id="bg-blur-val">4px</span>
     <span class="small muted">← 往左更清晰</span>
     <span class="grow"></span>
+    <label class="small muted" title="真·毛玻璃很好看，但滚动时每帧都要重算模糊，手机容易卡">
+      <input type="checkbox" id="glass-toggle"> 毛玻璃
+    </label>
     <button class="ghost small" id="bg-shuffle">🎲 换一张</button>
     <button class="ghost small" id="bg-off">关掉背景</button>
   </div>
@@ -2298,6 +2311,10 @@
     $("bg-blur").oninput = function () { setBgBlur(this.value, false); };
     $("bg-blur").onchange = function () { setBgBlur(this.value, true); };
     $("bg-shuffle").onclick = function () { shuffleBackground(); toast("换了一张"); };
+    $("glass-toggle").onchange = function () {
+      setGlass(this.checked, true);
+      if (this.checked) toast("毛玻璃开了 —— 如果变卡就关掉它");
+    };
     $("bg-off").onclick = function () {
       initBackground(false);
       toast("背景关掉了（刷新会回来；想永久关就去「全部功能设置 → 面板背景图」）");
@@ -3359,6 +3376,24 @@
       request("wizard/mode", "POST", { bg_blur: value }).catch(function () {});
     }
     return value;
+  }
+
+
+  //: 真·毛玻璃（backdrop-filter）。默认关 —— 它会在滚动时对每张卡片逐帧重算
+  //: 背后那一片的模糊，手机上很卡。想要好看的可以自己打开。
+  function setGlass(on, persist) {
+    var body = document.body;
+    if (body && body.classList) {
+      if (on) body.classList.add("glass-blur");
+      else body.classList.remove("glass-blur");
+    }
+    var box = $("glass-toggle");
+    if (box && box.checked !== !!on) box.checked = !!on;
+    if (persist !== false) {
+      bgRemember("ai-mind-glass", on ? "1" : "0");
+      request("wizard/mode", "POST", { glass: !!on }).catch(function () {});
+    }
+    return !!on;
   }
 
   function loadBackground(index) {
@@ -4500,11 +4535,13 @@
   gpFillSelects();
   applyTheme(readStoredTheme());
   setBgBlur(bgStored(BG_BLUR_KEY, 4), false);
+  setGlass(bgStored("ai-mind-glass", "0") === "1", false);
   initBackground(true);   // 先按开着渲染，等配置回来再纠偏，免得闪一下
   request("wizard/mode", "GET").then(function (data) {
     applyPanelMode((data && data.mode) || "simple");
     initBackground(!data || data.background !== false);
     if (data && data.bg_blur !== undefined) setBgBlur(data.bg_blur, false);
+    if (data && data.glass !== undefined) setGlass(data.glass, false);
     if (state.panelMode === "simple") {
       loadWizard().catch(function () {});
       loadSettings().catch(function () {});
