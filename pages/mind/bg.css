@@ -1,0 +1,44 @@
+/* 背景图规则（自动生成，勿手改）。
+   为什么单独放一个文件：AstrBot 只重写「外部 .css 文件」里的 url()，
+   内联 style 里的相对路径不会被换成带 token 的资源地址，会直接 404。
+   数量必须和 index.html 里的 BG_COUNT 一致（tests/test_panel_bg.py 会查）。 */
+body.bg-1 .bg-layer { background-image: url("bg/01.jpg"); }
+body.bg-2 .bg-layer { background-image: url("bg/02.jpg"); }
+body.bg-3 .bg-layer { background-image: url("bg/03.jpg"); }
+body.bg-4 .bg-layer { background-image: url("bg/04.jpg"); }
+body.bg-5 .bg-layer { background-image: url("bg/05.jpg"); }
+body.bg-6 .bg-layer { background-image: url("bg/06.jpg"); }
+body.bg-7 .bg-layer { background-image: url("bg/07.jpg"); }
+body.bg-8 .bg-layer { background-image: url("bg/08.jpg"); }
+body.bg-9 .bg-layer { background-image: url("bg/09.jpg"); }
+body.bg-10 .bg-layer { background-image: url("bg/10.jpg"); }
+body.bg-11 .bg-layer { background-image: url("bg/11.jpg"); }
+body.bg-12 .bg-layer { background-image: url("bg/12.jpg"); }
+body.bg-13 .bg-layer { background-image: url("bg/13.jpg"); }
+body.bg-14 .bg-layer { background-image: url("bg/14.jpg"); }
+body.bg-15 .bg-layer { background-image: url("bg/15.jpg"); }
+body.bg-16 .bg-layer { background-image: url("bg/16.jpg"); }
+body.bg-17 .bg-layer { background-image: url("bg/17.jpg"); }
+body.bg-18 .bg-layer { background-image: url("bg/18.jpg"); }
+body.bg-19 .bg-layer { background-image: url("bg/19.jpg"); }
+body.bg-20 .bg-layer { background-image: url("bg/20.jpg"); }
+body.bg-21 .bg-layer { background-image: url("bg/21.jpg"); }
+body.bg-22 .bg-layer { background-image: url("bg/22.jpg"); }
+body.bg-23 .bg-layer { background-image: url("bg/23.jpg"); }
+body.bg-24 .bg-layer { background-image: url("bg/24.jpg"); }
+body.bg-25 .bg-layer { background-image: url("bg/25.jpg"); }
+body.bg-26 .bg-layer { background-image: url("bg/26.jpg"); }
+body.bg-27 .bg-layer { background-image: url("bg/27.jpg"); }
+body.bg-28 .bg-layer { background-image: url("bg/28.jpg"); }
+body.bg-29 .bg-layer { background-image: url("bg/29.jpg"); }
+body.bg-30 .bg-layer { background-image: url("bg/30.jpg"); }
+body.bg-31 .bg-layer { background-image: url("bg/31.jpg"); }
+body.bg-32 .bg-layer { background-image: url("bg/32.jpg"); }
+body.bg-33 .bg-layer { background-image: url("bg/33.jpg"); }
+body.bg-34 .bg-layer { background-image: url("bg/34.jpg"); }
+body.bg-35 .bg-layer { background-image: url("bg/35.jpg"); }
+body.bg-36 .bg-layer { background-image: url("bg/36.jpg"); }
+body.bg-37 .bg-layer { background-image: url("bg/37.jpg"); }
+body.bg-38 .bg-layer { background-image: url("bg/38.jpg"); }
+body.bg-39 .bg-layer { background-image: url("bg/39.jpg"); }
+body.bg-40 .bg-layer { background-image: url("bg/40.jpg"); }

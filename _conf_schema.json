@@ -599,6 +599,12 @@
         "type": "bool",
         "default": false,
         "hint": "默认只有登录 WebUI 的人能看。面板接口本身就是走 WebUI 的登录态的。"
+      },
+      "background": {
+        "description": "面板背景图",
+        "type": "bool",
+        "default": true,
+        "hint": "每次打开随机一张虚化好的背景图，卡片变成毛玻璃。嫌花眼可以关掉，关掉后回到纯色背景。"
       }
     }
   },

@@ -19,6 +19,13 @@
     --shadow-2: 0 6px 18px rgba(16,24,40,.07), 0 2px 6px rgba(16,24,40,.05);
     --hover: rgba(16,24,40,.045);
     --radius: 14px; --radius-sm: 10px;
+    /* 背景图之上的纱，以及毛玻璃卡片的颜色 */
+    --veil: linear-gradient(180deg, rgba(250,251,253,.76) 0%, rgba(250,251,253,.34) 20%, rgba(250,251,253,.48) 100%);
+    --glass: rgba(255,255,255,.62);
+    --glass-2: rgba(255,255,255,.38);
+    --glass-solid: rgba(255,255,255,.94);
+    --glass-solid-2: rgba(255,255,255,.88);
+    --glass-line: rgba(16,24,40,.07);
   }
   /* 深色：手动切到深色，或者「跟随系统」时系统是深色 */
   html[data-theme="dark"] {
@@ -28,6 +35,12 @@
     --accent: #818cf8; --accent-2: #a78bfa; --accent-fg: #0e1016;
     --accent-soft: rgba(129,140,248,.14);
     --hover: rgba(255,255,255,.07);
+    --veil: linear-gradient(180deg, rgba(10,12,18,.74) 0%, rgba(10,12,18,.40) 20%, rgba(10,12,18,.60) 100%);
+    --glass: rgba(20,24,32,.58);
+    --glass-2: rgba(30,35,46,.40);
+    --glass-solid: rgba(22,26,34,.95);
+    --glass-solid-2: rgba(28,33,43,.92);
+    --glass-line: rgba(255,255,255,.09);
     --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
     --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
   }
@@ -39,6 +52,12 @@
       --accent: #818cf8; --accent-2: #a78bfa; --accent-fg: #0e1016;
       --accent-soft: rgba(129,140,248,.14);
       --hover: rgba(255,255,255,.07);
+      --veil: linear-gradient(180deg, rgba(10,12,18,.74) 0%, rgba(10,12,18,.40) 20%, rgba(10,12,18,.60) 100%);
+      --glass: rgba(20,24,32,.58);
+      --glass-2: rgba(30,35,46,.40);
+      --glass-solid: rgba(22,26,34,.95);
+      --glass-solid-2: rgba(28,33,43,.92);
+      --glass-line: rgba(255,255,255,.09);
       --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
       --shadow-2: 0 6px 18px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
     }
@@ -224,10 +243,48 @@
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
   }
+
+  /* ===================== 背景（景深 + 毛玻璃） ===================== */
+  /* 图片本身已经把虚化烤进去了，浏览器这边不用再来一遍全屏 filter: blur() ——
+     那个每帧都要重算，手机上很费。这里只负责铺满和压纱。 */
+  .bg-layer {
+    position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background-size: cover; background-position: center; background-repeat: no-repeat;
+    transform: scale(1.06);
+  }
+  .bg-veil {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: var(--veil);
+    transition: background .25s ease;
+  }
+  body.no-bg .bg-layer, body.no-bg .bg-veil { display: none; }
+
+  /* 卡片变成毛玻璃：背后那张虚化的图透过一层磨砂传上来 */
+  body:not(.no-bg) .card {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(16px) saturate(1.6);
+    backdrop-filter: blur(16px) saturate(1.6);
+    border-color: var(--glass-line);
+  }
+  body:not(.no-bg) .memitem {
+    background: var(--glass-2);
+    border-color: var(--glass-line);
+  }
+  body:not(.no-bg) .card:hover { border-color: var(--accent); }
+  /* 不支持 backdrop-filter 的版本：玻璃要更实，否则字压在图上看不清 */
+  @supports not ((backdrop-filter: blur(4px)) or (-webkit-backdrop-filter: blur(4px))) {
+    body:not(.no-bg) .card { background: var(--glass-solid); }
+    body:not(.no-bg) .memitem { background: var(--glass-solid-2); }
+  }
 </style>
+<!-- 背景图的规则单独放外部 CSS：AstrBot 只重写「外部 .css 文件」里的 url()，
+     内联 style 里的相对路径不会被换成带 token 的资源地址，会 404。 -->
+<link rel="stylesheet" href="bg.css">
+<script>
 <script>
   // 尽早把存过的主题贴上，免得深色用户先看到一下白闪
   try {
+    window.__aiMindHostTheme = document.documentElement.getAttribute("data-theme") || "auto";
     var savedTheme = localStorage.getItem("ai-mind-theme");
     if (savedTheme === "light" || savedTheme === "dark") {
       document.documentElement.setAttribute("data-theme", savedTheme);
@@ -236,13 +293,16 @@
 </script>
 </head>
 <body>
+<div class="bg-layer" aria-hidden="true"></div>
+<div class="bg-veil" aria-hidden="true"></div>
 <div class="wrap">
   <div class="top">
     <h1>🧠 心智面板</h1>
     <span class="small muted">会话</span>
     <select id="session" title="选择要看的群聊或私聊" style="min-width:210px"></select>
     <button id="mode-btn" class="ghost small" title="傻瓜模式只留必要的东西">切到专家模式</button>
-    <button id="theme-btn" class="ghost small" title="深浅色：跟随系统 / 浅色 / 深色">🌗 自动</button>
+    <button id="theme-btn" class="ghost small" title="深浅色：跟随面板 / 浅色 / 深色">🖥 跟随面板</button>
+    <button id="bg-btn" class="ghost small" title="换一张背景">🎲 换背景</button>
     <button id="refresh" class="ghost" title="重新拉取数据">刷新</button>
     <span id="api-status" class="small muted" style="flex-basis:100%"></span>
   </div>
@@ -2188,6 +2248,15 @@
       if (next === "simple") loadWizard().catch(function () {});
     };
     $("theme-btn").onclick = cycleTheme;
+    $("bg-btn").onclick = function () {
+      if (document.body.classList.contains("no-bg")) {
+        initBackground(true);
+        toast("背景打开了");
+        return;
+      }
+      applyBackground(0);
+      toast("换了一张背景");
+    };
     $("wz-reload").onclick = function () {
       loadWizard().then(function () { toast("自检完成"); })
         .catch(function (e) { toast("自检失败：" + e.message); });
@@ -3164,26 +3233,27 @@
   ];
 
   // ---------- 深浅色 ----------
-  // 面板跑在不透明源的沙箱 iframe 里：读不到宿主的主题设置，localStorage
-  // 也可能直接抛异常。所以默认「跟随系统」（CSS 里的 prefers-color-scheme），
-  // 再给一个手动三档开关。
+  // AstrBot 托管页面时会把 <html data-theme="..."> 改写成面板的真实主题
+  // （plugin_page_service.apply_theme_to_html），所以「跟随面板」是免费的。
+  // 只有用户手动选了浅/深，才去覆盖宿主给的值。
   var THEME_KEY = "ai-mind-theme";
-  var THEME_ORDER = ["auto", "light", "dark"];
-  var THEME_LABEL = { auto: "🌗 自动", light: "☀️ 浅色", dark: "🌙 深色" };
+  var THEME_ORDER = ["", "light", "dark"];
+  var THEME_LABEL = { "": "🖥 跟随面板", light: "☀️ 浅色", dark: "🌙 深色" };
 
   function readStoredTheme() {
     try {
       var value = window.localStorage.getItem(THEME_KEY);
-      return THEME_LABEL[value] ? value : "auto";
+      return (value === "light" || value === "dark") ? value : "";
     } catch (e) {
-      return "auto";   // 沙箱里读 localStorage 会抛，别让它把面板带崩
+      return "";   // 沙箱里读 localStorage 会抛，别让它把面板带崩
     }
   }
 
   function applyTheme(mode) {
-    var value = THEME_LABEL[mode] ? mode : "auto";
+    var value = (mode === "light" || mode === "dark") ? mode : "";
+    var fallback = window.__aiMindHostTheme || "auto";
     if (document.documentElement && document.documentElement.setAttribute) {
-      document.documentElement.setAttribute("data-theme", value);
+      document.documentElement.setAttribute("data-theme", value || fallback);
     }
     var btn = $("theme-btn");
     if (btn) btn.textContent = THEME_LABEL[value];
@@ -3198,10 +3268,52 @@
   }
 
   function cycleTheme() {
-    var now = document.documentElement.getAttribute("data-theme") || "auto";
+    var now = readStoredTheme();
     var next = THEME_ORDER[(THEME_ORDER.indexOf(now) + 1) % THEME_ORDER.length];
     applyTheme(next);
     toast("主题：" + THEME_LABEL[next]);
+  }
+
+
+  // ---------- 背景图（每次打开随机一张） ----------
+  // 图片是构建期就虚化好的（烘焙进去的景深），浏览器这边只负责铺满 ——
+  // 全屏 filter: blur() 每帧都要重算，手机上很费，别用。
+  var BG_COUNT = 40;          // 必须和 pages/mind/bg/ 里的图片数、bg.css 里的规则数一致
+  var BG_KEY = "ai-mind-bg";
+
+  function readStoredBg() {
+    try {
+      return parseInt(window.localStorage.getItem(BG_KEY), 10) || 0;
+    } catch (e) {
+      return 0;   // 沙箱里读 localStorage 会抛
+    }
+  }
+
+  function applyBackground(index) {
+    var body = document.body;
+    if (!body || !body.classList) return 0;
+    for (var i = 1; i <= BG_COUNT; i++) body.classList.remove("bg-" + i);
+    var pick = index;
+    if (!(pick >= 1 && pick <= BG_COUNT)) {
+      pick = 1 + Math.floor(Math.random() * BG_COUNT);
+      // 连着两次抽到同一张，看着就像「没生效」—— 撞上了就顺延一张
+      var last = readStoredBg();
+      if (BG_COUNT > 1 && pick === last) pick = (pick % BG_COUNT) + 1;
+    }
+    body.classList.add("bg-" + pick);
+    try { window.localStorage.setItem(BG_KEY, String(pick)); } catch (e) {}
+    return pick;
+  }
+
+  function initBackground(enabled) {
+    var body = document.body;
+    if (body && body.classList) {
+      if (enabled) body.classList.remove("no-bg");
+      else body.classList.add("no-bg");
+    }
+    var btn = $("bg-btn");
+    if (btn) btn.style.display = enabled ? "" : "none";
+    if (enabled) applyBackground(0);
   }
 
   function applyPanelMode(mode) {
@@ -4303,8 +4415,10 @@
   bind();
   gpFillSelects();
   applyTheme(readStoredTheme());
+  initBackground(true);   // 先按开着渲染，等配置回来再纠偏，免得闪一下
   request("wizard/mode", "GET").then(function (data) {
     applyPanelMode((data && data.mode) || "simple");
+    initBackground(!data || data.background !== false);
     if (state.panelMode === "simple") {
       loadWizard().catch(function () {});
       loadSettings().catch(function () {});
