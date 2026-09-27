@@ -204,5 +204,10 @@ class ConnectionSource:
         return self.conn is not None and self._schema_ready
 
 
-__all__ = ["ConnectionSource"]
+#: 代码指纹。装的是不是新代码，启动日志里一眼就能看出来 ——
+#: 之前栽过一次：main.py 更新了、mind/samples.py 还是几个月前那份，
+#: 于是所有修复都「没生效」，白查了好几轮。
+STAMP = "dbconn/自愈+最后一招/3"
+
+__all__ = ["ConnectionSource", "STAMP"]
 
