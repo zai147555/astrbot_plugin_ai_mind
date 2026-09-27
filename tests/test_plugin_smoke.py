@@ -3514,6 +3514,67 @@ class DebounceIntegrationTest(PluginHarness, unittest.TestCase):
         self.run_async(scenario())
 
 
+
+
+class BackgroundApiTest(PluginHarness, unittest.TestCase):
+    """面板背景图接口。"""
+
+    def test_returns_a_data_uri(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            res = await self.api(plugin, "background")
+            self.assertTrue(res["ok"], res)
+            data = res["data"]
+            self.assertGreater(data["count"], 0, "一张背景图都没有")
+            self.assertTrue(data["data"].startswith("data:image/jpeg;base64,"))
+            self.assertGreater(len(data["data"]), 1000, "图片数据太小了，不对劲")
+            self.assertTrue(1 <= data["n"] <= data["count"])
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_specific_index(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            first = (await self.api(plugin, "background", query={"n": "1"}))["data"]
+            self.assertEqual(first["n"], 1)
+            again = (await self.api(plugin, "background", query={"n": "1"}))["data"]
+            self.assertEqual(first["data"], again["data"], "同一编号应该给同一张图")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_out_of_range_falls_back_to_random(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            data = (await self.api(plugin, "background", query={"n": "9999"}))["data"]
+            self.assertTrue(1 <= data["n"] <= data["count"], "越界应该随机挑一张")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_blur_round_trips(self) -> None:
+        """虚化滑杆的值要能存下来。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            before = (await self.api(plugin, "wizard/mode"))["data"]
+            self.assertIn("bg_blur", before)
+            await self.api(plugin, "wizard/mode", body={"bg_blur": 11})
+            after = (await self.api(plugin, "wizard/mode"))["data"]
+            self.assertEqual(after["bg_blur"], 11)
+            # 越界要夹住
+            await self.api(plugin, "wizard/mode", body={"bg_blur": 99})
+            self.assertEqual((await self.api(plugin, "wizard/mode"))["data"]["bg_blur"], 16)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+
 class DebouncePanelTest(PluginHarness, unittest.TestCase):
     """面板上的防抖接口。"""
 

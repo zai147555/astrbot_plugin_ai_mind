@@ -162,6 +162,7 @@ const KNOWN_ROUTES = [
   PLUGIN + "/images/trigger/update", PLUGIN + "/images/trigger/delete",
   PLUGIN + "/images/delete", PLUGIN + "/images/batch", PLUGIN + "/_echo",
   PLUGIN + "/debounce", PLUGIN + "/debounce/preview", PLUGIN + "/debounce/save",
+  PLUGIN + "/background",
   PLUGIN + "/splitter", PLUGIN + "/splitter/preview", PLUGIN + "/splitter/save",
   PLUGIN + "/splitter/reset", PLUGIN + "/relationship", PLUGIN + "/relationship/save",
   PLUGIN + "/relationship/reset", PLUGIN + "/relationship/relation",
@@ -219,7 +220,13 @@ async function run({ bridge, fetchImpl, origin = "http://astrbot.local" }) {
     querySelector: () => null,
     querySelectorAll: () => [],
     addEventListener() {},
-    documentElement: { getAttribute: () => "light", setAttribute() {}, style: {} }
+    documentElement: {
+      getAttribute: () => "light",
+      setAttribute() {},
+      // 真浏览器里 style 是 CSSStyleDeclaration；这里给个够用的替身，
+      // 否则面板里 setProperty("--bg-blur", ...) 会把脚本带崩
+      style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" }
+    }
   };
   sandbox.getComputedStyle = () => ({ getPropertyValue: () => "#888888" });
   sandbox.addEventListener = () => {};

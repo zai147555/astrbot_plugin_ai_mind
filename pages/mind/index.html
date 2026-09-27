@@ -240,6 +240,27 @@
     .tabs { margin-bottom: 12px; }
   }
 
+
+  /* 背景设置条：点右上角「🎨 背景」展开 */
+  .bg-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin: -6px 0 12px; padding: 9px 13px;
+    border-radius: var(--radius-sm);
+    background: var(--glass); border: 1px solid var(--glass-line);
+    -webkit-backdrop-filter: blur(16px) saturate(1.6);
+    backdrop-filter: blur(16px) saturate(1.6);
+  }
+  .bg-bar input[type=range] { width: 150px; }
+  @media (max-width: 640px) { .bg-bar input[type=range] { width: 110px; } }
+
+  /* 背景层：负 inset 让模糊的边缘落到视口外，四周不会露透明边 */
+  .bg-layer {
+    position: fixed; inset: -80px; z-index: -2; pointer-events: none;
+    background-size: cover; background-position: center; background-repeat: no-repeat;
+    filter: blur(var(--bg-blur, 4px));
+    transition: filter .18s ease;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
   }
@@ -247,11 +268,6 @@
   /* ===================== 背景（景深 + 毛玻璃） ===================== */
   /* 图片本身已经把虚化烤进去了，浏览器这边不用再来一遍全屏 filter: blur() ——
      那个每帧都要重算，手机上很费。这里只负责铺满和压纱。 */
-  .bg-layer {
-    position: fixed; inset: 0; z-index: -2; pointer-events: none;
-    background-size: cover; background-position: center; background-repeat: no-repeat;
-    transform: scale(1.06);
-  }
   .bg-veil {
     position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background: var(--veil);
@@ -279,8 +295,6 @@
 </style>
 <!-- 背景图的规则单独放外部 CSS：AstrBot 只重写「外部 .css 文件」里的 url()，
      内联 style 里的相对路径不会被换成带 token 的资源地址，会 404。 -->
-<link rel="stylesheet" href="bg.css">
-<script>
 <script>
   // 尽早把存过的主题贴上，免得深色用户先看到一下白闪
   try {
@@ -302,9 +316,19 @@
     <select id="session" title="选择要看的群聊或私聊" style="min-width:210px"></select>
     <button id="mode-btn" class="ghost small" title="傻瓜模式只留必要的东西">切到专家模式</button>
     <button id="theme-btn" class="ghost small" title="深浅色：跟随面板 / 浅色 / 深色">🖥 跟随面板</button>
-    <button id="bg-btn" class="ghost small" title="换一张背景">🎲 换背景</button>
+    <button id="bg-btn" class="ghost small" title="背景设置：换一张、调清晰度">🎨 背景</button>
     <button id="refresh" class="ghost" title="重新拉取数据">刷新</button>
     <span id="api-status" class="small muted" style="flex-basis:100%"></span>
+  </div>
+
+  <div class="bg-bar" id="bg-bar" style="display:none">
+    <span class="small muted">背景虚化</span>
+    <input type="range" id="bg-blur" min="0" max="16" step="1" value="4">
+    <span class="small muted mono" id="bg-blur-val">4px</span>
+    <span class="small muted">← 往左更清晰</span>
+    <span class="grow"></span>
+    <button class="ghost small" id="bg-shuffle">🎲 换一张</button>
+    <button class="ghost small" id="bg-off">关掉背景</button>
   </div>
 
   <div class="tabs">
@@ -2249,13 +2273,17 @@
     };
     $("theme-btn").onclick = cycleTheme;
     $("bg-btn").onclick = function () {
-      if (document.body.classList.contains("no-bg")) {
-        initBackground(true);
-        toast("背景打开了");
-        return;
-      }
-      applyBackground(0);
-      toast("换了一张背景");
+      var bar = $("bg-bar");
+      if (!bar) return;
+      bar.style.display = (bar.style.display === "none" || !bar.style.display) ? "" : "none";
+    };
+    // 拖动时只改样式（不发请求），松手才存 —— 免得一路拖着打一串请求
+    $("bg-blur").oninput = function () { setBgBlur(this.value, false); };
+    $("bg-blur").onchange = function () { setBgBlur(this.value, true); };
+    $("bg-shuffle").onclick = function () { shuffleBackground(); toast("换了一张"); };
+    $("bg-off").onclick = function () {
+      initBackground(false);
+      toast("背景关掉了（刷新会回来；想永久关就去「全部功能设置 → 面板背景图」）");
     };
     $("wz-reload").onclick = function () {
       loadWizard().then(function () { toast("自检完成"); })
@@ -3275,34 +3303,71 @@
   }
 
 
-  // ---------- 背景图（每次打开随机一张） ----------
-  // 图片是构建期就虚化好的（烘焙进去的景深），浏览器这边只负责铺满 ——
-  // 全屏 filter: blur() 每帧都要重算，手机上很费，别用。
-  var BG_COUNT = 40;          // 必须和 pages/mind/bg/ 里的图片数、bg.css 里的规则数一致
+  // ---------- 背景图 ----------
+  // 图片走插件自己的接口拿回来（base64 data URI），不走页面静态资源链路 ——
+  // 那条链路（asset token / 路由 / 鉴权）在不同 AstrBot 版本里不一样，
+  // 而面板的数据接口是确定通的：所有面板数据都走它。
   var BG_KEY = "ai-mind-bg";
+  var BG_BLUR_KEY = "ai-mind-bg-blur";
+  var bgCount = 40;      // 真正的数量由接口返回，这里只是个初始值
 
-  function readStoredBg() {
+  function bgStored(key, fallback) {
     try {
-      return parseInt(window.localStorage.getItem(BG_KEY), 10) || 0;
+      var value = window.localStorage.getItem(key);
+      return (value === null || value === "") ? fallback : value;
     } catch (e) {
-      return 0;   // 沙箱里读 localStorage 会抛
+      return fallback;   // 沙箱里读 localStorage 会抛
     }
   }
 
-  function applyBackground(index) {
-    var body = document.body;
-    if (!body || !body.classList) return 0;
-    for (var i = 1; i <= BG_COUNT; i++) body.classList.remove("bg-" + i);
-    var pick = index;
-    if (!(pick >= 1 && pick <= BG_COUNT)) {
-      pick = 1 + Math.floor(Math.random() * BG_COUNT);
-      // 连着两次抽到同一张，看着就像「没生效」—— 撞上了就顺延一张
-      var last = readStoredBg();
-      if (BG_COUNT > 1 && pick === last) pick = (pick % BG_COUNT) + 1;
+  function bgRemember(key, value) {
+    try { window.localStorage.setItem(key, String(value)); } catch (e) {}
+  }
+
+  //: 虚化强度。图片里只烤了一层很轻的底子（半径 3），
+  //: 剩下的靠这里调 —— 拖到 0 就是最清晰。
+  function setBgBlur(px, persist) {
+    var value = Math.max(0, Math.min(16, parseInt(px, 10) || 0));
+    try {
+      document.documentElement.style.setProperty("--bg-blur", value + "px");
+    } catch (e) {
+      // 极老的 WebView / 测试环境可能没有 setProperty，虚化就用默认值
     }
-    body.classList.add("bg-" + pick);
-    try { window.localStorage.setItem(BG_KEY, String(pick)); } catch (e) {}
-    return pick;
+    var out = $("bg-blur-val");
+    if (out) out.textContent = value === 0 ? "最清晰" : value + "px";
+    var slider = $("bg-blur");
+    if (slider && String(slider.value) !== String(value)) slider.value = value;
+    if (persist !== false) {
+      bgRemember(BG_BLUR_KEY, value);
+      request("wizard/mode", "POST", { bg_blur: value }).catch(function () {});
+    }
+    return value;
+  }
+
+  function loadBackground(index) {
+    if (!document.body || document.body.classList.contains("no-bg")) return;
+    var query = {};
+    var wanted = (index === undefined ? 0 : index);
+    if (wanted > 0 && bgCount > 0) {
+      // 换一张：在客户端挑，避开上一张，免得撞上了看着像没生效
+      var last = parseInt(bgStored(BG_KEY, "0"), 10) || 0;
+      var pick = wanted;
+      if (bgCount > 1 && pick === last) pick = (pick % bgCount) + 1;
+      query.n = String(pick);
+    }
+    request("background", "GET", null, query)
+      .then(function (data) {
+        bgCount = data.count || bgCount;
+        if (data.n) bgRemember(BG_KEY, data.n);
+        var layer = document.querySelector(".bg-layer");
+        if (layer && data.data) layer.style.backgroundImage = 'url("' + data.data + '")';
+      })
+      .catch(function (e) { toast("背景加载失败：" + e.message); });
+  }
+
+  function shuffleBackground() {
+    if (bgCount > 0) loadBackground(1 + Math.floor(Math.random() * bgCount));
+    else loadBackground(0);
   }
 
   function initBackground(enabled) {
@@ -3313,7 +3378,9 @@
     }
     var btn = $("bg-btn");
     if (btn) btn.style.display = enabled ? "" : "none";
-    if (enabled) applyBackground(0);
+    var bar = $("bg-bar");
+    if (bar) bar.style.display = "none";
+    if (enabled) loadBackground(0);
   }
 
   function applyPanelMode(mode) {
@@ -4415,10 +4482,12 @@
   bind();
   gpFillSelects();
   applyTheme(readStoredTheme());
+  setBgBlur(bgStored(BG_BLUR_KEY, 4), false);
   initBackground(true);   // 先按开着渲染，等配置回来再纠偏，免得闪一下
   request("wizard/mode", "GET").then(function (data) {
     applyPanelMode((data && data.mode) || "simple");
     initBackground(!data || data.background !== false);
+    if (data && data.bg_blur !== undefined) setBgBlur(data.bg_blur, false);
     if (state.panelMode === "simple") {
       loadWizard().catch(function () {});
       loadSettings().catch(function () {});
