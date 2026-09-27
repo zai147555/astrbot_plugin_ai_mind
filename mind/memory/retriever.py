@@ -51,6 +51,21 @@ class RetrievalResult:
     def ids(self) -> list[int]:
         return [m.id for m in self.memories() if m.id]
 
+    def retain(self, keep: Sequence[Memory]) -> int:
+        """只留下 keep 里的这几条（按对象身份比对），返回摘掉了几条。
+
+        给「拒绝名单」过滤用：不该出现的人的记忆，一条都不能被注入。
+        keep 传空列表就等于清空。
+        """
+        allowed = {id(item) for item in (keep or ())}
+        removed = 0
+        for name in ("pinned", "recent", "relevant"):
+            bucket = getattr(self, name)
+            fresh = [item for item in bucket if id(item) in allowed]
+            removed += len(bucket) - len(fresh)
+            setattr(self, name, fresh)
+        return removed
+
     def __bool__(self) -> bool:
         return bool(self.pinned or self.recent or self.relevant)
 

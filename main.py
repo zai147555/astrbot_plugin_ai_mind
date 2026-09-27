@@ -1075,12 +1075,20 @@ class AIMindPlugin(Star):
                     sender_id=sender_id,
                     query_vector=query_vector,
                 )
+                # 注意：RetrievalResult 是三个桶（pinned/recent/relevant）+ memories()，
+                # 没有 .items —— 之前这里按 .items 用，AttributeError 被 except 吞掉，
+                # 结果拒绝名单根本没生效，那些人的记忆照样会被端上来。
+                kept = None
                 try:
-                    kept = self._filter_denied_memories(result.items)
-                    if len(kept) != len(result.items):
-                        result.items = kept
+                    kept = self._filter_denied_memories(result.memories())
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"[ai_mind] 过滤拒绝名单的记忆失败：{exc}")
+                    logger.error(f"[ai_mind] 过滤拒绝名单失败，这一轮不注入记忆：{exc}")
+                if kept is None:
+                    # 过滤不了就一条都别注入：拒绝名单是隐私承诺，
+                    # 宁可这一轮不回忆，也不能把不该出现的人的记忆端上去。
+                    result.retain([])
+                elif len(kept) != len(result.memories()):
+                    result.retain(kept)
                 memory_block = render_memory_block(
                     result, settings=self.settings.memory, session_id=session_key
                 )
@@ -3300,11 +3308,12 @@ class AIMindPlugin(Star):
                 self.store, query=str(query or ""),
                 session_id=session_id, sender_id=sender_id,
             )
-            if not result.items:
+            found_memories = result.memories()
+            if not found_memories:
                 return "关于他，我这儿什么都没记着。"
             self.store.touch(result.ids())
             return "我记得这些：" + chr(10) + chr(10).join(
-                "- " + item.content for item in result.items[:8]
+                "- " + item.content for item in found_memories[:8]
             )
         except Exception as exc:  # noqa: BLE001 - 工具报错不能把对话搞崩
             logger.warning(f"[ai_mind] 回忆工具失败：{exc}")

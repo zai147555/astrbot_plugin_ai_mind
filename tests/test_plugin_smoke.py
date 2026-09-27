@@ -3759,3 +3759,112 @@ class PrefixCacheTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class DeniedMemoryFilterTest(PluginHarness, unittest.TestCase):
+    """拒绝名单必须在注入前真正生效。
+
+    回归：RetrievalResult 是三个桶（pinned/recent/relevant）+ memories()，
+    根本没有 .items。以前按 .items 用 → AttributeError 被 except 吞掉 →
+    过滤等于不存在，被拒绝的人的记忆照样会端给别人，日志里只有一行 warning。
+    """
+
+    DENIED = "1000000009"
+
+    def test_denied_users_memory_is_not_injected(self) -> None:
+        async def scenario() -> None:
+            from mind import Memory
+
+            secret = "不该被看见的秘密暗号"
+            # 对照组：没有拒绝名单时它会被正常注入 —— 先证明记忆确实检索得到
+            open_plugin = self.make_plugin()
+            await open_plugin.initialize()
+            open_plugin.store.add(Memory(
+                content=secret, session_id=PRIVATE, owner_id=self.DENIED, pinned=True))
+            req = await self.send(open_plugin, "随便说点什么", umo=PRIVATE, uid=OWNER)
+            self.assertIn(secret, self.all_injected(req),
+                          "对照组：这条记忆本该被检索到")
+            await open_plugin.terminate()
+
+            # 实验组：拉进拒绝名单之后，一条都不能出现
+            plugin = self.make_plugin({"privacy": {"denied_users": [self.DENIED]}})
+            await plugin.initialize()
+            plugin.store.add(Memory(
+                content=secret, session_id=PRIVATE, owner_id=self.DENIED, pinned=True))
+            req2 = await self.send(plugin, "随便说点什么", umo=PRIVATE, uid=OWNER)
+            self.assertNotIn(secret, self.all_injected(req2), "拒绝名单没生效")
+            noisy = [r for r in self.log.records if r[0] in ("error", "warning")]
+            self.assertEqual(noisy, [], f"过滤时出错或打了警告：{noisy}")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_other_peoples_memories_still_pass(self) -> None:
+        """拒绝名单只摘掉名单里的人，别人的记忆照常注入。"""
+
+        async def scenario() -> None:
+            from mind import Memory
+
+            plugin = self.make_plugin({"privacy": {"denied_users": [self.DENIED]}})
+            await plugin.initialize()
+            plugin.store.add(Memory(
+                content="可以看见的日常", session_id=PRIVATE, owner_id=OWNER, pinned=True))
+            plugin.store.add(Memory(
+                content="不该被看见的秘密暗号", session_id=PRIVATE,
+                owner_id=self.DENIED, pinned=True))
+            req = await self.send(plugin, "随便说点什么", umo=PRIVATE, uid=OWNER)
+            seen = self.all_injected(req)
+            self.assertIn("可以看见的日常", seen, "不该误伤别人的记忆")
+            self.assertNotIn("不该被看见的秘密暗号", seen)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_filter_failure_fails_closed(self) -> None:
+        """过滤炸了就必须一条都不注入 —— 拒绝名单是承诺，不能放行。"""
+
+        async def scenario() -> None:
+            from mind import Memory
+
+            plugin = self.make_plugin({"privacy": {"denied_users": [self.DENIED]}})
+            await plugin.initialize()
+            plugin.store.add(Memory(
+                content="不该被看见的秘密暗号", session_id=PRIVATE,
+                owner_id=self.DENIED, pinned=True))
+            plugin.store.add(Memory(
+                content="可以看见的日常", session_id=PRIVATE, owner_id=OWNER, pinned=True))
+
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("模拟过滤炸掉")
+
+            plugin._filter_denied_memories = boom
+            req = await self.send(plugin, "随便说点什么", umo=PRIVATE, uid=OWNER)
+            seen = self.all_injected(req)
+            self.assertNotIn("不该被看见的秘密暗号", seen, "过滤失败时必须 fail-closed")
+            self.assertNotIn("可以看见的日常", seen, "宁可这一轮不回忆，也不能冒险")
+            errors = [r for r in self.log.records if r[0] == "error"]
+            self.assertTrue(errors, "失败了要留下 error 日志，别静默")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_recall_tool_works(self) -> None:
+        """recall_long_term_memory 以前也按 .items 用，同样会报错。"""
+
+        async def scenario() -> None:
+            from mind import Memory
+
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.store.add(Memory(
+                content="他喜欢喝冰美式", session_id=PRIVATE, owner_id=OWNER))
+            plugin.store.add(Memory(
+                content="他下周要考试", session_id=PRIVATE, owner_id=OWNER))
+            event = FakeEvent("你还记得我什么", umo=PRIVATE, uid=OWNER)
+            # 用一个搜不到的词，逼它走检索那条路（就是当年报错的那条）
+            text = await plugin.tool_recall(event, "zzz这个词不存在")
+            self.assertNotIn("内部出错", text, "回忆工具内部炸了：" + text)
+            self.assertIn("冰美式", text)
+            await plugin.terminate()
+
+        self.run_async(scenario())
