@@ -2708,7 +2708,16 @@ class AIMindPlugin(Star):
                     break
         if handler is None:
             return error_response(f"未知的面板接口：{sub}", status_code=404)
-        return await handler()
+        try:
+            return await handler()
+        except Exception as exc:  # noqa: BLE001
+            # 面板接口抛异常时，宿主只会回一个 502，用户看到的就是
+            # 「Request failed with status code 502」—— 什么线索都没有。
+            # 这里自己兜住：原始异常进日志，人话进面板。
+            logger.error(f"[ai_mind] 面板接口 {sub} 出错：{exc}", exc_info=True)
+            return error_response(
+                f"{sub} 出错：{type(exc).__name__}: {exc}", status_code=500
+            )
 
     async def _api_sessions(self) -> Any:
         entries = session_entries(
