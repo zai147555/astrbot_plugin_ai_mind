@@ -1543,6 +1543,19 @@
       } else {
         note.textContent = "这个会话还没有任何情绪记录 —— 聊几句，或者用上面的滑块／一键改成设定一下";
       }
+      // 到底卡在哪一步，面板上直接说清楚，别让人对着空白猜。
+      var dg = d.diag || {};
+      var dbc = d.db_check || {};
+      note.textContent += " ｜ 本次启动以来：情绪结算 " + (dg.prepares || 0) + " 次（收到 "
+        + (dg.turns || 0) + " 轮），采样调用 " + (dg.samples || 0) + " 次，写入 "
+        + (dg.writes || 0) + " 次"
+        + (dg.skipped ? ("，变化太小跳过 " + dg.skipped + " 次") : "")
+        + (dg.gated ? ("，被去重挡下 " + dg.gated + " 次") : "")
+        + (dg.frozen ? ("，会话冻结 " + dg.frozen + " 次") : "")
+        + "。情绪开关 " + (dg.emotion_enabled ? "开" : "关")
+        + "，数据库" + (dbc.write ? "可写" : "写不进去")
+        + (dbc.error ? ("（" + dbc.error + "）") : "")
+        + "，现有 " + (dbc.rows || 0) + " 行";
     }
 
     var users = $("users");
