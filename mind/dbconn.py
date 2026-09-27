@@ -114,6 +114,48 @@ class ConnectionSource:
             return False
         return True
 
+    def run_isolated(
+        self, sql: str, params: Iterable[Any] = ()
+    ) -> sqlite3.Cursor | None:
+        """最后一招：完全绕开现有连接，自己开一个把这条 SQL 跑完。
+
+        走到这里说明前面所有自愈都失败了。与其让数据写不进去，
+        不如单开一个连接把这一条跑掉 —— 数据库文件就在那儿，
+        连接对象的生命周期问题不该变成「曲线永远是空的」。
+        连接留着复用，不每条都新开。"""
+        path = self._db_file()
+        if not path:
+            self._schema_error = "拿不到数据库路径，最后一招也用不了"
+            return None
+        conn = getattr(self, "_isolated_conn", None)
+        if conn is not None and not self._usable(conn):
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+            conn = None
+            self._isolated_conn = None
+        if conn is None:
+            try:
+                conn = sqlite3.connect(path, check_same_thread=False, timeout=10.0)
+                conn.row_factory = sqlite3.Row
+                if self._schema:
+                    conn.executescript(self._schema)
+                    conn.commit()
+                self._isolated_conn = conn
+            except (sqlite3.Error, OSError) as exc:
+                self._schema_error = (
+                    f"最后一招也开不起来：{type(exc).__name__}: {exc}"
+                )
+                return None
+        try:
+            cursor = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cursor
+        except (sqlite3.Error, OSError) as exc:
+            self._schema_error = f"最后一招执行失败：{type(exc).__name__}: {exc}"
+            return None
+
     def execute(
         self, sql: str, params: Iterable[Any] = ()
     ) -> sqlite3.Cursor | None:
