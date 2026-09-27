@@ -560,6 +560,9 @@
         <button class="primary small" id="rl-save">保存</button>
       </div>
       <div id="rl-list" style="margin-top:10px"></div>
+      <div class="small muted" style="margin-top:6px">
+        好感度 / 熟悉度可以直接改，改完点一下别处就写回。同一个人在所有会话里会一起改。
+      </div>
       <div class="row" style="margin-top:10px">
         <label class="small"><input type="checkbox" id="rl-inject"> 告诉她「现在跟谁在说话」</label>
         <label class="small"><input type="checkbox" id="rl-discretion"> 群里不许透露关系</label>
@@ -1922,6 +1925,7 @@
       }).catch(function (e) { toast("还原失败：" + e.message); });
     };
     $("rl-list").onclick = relationshipAction;
+    $("rl-list").onchange = relationshipNumber;
     $("rl-candidates").onclick = relationshipAction;
     $("tab-split").onclick = function () {
       setView("split");
@@ -2682,6 +2686,13 @@
       (extra ? "<div class='small muted'>" + extra + "</div>" : "") + "</div>";
   }
 
+  //: 好感度 / 熟悉度直接改。改完点别处就写回，不用点保存。
+  function rlNumber(uid, kind, label, value, low, high) {
+    return label + " <input type='number' class='rl-num' data-kind='" + kind +
+      "' data-uid='" + esc(uid) + "' min='" + low + "' max='" + high +
+      "' step='1' value='" + Number(value || 0).toFixed(0) + "'>/100";
+  }
+
   function renderRelationship(data) {
     state.relation = data || {};
     var members = data.members || [];
@@ -2694,9 +2705,9 @@
 
     $("rl-list").innerHTML = members.length
       ? members.map(function (item) {
-          var extra = "聊过 " + (item.msg_count || 0) + " 条 · 好感度 " +
-            Number(item.affinity || 0).toFixed(0) + "/100 · 熟悉度 " +
-            Number(item.familiarity || 0).toFixed(0) + "/100";
+          var extra = "聊过 " + (item.msg_count || 0) + " 条 · " +
+            rlNumber(item.uid, "affinity", "好感度", item.affinity, -100, 100) + " · " +
+            rlNumber(item.uid, "familiarity", "熟悉度", item.familiarity, 0, 100);
           return rlRow(item.uid, item.name, extra, "del");
         }).join("")
       : "<div class='empty'>还没有专属用户 —— 她现在谁都不认得，别人问「你是谁」她是真的不知道。</div>";
@@ -2724,6 +2735,26 @@
       toast("已保存，她立刻就知道你是谁了");
       return data;
     }).catch(function (e) { toast("保存失败：" + e.message); });
+  }
+
+  function relationshipNumber(ev) {
+    var input = ev.target;
+    if (!input || !input.dataset || !input.dataset.kind) return;
+    var uid = input.dataset.uid || "";
+    var kind = input.dataset.kind;
+    if (!uid) return;
+    var payload = { uid: uid };
+    payload[kind] = Number(input.value);
+    var label = kind === "affinity" ? "好感度" : "熟悉度";
+    request("relationship/relation", "POST", payload)
+      .then(function (data) {
+        renderRelationship(data);
+        toast(label + "已改成 " + input.value);
+      })
+      .catch(function (e) {
+        toast("改动没保存：" + e.message);
+        loadRelationship();
+      });
   }
 
   function relationshipAction(ev) {

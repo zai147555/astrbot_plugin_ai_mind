@@ -161,7 +161,8 @@ const KNOWN_ROUTES = [
   PLUGIN + "/debounce", PLUGIN + "/debounce/preview", PLUGIN + "/debounce/save",
   PLUGIN + "/splitter", PLUGIN + "/splitter/preview", PLUGIN + "/splitter/save",
   PLUGIN + "/splitter/reset", PLUGIN + "/relationship", PLUGIN + "/relationship/save",
-  PLUGIN + "/relationship/reset", PLUGIN + "/theory", PLUGIN + "/theory/clear",
+  PLUGIN + "/relationship/reset", PLUGIN + "/relationship/relation",
+  PLUGIN + "/theory", PLUGIN + "/theory/clear",
   PLUGIN + "/settings", PLUGIN + "/settings/save", PLUGIN + "/manage",
   PLUGIN + "/manage/memory", PLUGIN + "/manage/data",
   PLUGIN + "/wizard", PLUGIN + "/wizard/apply", PLUGIN + "/wizard/mode"
