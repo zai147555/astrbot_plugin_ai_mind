@@ -4152,3 +4152,77 @@ class SessionPickerTest(unittest.TestCase):
     def test_stale_selection_falls_back(self) -> None:
         self.assertIn("var alive = state.sessions.some", self.html,
                       "选中的会话没了要退回第一个，不能让选择框空着")
+
+
+class TidyTextTest(unittest.TestCase):
+    """中文中间的空格要清掉，中英之间的空格要留着。"""
+
+    def test_between_cjk(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("切 干嘛"), "切干嘛")
+        self.assertEqual(tidy("好 吧 好 吧"), "好吧好吧")
+        self.assertEqual(tidy("切\u3000干嘛"), "切干嘛", "全角空格也要清")
+
+    def test_before_cjk_punct(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("行 。"), "行。")
+        self.assertEqual(tidy("你说什么 ？"), "你说什么？")
+
+    def test_latin_and_digits_keep_their_spaces(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("AstrBot 很好用"), "AstrBot 很好用")
+        self.assertEqual(tidy("第 3 章"), "第 3 章")
+        self.assertEqual(tidy("hello world"), "hello world")
+
+
+class ReplyTidyTest(PluginHarness, unittest.TestCase):
+    """人设硬规则：她说话中文之间不留空格 —— 落地前统一清一遍。"""
+
+    @staticmethod
+    def _text(chain) -> str:
+        out = []
+        for comp in chain or []:
+            text = getattr(comp, "text", None)
+            if isinstance(text, str):
+                out.append(text)
+        return "".join(out)
+
+    async def speak(self, plugin, reply: str):
+        event = FakeEvent("在吗", umo=PRIVATE)
+        await plugin.on_llm_request(event, FakeProviderRequest())
+        event.set_result(FakeResult([Plain(reply)]))
+        await plugin.on_decorating_result(event)
+        return event
+
+    def final(self, event) -> str:
+        return self._text(getattr(event.get_result(), "chain", None))
+
+    def test_last_bubble_has_no_space(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "切 干嘛")
+            self.assertEqual(self.final(event), "切干嘛")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_a_whole_reply_is_tidied(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "哼 ，你 怎么才来 。")
+            self.assertEqual(self.final(event), "哼，你怎么才来。")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_latin_spaces_survive_the_valve(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "我在用 AstrBot 呢")
+            self.assertEqual(self.final(event), "我在用 AstrBot 呢")
+            await plugin.terminate()
+
+        self.run_async(scenario())
