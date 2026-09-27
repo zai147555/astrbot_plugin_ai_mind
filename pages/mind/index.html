@@ -2161,6 +2161,46 @@
       var my = ev.clientY - rect.top;
       view.x = mx - (mx - view.x) * (next / view.scale);
       view.y = my - (my - view.y) * (next / view.scale);
+    // 双指缩放 / 双指平移：手机上 onwheel 不会触发，必须自己处理 touch。
+    // 单指仍然是拖节点（走 pointer 事件），这里只在两指时才接管。
+    var pinch = null;
+    var gcanvas = $("graph");
+    if (gcanvas) {
+      gcanvas.style.touchAction = "none";
+      gcanvas.addEventListener("touchstart", function (ev) {
+        if (ev.touches.length !== 2) { pinch = null; return; }
+        var rect = gcanvas.getBoundingClientRect();
+        var a = ev.touches[0], b = ev.touches[1];
+        pinch = {
+          d: Math.max(1, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)),
+          mx: (a.clientX + b.clientX) / 2 - rect.left,
+          my: (a.clientY + b.clientY) / 2 - rect.top
+        };
+        state.graphDrag = null;   // 两指了就别再拖节点
+        ev.preventDefault();
+      }, { passive: false });
+      gcanvas.addEventListener("touchmove", function (ev) {
+        if (!pinch || ev.touches.length !== 2) return;
+        var rect = gcanvas.getBoundingClientRect();
+        var a = ev.touches[0], b = ev.touches[1];
+        var d = Math.max(1, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY));
+        var mx = (a.clientX + b.clientX) / 2 - rect.left;
+        var my = (a.clientY + b.clientY) / 2 - rect.top;
+        var view = state.graphView;
+        var next = Math.max(0.25, Math.min(4, view.scale * (d / pinch.d)));
+        // 以两指中点当锚点缩放；中点自己也在动，于是顺带就是双指平移
+        view.x = mx - (pinch.mx - view.x) * (next / view.scale);
+        view.y = my - (pinch.my - view.y) * (next / view.scale);
+        view.scale = next;
+        pinch.d = d; pinch.mx = mx; pinch.my = my;
+        drawGraph();
+        ev.preventDefault();
+      }, { passive: false });
+      gcanvas.addEventListener("touchend", function (ev) {
+        if (ev.touches.length < 2) pinch = null;
+      });
+      gcanvas.addEventListener("touchcancel", function () { pinch = null; });
+    }
       view.scale = next;
       drawGraph();
     };
