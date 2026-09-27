@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .dbconn import ConnectionSource
 from .memory.model import normalize
 
 #: 匹配模式
@@ -301,7 +302,7 @@ def row_to_trigger(row: sqlite3.Row) -> ImageTrigger:
     )
 
 
-class ImageStore:
+class ImageStore(ConnectionSource):
     """图片 + 触发词的仓库。所有异常降级为空结果，不让插件崩掉。"""
 
     def __init__(self, connection: sqlite3.Connection | None, root: Path, logger: Any = None) -> None:

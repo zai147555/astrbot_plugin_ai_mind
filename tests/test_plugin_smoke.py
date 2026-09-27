@@ -4064,3 +4064,165 @@ class StatusLineTest(unittest.TestCase):
     def test_errors_still_surface(self) -> None:
         for text in ("接口不通", "加载失败"):
             self.assertIn(text, self.html, f"出错时必须还能看见：{text}")
+
+
+GRP = "aiocqhttp:GroupMessage:778899"
+
+
+class ConnectionLifecycleTest(PluginHarness, unittest.TestCase):
+    """宿主重载插件会先调 terminate()（我们把库关了），但老实例可能还在收消息。
+
+    存下来的裸连接一旦被关，之后所有写入都会静默失败：曲线永远空的、
+    记忆写不进去，面板上还看不出原因。"""
+
+    def test_sampling_survives_a_closed_db(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")
+            plugin.store.close()          # 宿主重载插件时会这么干
+            await self.send(plugin, "还在吗")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertTrue(data["db_check"]["write"], "库要能自己重新打开：%s" % data["db_check"])
+            self.assertFalse(data["samples_error"], "不该再写进已关闭的库：%s" % data["samples_error"])
+            closed = [r for r in self.log.records if r[0] == "warning" and "closed database" in r[1]]
+            self.assertFalse(closed, "不该再报 closed database：%s" % closed)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_samples_keep_landing_after_reopen(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")
+            before = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
+            plugin.store.close()
+            await self.send(plugin, "喂喂喂")
+            after = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
+            self.assertGreater(after, before, "关过之后还得继续落点")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_session_list_survives_a_dead_memory_store(self) -> None:
+        """记忆库不可用时，采样表里的会话还得能选到。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂", umo=GRP)
+            plugin.engine.sessions.pop(GRP, None)        # 引擎状态里没有它了
+            plugin.store.distinct_sessions = lambda: []  # 记忆库也帮不上忙
+            data = (await self.api(plugin, "sessions"))["data"]
+            keys = [s["key"] for s in data["sessions"]]
+            self.assertIn(GRP, keys, "采样表里的会话也要能选到：%s" % keys)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_selfcheck_probe_is_not_a_session(self) -> None:
+        """数据库自检写的探针不该被当成真会话说出去。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")
+            await self.api(plugin, "emotion", query={"session": PRIVATE})
+            keys = [s["key"] for s in (await self.api(plugin, "sessions"))["data"]["sessions"]]
+            self.assertNotIn("__selfcheck__", keys)
+            self.assertFalse([k for k in keys if k.startswith("__")], keys)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+
+class SessionPickerTest(unittest.TestCase):
+    """会话选择器：不能每次刷新都把用户的选择顶掉。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        page = Path(__file__).resolve().parent.parent / "pages" / "mind" / "index.html"
+        cls.html = page.read_text(encoding="utf-8")
+
+    def test_options_are_rebuilt_only_when_changed(self) -> None:
+        self.assertIn("sel.dataset.sig", self.html, "重建前要先比一比，别每次清空重填")
+        self.assertIn('id="session-count"', self.html, "会话数量要显示出来")
+
+    def test_stale_selection_falls_back(self) -> None:
+        self.assertIn("var alive = state.sessions.some", self.html,
+                      "选中的会话没了要退回第一个，不能让选择框空着")
+
+
+class TidyTextTest(unittest.TestCase):
+    """中文中间的空格要清掉，中英之间的空格要留着。"""
+
+    def test_between_cjk(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("切 干嘛"), "切干嘛")
+        self.assertEqual(tidy("好 吧 好 吧"), "好吧好吧")
+        self.assertEqual(tidy("切\u3000干嘛"), "切干嘛", "全角空格也要清")
+
+    def test_before_cjk_punct(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("行 。"), "行。")
+        self.assertEqual(tidy("你说什么 ？"), "你说什么？")
+
+    def test_latin_and_digits_keep_their_spaces(self) -> None:
+        from mind.textfix import tidy_cjk_spaces as tidy
+        self.assertEqual(tidy("AstrBot 很好用"), "AstrBot 很好用")
+        self.assertEqual(tidy("第 3 章"), "第 3 章")
+        self.assertEqual(tidy("hello world"), "hello world")
+
+
+class ReplyTidyTest(PluginHarness, unittest.TestCase):
+    """人设硬规则：她说话中文之间不留空格 —— 落地前统一清一遍。"""
+
+    @staticmethod
+    def _text(chain) -> str:
+        out = []
+        for comp in chain or []:
+            text = getattr(comp, "text", None)
+            if isinstance(text, str):
+                out.append(text)
+        return "".join(out)
+
+    async def speak(self, plugin, reply: str):
+        event = FakeEvent("在吗", umo=PRIVATE)
+        await plugin.on_llm_request(event, FakeProviderRequest())
+        event.set_result(FakeResult([Plain(reply)]))
+        await plugin.on_decorating_result(event)
+        return event
+
+    def final(self, event) -> str:
+        return self._text(getattr(event.get_result(), "chain", None))
+
+    def test_last_bubble_has_no_space(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "切 干嘛")
+            self.assertEqual(self.final(event), "切干嘛")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_a_whole_reply_is_tidied(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "哼 ，你 怎么才来 。")
+            self.assertEqual(self.final(event), "哼，你怎么才来。")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_latin_spaces_survive_the_valve(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self.speak(plugin, "我在用 AstrBot 呢")
+            self.assertEqual(self.final(event), "我在用 AstrBot 呢")
+            await plugin.terminate()
+
+        self.run_async(scenario())

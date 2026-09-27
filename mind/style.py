@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from .dbconn import ConnectionSource
+
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
@@ -180,7 +182,7 @@ def _row(row: sqlite3.Row) -> StyleExample:
     )
 
 
-class StyleStore:
+class StyleStore(ConnectionSource):
     """表达示例仓库。异常一律降级，不让插件崩。"""
 
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:

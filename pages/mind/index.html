@@ -322,7 +322,7 @@
 <div class="wrap">
   <div class="top">
     <h1>🧠 心智面板</h1>
-    <span class="small muted">会话</span>
+    <span class="small muted" id="session-count">会话</span>
     <select id="session" title="选择要看的群聊或私聊" style="min-width:210px"></select>
     <button id="mode-btn" class="ghost small" title="傻瓜模式只留必要的东西">切到专家模式</button>
     <button id="theme-btn" class="ghost small" title="深浅色：跟随面板 / 浅色 / 深色">🖥 跟随面板</button>
@@ -1483,15 +1483,28 @@
     return request("sessions", "GET").then(function (data) {
       state.sessions = (data && data.sessions) || [];
       var sel = $("session");
-      sel.innerHTML = "";
-      state.sessions.forEach(function (s) {
-        var opt = document.createElement("option");
-        opt.value = s.key;
-        opt.textContent = s.label + (s.emotion ? "　" + s.emotion_emoji + s.emotion + " " + s.emotion_level + "/5" : "") + (s.frozen ? "　🧊" : "");
-        sel.appendChild(opt);
-      });
-      if (!state.session && state.sessions.length) state.session = state.sessions[0].key;
+      // 只有选项真的变了才重建。每次进来都把 <select> 清空重填，会把用户
+      // 当前的选择顶掉 —— 表达模块的状态筛选踩过同一个坑（选完自己跳回去）。
+      var sig = state.sessions.map(function (s) {
+        return s.key + "|" + s.label + "|" + (s.emotion || "") + "|" + (s.frozen ? 1 : 0);
+      }).join(";");
+      if (sel.dataset.sig !== sig) {
+        sel.dataset.sig = sig;
+        sel.innerHTML = "";
+        state.sessions.forEach(function (s) {
+          var opt = document.createElement("option");
+          opt.value = s.key;
+          opt.textContent = s.label + (s.emotion ? "　" + s.emotion_emoji + s.emotion + " " + s.emotion_level + "/5" : "") + (s.frozen ? "　🧊" : "");
+          sel.appendChild(opt);
+        });
+      }
+      // 之前选中的会话要是已经不存在了，就退回第一个，别让选择框空着
+      var alive = state.sessions.some(function (s) { return s.key === state.session; });
+      if (!alive) state.session = state.sessions.length ? state.sessions[0].key : "";
       if (state.session) sel.value = state.session;
+      // 会话数量直接写在标签上：列表是不是全的，一眼就能看出来
+      var tag = $("session-count");
+      if (tag) tag.textContent = state.sessions.length ? ("会话 " + state.sessions.length) : "会话";
       if (!state.sessions.length) {
         $("cur-title").textContent = "还没有任何会话";
       }
@@ -1937,6 +1950,15 @@
       state.session = this.value; state.pick = null;
       $("pickbar").style.display = "none";
       refreshAll();
+    };
+    // 会话只有一个时，点开原生下拉也是空的 —— 说一句，
+    // 别让人以为是面板卡住了。
+    $("session").onclick = function () {
+      if (state.sessions.length <= 1) {
+        toast(state.sessions.length
+          ? "目前只有这一个会话 —— 别的群或私聊跟她说句话，就会出现在这里"
+          : "还没发现任何会话");
+      }
     };
     $("refresh").onclick = function () { refreshAll(); };
 

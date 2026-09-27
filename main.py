@@ -119,6 +119,7 @@ try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
         session_entries,
         should_sample,
     )
+    from .mind.textfix import tidy_cjk_spaces
     from .mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel
     from .mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel
 except ImportError:  # 兜底：以单模块方式加载时，把插件目录加进 sys.path
@@ -197,6 +198,7 @@ except ImportError:  # 兜底：以单模块方式加载时，把插件目录加
         session_entries,
         should_sample,
     )
+    from mind.textfix import tidy_cjk_spaces  # type: ignore[no-redef]
     from mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel  # type: ignore[no-redef]
     from mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel  # type: ignore[no-redef]
 
@@ -435,11 +437,15 @@ class AIMindPlugin(Star):
 
         # ---- 记忆 ----
         self.store = MemoryStore(self.data_dir / "mind.db", logger)
-        self.samples = SampleStore(self.store.connection, logger)
-        self.lexicons = LexiconStore(self.store.connection, logger)
-        self.humanize_log = HumanizeStore(self.store.connection, logger)
-        self.styles = StyleStore(self.store.connection, logger)
-        self.images = ImageStore(self.store.connection, self.data_dir, logger)
+        # 传的是仓库本身而不是 self.store.connection：宿主重载插件会先调
+        # terminate()（我们把库关掉），老实例却可能还在收消息 —— 存下来的裸连接
+        # 就成了「已关闭的数据库」，之后所有写入静默失败（曲线永远空、记忆写不进）。
+        # 传仓库进去，每次都现取连接，库被重开也能跟上。
+        self.samples = SampleStore(self.store, logger)
+        self.lexicons = LexiconStore(self.store, logger)
+        self.humanize_log = HumanizeStore(self.store, logger)
+        self.styles = StyleStore(self.store, logger)
+        self.images = ImageStore(self.store, self.data_dir, logger)
         self.image_cooldown = Cooldown(self.settings.images.cooldown_seconds)
         self.extractor = MemoryExtractor(self.settings.memory, logger)
         self.retriever = Retriever(self.settings.memory, logger)
@@ -1327,6 +1333,11 @@ class AIMindPlugin(Star):
             # 去 AI 味：发送前的阀门。放在记记忆之前，记的是真正发出去的那版。
             await self._humanize_valve(event, session_key, is_llm=is_llm)
             await self._guard_reply(event, session_key)
+            # 人设硬规则：中文之间不留空格。放在记录之前 —— 记的是真正发出去的那版。
+            try:
+                self._tidy_reply_spaces(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 清理中文空格失败：{exc}")
             self._learn_style(
                 event, session_key, self._reply_text(event) or reply, is_llm
             )
@@ -1340,6 +1351,35 @@ class AIMindPlugin(Star):
             await self._split_and_send(event, session_key, is_llm=is_llm)
         except Exception as exc:  # noqa: BLE001 - 分段出问题也绝不能吞掉回复
             logger.error(f"[ai_mind] 分段发送失败：{exc}", exc_info=True)
+
+    def _tidy_reply_spaces(self, event: AstrMessageEvent) -> int:
+        """把她这句话里中文中间的空格去掉。
+
+        模型会写出「切 干嘛」「好 吧」这种 —— 人设要求她说话不留空格。
+        这是硬规则，不能靠提示词碰运气。只动中文与中文之间的空白，
+        「AstrBot 很好用」里的那个空格保持原样。
+        """
+        try:
+            result = event.get_result()
+        except Exception:  # noqa: BLE001
+            return 0
+        chain = getattr(result, "chain", None) or []
+        fixed = 0
+        for comp in chain:
+            text = getattr(comp, "text", None)
+            if not isinstance(text, str) or not text:
+                continue
+            tidy = tidy_cjk_spaces(text)
+            if tidy == text:
+                continue
+            try:
+                comp.text = tidy
+                fixed += 1
+            except Exception:  # noqa: BLE001 - 改不动就算了，绝不能弄丢回复
+                continue
+        if fixed:
+            logger.debug(f"[ai_mind] 清掉了 {fixed} 段里中文中间的空格")
+        return fixed
 
     async def _emotion_self_feedback(self, event: AstrMessageEvent, session_key: str) -> str:
         if not self.settings.emotion.enabled or self.settings.emotion.self_feedback == "off":

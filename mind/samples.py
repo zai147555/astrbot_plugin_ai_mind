@@ -16,6 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .dbconn import ConnectionSource
 from .emotion.model import PAD, now_ts
 
 SAMPLE_KINDS = ("auto", "stimulus", "self", "idle", "manual")
@@ -56,7 +57,7 @@ class Sample:
         }
 
 
-class SampleStore:
+class SampleStore(ConnectionSource):
     """情绪曲线采样点仓库。所有异常都降级为空结果，不让插件崩掉。"""
 
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
@@ -238,7 +239,11 @@ class SampleStore:
 
     def sessions(self) -> list[str]:
         rows = self._all("SELECT DISTINCT session_id FROM emotion_samples")
-        return [str(r["session_id"]) for r in rows if r["session_id"]]
+        # __selfcheck__ 是自检写的探针，别当成真会话列到面板上
+        return [
+            str(r["session_id"]) for r in rows
+            if r["session_id"] and not str(r["session_id"]).startswith("__")
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +302,7 @@ class LexiconHit:
         }
 
 
-class LexiconStore:
+class LexiconStore(ConnectionSource):
     """词表命中记录。只追加，按时间和词聚合查询。"""
 
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
@@ -497,7 +502,7 @@ class HumanizeEntry:
         }
 
 
-class HumanizeStore:
+class HumanizeStore(ConnectionSource):
     """去 AI 味的体检日志。只追加，按时间倒序读。"""
 
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
