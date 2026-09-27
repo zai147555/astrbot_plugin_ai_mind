@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -85,7 +86,6 @@ class SampleStore(ConnectionSource):
         try:
             cursor = self.conn.execute(sql, tuple(params))
             self.conn.commit()
-            self.last_error = ""
             return cursor
         except (sqlite3.Error, OSError) as exc:
             self.last_error = f"曲线 SQL 失败：{exc}"
@@ -194,40 +194,59 @@ class SampleStore(ConnectionSource):
     def selfcheck(self) -> dict[str, Any]:
         """真插一条再删掉，验证「能不能写」。
 
-        面板上必须能区分「压根没调用采样」和「调用了但写不进去」 ——
-        这两种情况的修法完全不同。
+        面板上必须能区分「压根没调用采样」和「调用了但写不进去」——
+        这两种情况的修法完全不同。这里**绕过 _run** 直接抓原始异常：
+        _run 会吞掉错误，而任何一次成功又会把错误清掉。
         """
+        src = self._source
+        path = str(getattr(src, "path", "") or "")
         info: dict[str, Any] = {
-            "ok": False, "conn": self.conn is not None,
-            "table": False, "write": False, "rows": self.count(), "error": "",
+            "ok": False, "conn": self.conn is not None, "table": False,
+            "write": False, "rows": 0, "error": "", "path": path,
+            "exists": False, "size": 0,
         }
-        if self.conn is None:
-            info["error"] = self.last_error or "数据库连接不可用"
-            return info
-        rows = self._all(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'emotion_samples'"
-        )
-        info["table"] = bool(rows)
-        if not info["table"]:
-            info["error"] = self.last_error or "曲线表没建起来"
+        try:
+            info["exists"] = bool(path) and os.path.exists(path)
+            info["size"] = os.path.getsize(path) if info["exists"] else 0
+        except OSError:
+            pass
+        conn = self.conn
+        if conn is None:
+            info["error"] = (
+                getattr(src, "last_open_error", "") or self.last_error
+                or "数据库连接不可用"
+            )
             return info
         probe = "__selfcheck__"
-        self._run("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
-        self._run(
-            "INSERT INTO emotion_samples (session_id, t, p, a, d, kind)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (probe, now_ts(), 0.0, 0.0, 0.0, "probe"),
-        )
-        hit = self._all(
-            "SELECT COUNT(*) AS c FROM emotion_samples WHERE session_id = ?", (probe,)
-        )
-        info["write"] = bool(hit and int(hit[0]["c"]) > 0)
-        self._run("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
-        info["ok"] = info["write"]
-        info["error"] = "" if info["write"] else (self.last_error or "插入没有生效")
+        err = ""
+        try:
+            conn.execute("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+            info["table"] = True
+            conn.execute(
+                "INSERT INTO emotion_samples (session_id, t, p, a, d, kind)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (probe, now_ts(), 0.0, 0.0, 0.0, "probe"),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM emotion_samples WHERE session_id = ?", (probe,)
+            ).fetchone()
+            info["write"] = bool(row and int(row[0]) > 0)
+            conn.execute("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+            conn.commit()
+        except (sqlite3.Error, OSError) as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+        if info["write"]:
+            info["ok"] = True
+            info["error"] = ""
+        else:
+            info["error"] = err or self.last_error or "插入没有生效（原因未知）"
         info["rows"] = self.count()
         return info
-
     def count(self, session_id: str | None = None) -> int:
         if session_id is None:
             rows = self._all("SELECT COUNT(*) AS c FROM emotion_samples")
