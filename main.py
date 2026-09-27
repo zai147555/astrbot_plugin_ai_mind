@@ -857,6 +857,7 @@ class AIMindPlugin(Star):
         except ImportError:  # pragma: no cover
             from mind.emotion import lexicon as _lexicon
         logger.info(f"[ai_mind] {_lexicon.describe_lexicon()}")
+        type(self)._LIVE = self      # 认领：以后旧实例会把请求转给我
         self._load_pending()
         self._warn_missing_special()
         self._ensure_task()
@@ -880,6 +881,8 @@ class AIMindPlugin(Star):
             self.engine.flush()
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_mind] 退出前保存情绪失败：{exc}")
+        if type(self)._LIVE is self:
+            type(self)._LIVE = None
         self.store.close()
 
     def _ensure_task(self) -> None:
@@ -1762,6 +1765,18 @@ class AIMindPlugin(Star):
             await self._split_and_send(event, session_key, is_llm=is_llm)
         except Exception as exc:  # noqa: BLE001 - 分段出问题也绝不能吞掉回复
             logger.error(f"[ai_mind] 分段发送失败：{exc}", exc_info=True)
+
+    #: 当前活着的实例。插件重载时旧实例不会立刻消失，它的路由还会抢走
+    #: 面板请求 —— 而旧实例的库是关着的、计数器停在 0，于是面板显示成
+    #: 「写不进去、收到 0 轮」，用户只能靠重启整个进程才能甩掉它。
+    #: 有了这个指针，旧实例就把请求转交给新实例，不用再重启。
+    _LIVE: Any = None
+
+    def _live_peer(self) -> Any:
+        live = type(self)._LIVE
+        if live is not None and live is not self:
+            return live
+        return None
 
     def _disabled_notice(self) -> str:
         """我们是不是被 AstrBot 停用了？是的话返回一句人话。
@@ -2665,6 +2680,11 @@ class AIMindPlugin(Star):
 
     async def _api_fallback(self, rest: str = "") -> Any:
         """兜底路由：命名空间下没有直接匹配上的请求都会落到这里。"""
+        live = self._live_peer()
+        if live is not None:
+            # 我是重载时留下的旧实例：库关了、计数器是 0。
+            # 转交给活着的那个，用户就不用重启整个 AstrBot 了。
+            return await live._api_fallback(rest)
         sub = str(rest or "").strip("/")
         # 宿主可能又套了一层命名空间（.../astrbot_plugin_ai_mind/astrbot_plugin_ai_mind/...），
         # 这里把多余的剥掉，免得只能靠后缀去猜
