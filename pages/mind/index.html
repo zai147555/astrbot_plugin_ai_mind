@@ -415,6 +415,8 @@
 
   <!-- ================= 情绪 ================= -->
   <div id="view-emotion">
+    <!-- 数据库坏了要说大声一点：这不是「曲线不好看」，是记忆/曲线/词表/配图全废 -->
+    <div class="card" id="db-alert" style="display:none;border-color:#e5484d;background:rgba(229,72,77,.10)"></div>
     <div class="grid2">
       <div class="card">
         <div class="row" style="justify-content:space-between">
@@ -1580,6 +1582,21 @@
         + "，数据库" + (dbc.write ? "可写" : "写不进去")
         + (dbc.error ? ("（" + dbc.error + "）") : "")
         + "，现有 " + (dbc.rows || 0) + " 行";
+      // 数据库写不进去 = 记忆、曲线、词表、配图、去 AI 味日志一起废。
+      // 这种事不能藏在灰色小字里。
+      var alert = $("db-alert");
+      if (alert) {
+        if (dbc.write === false) {
+          alert.style.display = "";
+          alert.innerHTML = "<b>⚠️ 数据库写不进去 —— 情绪曲线、长期记忆、词表命中、配图、去 AI 味日志都不会工作</b>"
+            + "<div class='small' style='margin-top:6px'>文件：" + esc(dbc.path || "（未知）")
+            + (dbc.exists ? ("（" + (dbc.size || 0) + " 字节）") : "（文件不存在）") + "</div>"
+            + "<div class='small'>原因：" + esc(dbc.error || "未知") + "</div>"
+            + "<div class='small muted' style='margin-top:6px'>把这一段整个截图发我就能定位。</div>";
+        } else {
+          alert.style.display = "none";
+        }
+      }
     }
 
     var users = $("users");

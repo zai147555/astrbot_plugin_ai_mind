@@ -135,6 +135,9 @@ class MemoryStore:
         self._lock = threading.RLock()
         self._closed = False
         self._reopen_warned = False
+        #: 最近一次打开失败的原因。面板要拿它说话 —— 只写日志的话，
+        #: 用户看到的就是「曲线一片空白、记忆全没了」而不知道为什么。
+        self.last_open_error = ""
 
     # -- 连接与建表 ---------------------------------------------------------
     @property
@@ -158,16 +161,29 @@ class MemoryStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10.0)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            # WAL 在部分文件系统上开不起来（网络盘、某些同步目录、只读挂载）。
+            # 开不起来不该让整个记忆库瘫掉 —— 退回默认日志模式接着用。
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error as exc:
+                if self.logger is not None:
+                    self.logger.warning(
+                        f"[ai_memory] WAL 模式开不起来，退回默认日志模式：{exc}"
+                    )
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(_SCHEMA)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
             self._conn = conn
+            self.last_open_error = ""
         except (sqlite3.Error, OSError) as exc:
-            # 目录不可写、磁盘满、路径非法 —— 都只降级，不让插件加载失败
+            # 目录不可写、磁盘满、文件损坏、路径非法 —— 都只降级，不让插件加载失败。
+            # 但原因必须留下来：面板上要说清是哪一个。
+            self.last_open_error = f"{type(exc).__name__}: {exc}"
             if self.logger is not None:
-                self.logger.error(f"[ai_memory] 打开记忆库失败，将以无记忆模式运行：{exc}")
+                self.logger.error(
+                    f"[ai_memory] 打开记忆库失败（{self.path}）：{self.last_open_error}"
+                )
             return None
         return self._conn
 

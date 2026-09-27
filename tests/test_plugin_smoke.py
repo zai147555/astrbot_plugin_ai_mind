@@ -4261,3 +4261,33 @@ class HistoryIsNotATailTest(PluginHarness, unittest.TestCase):
                 await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class DbFailureIsLoudTest(PluginHarness, unittest.TestCase):
+    """数据库坏了必须大声报出来 —— 而且要报出文件和原因。
+
+    这不是「曲线不好看」，是记忆、曲线、词表、配图、去 AI 味日志一起废。"""
+
+    def test_check_carries_path_and_reason(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            # 让记忆库指向一个绝对建不出来的路径：真实的打开失败
+            plugin.store.path = Path("/proc/definitely/not/writable/mind.db")
+            plugin.store._conn = None
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            check = data["db_check"]
+            self.assertFalse(check["write"], "写不进去就得如实说")
+            self.assertTrue(check["error"], "一定要给出原因，不能只说失败：%s" % check)
+            self.assertIn("mind.db", check["path"], "要报出是哪个文件")
+            self.assertFalse(check["exists"], "文件本来就不该存在")
+            self.assertTrue(data["samples_broken"], "坏成这样必须整体标成不可用")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_panel_has_a_banner(self) -> None:
+        page = Path(__file__).resolve().parent.parent / "pages" / "mind" / "index.html"
+        html = page.read_text(encoding="utf-8")
+        self.assertIn('id="db-alert"', html, "要有醒目横幅")
+        self.assertIn("dbc.write === false", html, "横幅要真的挂在自检结果上")
