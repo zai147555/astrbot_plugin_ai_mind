@@ -75,14 +75,11 @@ class SampleStore(ConnectionSource):
 
     # -- 基础 ---------------------------------------------------------------
     def _run(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor | None:
-        if self.conn is None:
-            if not self.last_error:
-                self.last_error = "曲线表不可用（初始化失败）"
-            return None
+        # 连接被关掉时 execute 会自己重开一次再跑，这里只管收尾。
+        if self.conn is None and not self.last_error:
+            self.last_error = "曲线表不可用（数据库连不上）"
         try:
-            cursor = self.conn.execute(sql, tuple(params))
-            self.conn.commit()
-            return cursor
+            return self.execute(sql, params)
         except (sqlite3.Error, OSError) as exc:
             self.last_error = f"曲线 SQL 失败：{exc}"
             if self.logger is not None:

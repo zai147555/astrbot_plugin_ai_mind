@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Iterable
 
 
 class ConnectionSource:
@@ -30,16 +30,52 @@ class ConnectionSource:
 
     @property
     def conn(self) -> sqlite3.Connection | None:
-        source = self._source
-        if source is None or isinstance(source, sqlite3.Connection):
-            conn = source
-        else:
-            # 传进来的是仓库（例如 MemoryStore）：它的 connection 是属性，
-            # 库被关掉之后会自动重开，这里每次都现取一遍。
-            conn = getattr(source, "connection", None)
+        conn = self._resolve()
         if conn is not None and self._schema and not self._schema_ready:
             self._build_schema(conn)
         return conn
+
+    def _resolve(self) -> sqlite3.Connection | None:
+        source = self._source
+        if source is None or isinstance(source, sqlite3.Connection):
+            return source
+        # 传进来的是仓库（例如 MemoryStore）：它的 connection 是属性，
+        # 库被关掉之后会自动重开，这里每次都现取一遍。
+        return getattr(source, "connection", None)
+
+    def reset_connection(self) -> bool:
+        """要求来源把连接重开一次 —— 谁关的都行。"""
+        reset = getattr(self._source, "reset_connection", None)
+        if not callable(reset):
+            return False
+        try:
+            reset()
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
+    def execute(
+        self, sql: str, params: Iterable[Any] = ()
+    ) -> sqlite3.Cursor | None:
+        """跑一条 SQL。连接要是已经被谁关了，重开一次再跑。
+
+        光靠「_conn is None 就重开」不够：连接可能被**别处直接 close()**，
+        而缓存里那个对象还在 —— 于是每次都写进一个已死的库，只留一行
+        「Cannot operate on a closed database」的 warning。"""
+        for attempt in (0, 1):
+            conn = self.conn
+            if conn is None:
+                return None
+            try:
+                cursor = conn.execute(sql, tuple(params))
+                conn.commit()
+                return cursor
+            except sqlite3.ProgrammingError as exc:
+                if attempt or "closed" not in str(exc).lower():
+                    raise
+                if not self.reset_connection():
+                    raise
+        return None
 
     @conn.setter
     def conn(self, value: Any) -> None:
