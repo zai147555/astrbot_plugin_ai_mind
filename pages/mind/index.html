@@ -1586,7 +1586,11 @@
       // 这种事不能藏在灰色小字里。
       var alert = $("db-alert");
       if (alert) {
-        if (dbc.write === false) {
+        if (d.plugin_disabled) {
+          alert.style.display = "";
+          alert.innerHTML = "<b>⛔ 插件没有启用 —— 她根本没在运行</b>"
+            + "<div class='small' style='margin-top:6px'>" + esc(d.plugin_disabled) + "</div>";
+        } else if (dbc.write === false) {
           alert.style.display = "";
           alert.innerHTML = "<b>⚠️ 数据库写不进去 —— 情绪曲线、长期记忆、词表命中、配图、去 AI 味日志都不会工作</b>"
             + "<div class='small' style='margin-top:6px'>文件：" + esc(dbc.path || "（未知）")

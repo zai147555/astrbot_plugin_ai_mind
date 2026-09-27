@@ -1350,6 +1350,33 @@ class AIMindPlugin(Star):
         except Exception as exc:  # noqa: BLE001 - 分段出问题也绝不能吞掉回复
             logger.error(f"[ai_mind] 分段发送失败：{exc}", exc_info=True)
 
+    def _disabled_notice(self) -> str:
+        """我们是不是被 AstrBot 停用了？是的话返回一句人话。
+
+        AstrBot 把停用的插件记在 data/shared_preferences.json 的
+        inactivated_plugins 里。停用的插件会正常加载、面板也打得开，
+        但所有钩子都不会被调用 —— 从插件内部看不出任何异常。
+        """
+        try:
+            name = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
+            root = Path(self.data_dir).parent.parent
+            pref = root / "shared_preferences.json"
+            if not pref.exists():
+                return ""
+            data = json.loads(pref.read_text(encoding="utf-8"))
+            inactive = data.get("inactivated_plugins") or []
+        except Exception:  # noqa: BLE001 - 读不到就当没停用
+            return ""
+        for item in inactive:
+            if name and name in str(item):
+                return (
+                    "插件在 AstrBot 里是【停用】状态 —— 面板打得开，但她的钩子"
+                    "一次都不会被调用。去 AstrBot 面板 › 插件管理 把 " + name
+                    + " 打开（或删掉 data/shared_preferences.json 里"
+                    " inactivated_plugins 的这一条），然后重启 AstrBot。"
+                )
+        return ""
+
     def _tidy_reply_spaces(self, event: AstrMessageEvent) -> int:
         """把她这句话里中文中间的空格去掉。
 
@@ -2273,6 +2300,10 @@ class AIMindPlugin(Star):
         sample_error = str(getattr(self.samples, "last_error", "") or "")
         payload["samples_broken"] = bool(self._sample_broken) or bool(sample_error)
         payload["samples_error"] = sample_error
+        # 最坑的一种「坏了」：插件根本没启用。AstrBot 里停用的插件照样加载、
+        # 面板照样打得开，但钩子一次都不会被调用 —— 于是情绪结算 0 次、
+        # 曲线永远是空的，而日志里一个错都没有。
+        payload["plugin_disabled"] = self._disabled_notice()
         try:
             payload["db_check"] = self.samples.selfcheck()
         except Exception as exc:  # noqa: BLE001
