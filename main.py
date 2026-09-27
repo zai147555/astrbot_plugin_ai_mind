@@ -220,6 +220,11 @@ try:  # 拟人分段内核（纯函数，脱离 astrbot 也能单测）
 except ImportError:  # pragma: no cover - 单模块方式加载时
     from mind import splitter as splitter_engine  # type: ignore[no-redef]
 
+try:  # 消息防抖内核（纯规则，零依赖）
+    from .mind import debounce as debounce_engine
+except ImportError:  # pragma: no cover - 单模块方式加载时
+    from mind import debounce as debounce_engine  # type: ignore[no-redef]
+
 try:  # 去 AI 味检测器（纯本地词表与统计）
     from .mind import antiai
 except ImportError:  # pragma: no cover
@@ -302,6 +307,7 @@ def _optional_hook(name: str):
 
 
 on_using_llm_tool = _optional_hook("on_using_llm_tool")
+on_waiting_llm_request = _optional_hook("on_waiting_llm_request")
 llm_tool = _optional_hook("llm_tool")
 
 SEND_OK = "ok"
@@ -395,6 +401,7 @@ class AIMindPlugin(Star):
         self.prompts = PromptStore(self.data_dir, logger)
         self._style_data = self._load_simple_overrides("style_overrides.json", "表达示例")
         self._privacy_data = self._load_simple_overrides("privacy_overrides.json", "隐私")
+        self._debounce_data = self._load_simple_overrides("debounce_overrides.json", "消息防抖")
         self._special_warned = False
         self._schema_cache: dict[str, Any] | None = None
         self._settings_saved_at = 0.0
@@ -405,6 +412,7 @@ class AIMindPlugin(Star):
             self._guard_data,
             self._style_data,
             self._privacy_data,
+            self._debounce_data,
         )
 
         self.emotion_injection_mode = str(
@@ -449,6 +457,9 @@ class AIMindPlugin(Star):
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._llm_messages: OrderedDict[str, float] = OrderedDict()
         self._last_sender: dict[str, str] = {}
+        # 消息防抖：待合并的「用户接着说的一句」与被并走的消息 id
+        self._debounce_pending: dict[str, list[tuple[str, str, float]]] = {}
+        self._debounce_eaten: dict[str, float] = {}
         self._buffers: dict[str, list[Turn]] = {}
         self._last_append: dict[str, float] = {}
         self._extracting: set[str] = set()
@@ -483,6 +494,7 @@ class AIMindPlugin(Star):
             f"{stats['total']} 条记忆、{self.samples.count()} 个曲线采样点"
         )
         logger.info(f"[ai_mind] {splitter_engine.describe(self.splitter)}")
+        logger.info(f"[ai_mind] {debounce_engine.describe(self.settings.debounce)}")
         try:
             from .mind.emotion import lexicon as _lexicon
         except ImportError:  # pragma: no cover
@@ -530,6 +542,7 @@ class AIMindPlugin(Star):
                 self.engine.tick_all(now)
                 self._heartbeat(now)
                 self._style_maintenance()
+                self._debounce_gc()
                 if self.engine.dirty:
                     await asyncio.to_thread(self.engine.flush, now)
                 await self.flush_memories()
@@ -813,11 +826,154 @@ class AIMindPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_mind] 保存情绪失败：{exc}")
 
+    # ------------------------------------------------------------------
+    # 消息防抖：用户连发的几条攒成一轮再交给模型
+    #
+    # 做法参考 astrbot_plugin_debounce（advent259141），但实现换了：
+    # 原版用「stop_event + 伪造事件回灌 EventBus」做超时补发，这里改成
+    # 在 on_llm_request 里睡一个短窗口 —— on_waiting_llm_request 在会话锁
+    # 之前触发，睡的时候用户接着说的一句已经被记下来了，醒来直接合并。
+    # 不伪造事件，也没有缓冲区清空的竞态。
+    # ------------------------------------------------------------------
+    def _debounce_id(self, event: AstrMessageEvent) -> str:
+        """这条消息的 id。拿不到就没法安全合并，直接放弃防抖。"""
+        obj = getattr(event, "message_obj", None)
+        return str(getattr(obj, "message_id", "") or "")
+
+    def _debounce_take(self, session_key: str, parts: list[str], keep: str) -> bool:
+        """把这一刻攒下的下几条取走并进 parts，返回有没有拿到新的。"""
+        queue = self._debounce_pending.get(session_key)
+        if not queue:
+            return False
+        rest: list[tuple[str, str, float]] = []
+        got = False
+        for msg_id, text, stamp in queue:
+            if msg_id and msg_id == keep:
+                continue  # 自己那条不算「接着说」
+            if msg_id and msg_id in self._debounce_eaten:
+                continue
+            parts.append(text)
+            if msg_id:
+                self._debounce_eaten[msg_id] = stamp
+            got = True
+        self._debounce_pending[session_key] = rest
+        return got
+
+    def _debounce_gc(self, now: float | None = None) -> None:
+        """清掉过期的待合并项与被并走的标记。"""
+        stamp = now if now is not None else time.time()
+        for key in list(self._debounce_pending):
+            fresh = [item for item in self._debounce_pending[key] if stamp - item[2] < 30.0]
+            if fresh:
+                self._debounce_pending[key] = fresh
+            else:
+                self._debounce_pending.pop(key, None)
+        for msg_id in [k for k, v in self._debounce_eaten.items() if stamp - v > 60.0]:
+            self._debounce_eaten.pop(msg_id, None)
+
+    @on_waiting_llm_request(priority=100)
+    async def on_waiting_llm_request(self, event: AstrMessageEvent) -> None:
+        """消息确定要调 LLM、但还没排队等锁 —— 先记下它。
+
+        正在等窗口的那一轮就是靠这里看到「用户又补了一句」的。
+        """
+        db = self.settings.debounce
+        if not db.enabled or not self.settings.enabled:
+            return
+        try:
+            msg_id = self._debounce_id(event)
+            if not msg_id or msg_id in self._debounce_eaten:
+                return
+            text = (event.message_str or "").strip()
+            if not text or debounce_engine.looks_like_command(text):
+                return
+            self._debounce_pending.setdefault(event.unified_msg_origin, []).append(
+                (msg_id, text, time.time())
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self.settings.debug_log:
+                logger.debug(f"[ai_mind] 防抖记录失败：{exc}")
+
+    @filter.on_llm_request(priority=100)
+    async def on_llm_request_debounce(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
+        """连发合并：看着还没说完就先等一个窗口，期间补的那句并进来。"""
+        db = self.settings.debounce
+        if not db.enabled or not self.settings.enabled:
+            return
+        session_key = event.unified_msg_origin
+        msg_id = self._debounce_id(event)
+        # 已经被上一轮并走：这一轮不再回一次
+        if msg_id and msg_id in self._debounce_eaten:
+            self._debounce_eaten.pop(msg_id, None)
+            event.stop_event()
+            return
+        try:
+            if not msg_id:
+                return
+            text = (event.message_str or "").strip()
+            if not text or debounce_engine.looks_like_command(text):
+                self._debounce_pending.pop(session_key, None)
+                return
+            if not debounce_engine.scope_allows(db, bool(is_group_session(session_key))):
+                self._debounce_pending.pop(session_key, None)
+                return
+            self._debounce_gc()
+            # 排队等锁期间补进来的下一条，先并进来
+            parts = [text]
+            merged_more = self._debounce_take(session_key, parts, msg_id)
+            windows = debounce_engine.wait_windows(debounce_engine.merge_texts(parts), db)
+            if windows <= 0 and not merged_more:
+                return
+            if windows > 0:
+                started = time.monotonic()
+                empty = 0
+                while True:
+                    left = float(db.max_wait_seconds) - (time.monotonic() - started)
+                    step = min(float(db.grace_seconds), left)
+                    if step <= 0:
+                        break
+                    await asyncio.sleep(step)
+                    got = self._debounce_take(session_key, parts, msg_id)
+                    if len(parts) >= int(db.max_messages):
+                        break
+                    if got:
+                        empty = 0
+                        windows = debounce_engine.wait_windows(
+                            debounce_engine.merge_texts(parts), db
+                        )
+                        if windows <= 0:
+                            break
+                        continue
+                    empty += 1
+                    if empty >= max(1, windows):
+                        break
+            merged = debounce_engine.merge_texts(parts)
+            if merged and merged != text:
+                req.prompt = merged
+                try:
+                    event.message_str = merged
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.info(f"[ai_mind] 防抖把 {len(parts)} 条并成一句：{merged[:60]}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 防抖出错，这一轮照常发：{exc}")
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         """请求 LLM 前：结算情绪 + 检索记忆，然后把两样注入这一轮。"""
         if not self.settings.enabled:
             return
+        # 防抖把这条并进上一轮了：这一轮是被吃掉的那条，别再回一次，
+        # 也别重复计入情绪与记忆。
+        try:
+            if event.is_stopped():
+                return
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.engine.load()
             self._ensure_task()
@@ -1719,6 +1875,9 @@ class AIMindPlugin(Star):
             ("theory/clear", self._api_theory_clear, "清空词表命中记录"),
             ("relationship/save", self._api_relationship_save, "保存专属用户"),
             ("relationship/reset", self._api_relationship_reset, "还原专属用户"),
+            ("debounce", self._api_debounce, "消息防抖状态"),
+            ("debounce/preview", self._api_debounce_preview, "试判一段文字"),
+            ("debounce/save", self._api_debounce_save, "保存防抖设置"),
             ("splitter", self._api_splitter, "分段设置"),
             ("splitter/preview", self._api_splitter_preview, "试切一段文字"),
             ("splitter/save", self._api_splitter_save, "保存分段设置"),
@@ -2474,6 +2633,71 @@ class AIMindPlugin(Star):
                 if key in known and value is not None:
                     merged[key] = value
         return merged
+
+    async def _api_debounce(self) -> Any:
+        """防抖当前状态。"""
+        settings = debounce_engine.DebounceSettings.from_config(
+            self.config, self._debounce_data
+        )
+        return json_response(
+            {
+                "settings": settings.to_dict(),
+                "describe": debounce_engine.describe(settings),
+                "overrides": dict(self._debounce_data),
+                "schema": debounce_engine.panel_schema(),
+            }
+        )
+
+    async def _api_debounce_preview(self) -> Any:
+        """试判：这句话会被立刻发，还是先等一等。"""
+        params = await self._params()
+        body = await self._read_body()
+        text = ""
+        if isinstance(body, dict):
+            text = str(body.get("text") or body.get("sample") or "")
+        if not text:
+            text = str(params.get("text") or params.get("sample") or "")
+        settings = debounce_engine.DebounceSettings.from_config(
+            self.config, self._debounce_data
+        )
+        result = debounce_engine.preview(text, settings)
+        result["describe"] = debounce_engine.describe(settings)
+        return json_response(result)
+
+    async def _api_debounce_save(self) -> Any:
+        """面板上改防抖开关与参数，写的是插件数据目录里的覆盖层。"""
+        params = await self._params()
+        body = await self._read_body()
+        raw: Any = None
+        if isinstance(body, dict):
+            raw = body.get("settings") if isinstance(body.get("settings"), dict) else body
+        if not isinstance(raw, dict):
+            raw = params.get("settings") if isinstance(params.get("settings"), dict) else params
+        known = set(debounce_engine.DebounceSettings().to_dict().keys())
+        incoming = {
+            key: value
+            for key, value in (raw or {}).items()
+            if key in known and value is not None
+        }
+        if not incoming:
+            return error_response("没有收到任何要保存的防抖设置")
+        merged = dict(self._debounce_data)
+        merged.update(incoming)
+        self._debounce_data = merged
+        if not self._save_simple_overrides("debounce_overrides.json", merged, "消息防抖"):
+            return error_response("写入防抖设置失败，详细原因见 AstrBot 日志")
+        self._reload_from_config()
+        settings = debounce_engine.DebounceSettings.from_config(
+            self.config, self._debounce_data
+        )
+        return json_response(
+            {
+                "ok": True,
+                "settings": settings.to_dict(),
+                "describe": debounce_engine.describe(settings),
+                "overrides": dict(merged),
+            }
+        )
 
     async def _api_splitter(self) -> Any:
         params = await self._params()
@@ -4179,6 +4403,7 @@ class AIMindPlugin(Star):
             self._guard_data,
             self._style_data,
             self._privacy_data,
+            self._debounce_data,
         )
         self.engine.settings = self.settings.emotion
         self._warn_missing_special()
@@ -4190,6 +4415,7 @@ class AIMindPlugin(Star):
             self._guard_data,
             self._style_data,
             self._privacy_data,
+            self._debounce_data,
         )
         self.emotion_injection_mode = str(
             cfg_get(self.config, "emotion.injection.mode", "content_part") or "content_part"

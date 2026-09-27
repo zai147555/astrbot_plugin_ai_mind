@@ -15,11 +15,11 @@
 > `astrbot_plugin_ai_emotion` 和 `astrbot_plugin_ai_memory` 删掉（或停用），
 > 否则两套逻辑会同时注入，情绪会被算两遍。
 
-许可证 **AGPL-3.0** ｜ 零第三方依赖（纯标准库）｜ 590 条自动化测试 + 9 项面板自检
+许可证 **AGPL-3.0** ｜ 零第三方依赖（纯标准库）｜ 627 条自动化测试 + 9 项面板自检
 
 ---
 
-## 五件事
+## 六件事
 
 | | 做什么 | 在面板上能看到什么 |
 | --- | --- | --- |
@@ -28,6 +28,7 @@
 | 📊 **面板** | 把上面两样画出来，并且让你直接操纵 | 拖点改历史、设定此刻心情、冻结、重置 |
 | 🖼 **配图** | 说到某些话就直接甩一张图，图片在面板上传 | 上传、配触发词、预览、开关 |
 | 🫧 **分段** | 一条回复按标点拆成几口气，拟人延迟发出去；代码块/表格/引号整块保护；和语音插件不打架 | 试切预览：会切成几口气、每口气停几秒 |
+| ⏱ **防抖** | 用户连发的几条先攒一攒再交给她，不会在你说完之前抢答 | 试判预览：这句话会立刻发，还是先等一等 |
 
 ---
 
@@ -714,6 +715,56 @@ TTS 情绪路由那类插件会让模型在回复里写 `[TTS]` / `【语音】`
 
 ---
 
+## ⏱ 消息防抖
+
+人说话是一句一句发的：「今天晚上」…「吃什么」…「好啊」。三条分开到她那里就是三轮调用 ——
+她会在你说完第一句的时候就抢答。**消息防抖**把这种连发攒成一轮再交给她。
+
+做法参考了 [astrbot_plugin_debounce](https://github.com/advent259141/astrbot_plugin_debounce)，
+但判断核心换掉了 —— 原版下载一个微调过的模型（`onnxruntime` + `transformers` + `modelscope`）
+来判断「说完了没」；本插件坚持零第三方依赖，改成**本地规则**：
+
+| 这句话长什么样 | 怎么办 |
+| --- | --- |
+| 结尾是「。！」「吗」「吧」，或者已经超过 12 字 | 立刻发 |
+| 短句、又没有句末标点（拿不准） | 等 1 个窗口 |
+| 结尾是「，」「、」，或者停在「然后」「因为」这种连接词上 | 等 2 个窗口 |
+
+等的时候用户补了新消息就**并进来**；并过的那条自己那一轮会被停掉，不会回两次。
+合并时中文之间**不加空格** —— 加了就变成「今天晚上 吃什么」，一眼假。
+
+**规则不如模型准，所以判不准的时候默认放行** —— 宁可早回一句，也不能把用户的话吞了。
+等待有硬上限（默认 6 秒、最多合并 5 条），到点就发，不会一直吞着。
+
+### 为什么不用「伪造事件」那套
+
+原版的做法是：`stop_event()` 拦下消息 → 缓存 → 超时后**伪造一个消息事件回灌 EventBus** 补发。
+
+这里换了个更简单的路子：**在 `on_llm_request` 里睡一个短窗口**。
+AstrBot 的 `on_waiting_llm_request` 钩子在**会话锁之前**触发，
+所以正在睡的那一轮能在这里看到「用户又补了一句」，醒来直接合并 ——
+不用伪造事件，也没有缓冲区清空的竞态。
+
+> 代价是这一轮会占着会话锁最多几秒。锁是按会话分的，不影响别的会话。
+
+### 怎么开
+
+**默认是关的** —— 它会给短消息加一点点延迟，这种「时间上的意外」不该默认塞给所有人。
+
+面板 →「**消息防抖**」页签：一键开关 + **试判预览**（写一句话，看它是「立刻发」还是「先等一等」）。
+参数在「上手 → 全部功能设置 → 消息防抖」里。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `debounce.enabled` | false | 总开关 |
+| `debounce.scope` | both | 私聊群聊都防抖 / 只在私聊 / 只在群聊 |
+| `debounce.grace_seconds` | 1.5 | 一个窗口的长度 |
+| `debounce.max_wait_seconds` | 6 | 一轮最多等多久（硬上限） |
+| `debounce.max_messages` | 5 | 一轮最多合并几条 |
+| `debounce.long_enough` | 12 | 超过这么多字就不等了 |
+
+指令（以 `/` `!` `！` `#` 开头）永远不防抖。
+
 ## 把它发给别人 / 换成自己的人设
 
 整个插件目录打包发给别人就行。**内置的傲娇预设是原样保留的**，
@@ -807,6 +858,9 @@ WebUI 里每一项都有说明，这里只列最值得动的：
 | `splitter.voice_tag_disable_split` | true | **语音插件重复刷屏就靠它**：回复里带 [TTS] 就不分段 |
 | `splitter.voice_conflict_policy` | voice_only | 语音和文字同时在时只发语音；想都要就改 voice_then_text |
 | `splitter.tts_for_segments` | true | 框架语音开着时整条统一，免得「前几段文字 + 尾段语音」 |
+| `debounce.enabled` | false | 想让她等你说完再回就打开（面板「消息防抖」页签一键开） |
+| `debounce.grace_seconds` | 1.5 | 一个等待窗口；觉得她等太久就调小 |
+| `debounce.max_wait_seconds` | 6 | 一轮最多等多久，硬上限 |
 
 ---
 
@@ -967,6 +1021,7 @@ astrbot_plugin_ai_mind/
 | [astrbot_plugin_livingmemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory) | lxfight | 长期记忆：分域存储、多路检索、注入预算 |
 | [astrbot_plugin_self_learning](https://github.com/NickCharlie/astrbot_plugin_self_learning) | NickCharlie | 表达风格学习：抽词、相似度检索、待审队列 |
 | [astrbot_plugin_owner_guard](https://github.com/youshen2/astrbot_plugin_owner_guard) | youshen2 | 主人鉴权：身份判定、高危工具拦截、发送前护栏 |
+| [astrbot_plugin_debounce](https://github.com/advent259141/astrbot_plugin_debounce) | advent259141 | 消息防抖：把连发的几条攒成一轮再交给模型 |
 | [astrbot_plugin_group_habitat](https://github.com/Theater-ahyeon/astrbot_plugin_group_habitat) | Theater-ahyeon | 群组状态建模思路 |
 | [AstrBot](https://github.com/AstrBotDevs/AstrBot) | AstrBotDevs | 插件运行时与 WebUI 插件页机制 |
 

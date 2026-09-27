@@ -91,6 +91,9 @@ class FakeEvent:
     def stop_event(self) -> None:
         self.stopped = True
 
+    def is_stopped(self) -> bool:
+        return self.stopped
+
     def chain_result(self, chain: Any) -> tuple[str, Any]:
         return ("chain", chain)
 
@@ -198,6 +201,8 @@ class FakeProviderRequest:
         #: 系统级受信任位（OpenAI 格式上下文），身份/情绪块现在放这里
         self.contexts: list[dict] = []
         self.func_tool: Any = None
+        #: 防抖合并后会把拼好的话放这里
+        self.prompt: str | None = None
 
 
 class TextPart:
@@ -368,7 +373,8 @@ def install_fake_astrbot(data_dir: Path) -> FakeLogger:
     event_mod.filter = filter_mod
     for name in ("command", "command_group", "on_llm_request", "on_llm_response",
                  "on_decorating_result", "after_message_sent", "event_message_type",
-                 "permission_type", "on_astrbot_loaded", "on_using_llm_tool",
+                 "permission_type", "on_astrbot_loaded",
+                 "on_using_llm_tool", "on_waiting_llm_request",
                  "llm_tool"):
         setattr(filter_mod, name, _decorator_factory(name))
     class FakeEventMessageType:
@@ -3377,3 +3383,181 @@ class GraphMultiSelectTest(PluginHarness, unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+
+class DebounceIntegrationTest(PluginHarness, unittest.TestCase):
+    """消息防抖挂到真实钩子上的行为。"""
+
+    def conf(self, **extra):
+        block = {"enabled": True, "grace_seconds": 0.2, "max_wait_seconds": 2.0}
+        block.update(extra)
+        return {"debounce": block}
+
+    def test_off_by_default(self) -> None:
+        """默认关着：一句话都不该等。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = FakeEvent("今天晚上，", mid="d1")
+            req = FakeProviderRequest()
+            started = time.monotonic()
+            await plugin.on_llm_request_debounce(event, req)
+            self.assertLess(time.monotonic() - started, 0.1, "默认关着不该等")
+            self.assertIsNone(req.prompt, "没合并就不该改 prompt")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_finished_sentence_is_not_delayed(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            event = FakeEvent("你吃了吗", mid="d2")
+            req = FakeProviderRequest()
+            started = time.monotonic()
+            await plugin.on_llm_request_debounce(event, req)
+            self.assertLess(time.monotonic() - started, 0.1, "说完的话不该等")
+            self.assertIsNone(req.prompt)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_merges_follow_up_arriving_while_waiting(self) -> None:
+        """A 在等窗口时 B 到了 —— 并成一句，B 自己那一轮不再回。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            a = FakeEvent("今天晚上", mid="d3")
+            b = FakeEvent("吃什么", mid="d4")
+            await plugin.on_waiting_llm_request(a)
+            req = FakeProviderRequest()
+            task = asyncio.create_task(plugin.on_llm_request_debounce(a, req))
+            await asyncio.sleep(0.05)
+            await plugin.on_waiting_llm_request(b)
+            await task
+            self.assertEqual(req.prompt, "今天晚上吃什么", "该合并成一句")
+            self.assertEqual(a.message_str, "今天晚上吃什么", "事件文本也要跟上")
+            req_b = FakeProviderRequest()
+            await plugin.on_llm_request_debounce(b, req_b)
+            self.assertTrue(b.stopped, "被并走的那条要停下，不能回两次")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_command_is_never_held(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            event = FakeEvent("/情绪", mid="d5")
+            req = FakeProviderRequest()
+            started = time.monotonic()
+            await plugin.on_llm_request_debounce(event, req)
+            self.assertLess(time.monotonic() - started, 0.1, "指令不该等")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_scope_private_skips_groups(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf(scope="private"))
+            await plugin.initialize()
+            event = FakeEvent("今天晚上，", umo=GROUP, mid="d6")
+            req = FakeProviderRequest()
+            started = time.monotonic()
+            await plugin.on_llm_request_debounce(event, req)
+            self.assertLess(time.monotonic() - started, 0.1, "群聊不在范围内，不该等")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_max_messages_stops_waiting(self) -> None:
+        """攒够上限就发，不再傻等。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf(max_messages=2))
+            await plugin.initialize()
+            a = FakeEvent("今天晚上", mid="d7")
+            await plugin.on_waiting_llm_request(a)
+            req = FakeProviderRequest()
+            task = asyncio.create_task(plugin.on_llm_request_debounce(a, req))
+            await asyncio.sleep(0.05)
+            for index in range(2):
+                await plugin.on_waiting_llm_request(FakeEvent("再来一句", mid="d8-%d" % index))
+            await task
+            self.assertTrue(req.prompt and req.prompt.startswith("今天晚上"))
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_stopped_event_skips_injection(self) -> None:
+        """被并走的那条不再计入情绪和记忆。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = FakeEvent("你好")
+            event.stop_event()
+            req = FakeProviderRequest()
+            await plugin.on_llm_request(event, req)
+            self.assertEqual(self.all_injected(req).strip(), "", "被停掉的事件不该注入")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+
+class DebouncePanelTest(PluginHarness, unittest.TestCase):
+    """面板上的防抖接口。"""
+
+    def test_state_off_by_default(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            res = await self.api(plugin, "debounce")
+            self.assertTrue(res["ok"])
+            data = res["data"]
+            self.assertFalse(data["settings"]["enabled"], "默认关")
+            self.assertIn("关", data["describe"])
+            self.assertTrue(data["schema"]["scopes"], "要给前端一份选项表")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_preview_verdicts(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin({"debounce": {"enabled": True}})
+            send = (await self.api(plugin, "debounce/preview", body={"text": "你吃了吗"}))["data"]
+            self.assertEqual(send["verdict"], "send")
+            self.assertEqual(send["wait_seconds"], 0)
+            grace = (await self.api(plugin, "debounce/preview", body={"text": "晚上吃什么"}))["data"]
+            self.assertEqual(grace["verdict"], "grace")
+            hold = (await self.api(plugin, "debounce/preview", body={"text": "今天晚上，"}))["data"]
+            self.assertEqual(hold["verdict"], "hold")
+            self.assertEqual(hold["wait_seconds"], 3.0, "2 个窗口 x 1.5 秒")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_preview_disabled(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            data = (await self.api(plugin, "debounce/preview", body={"text": "今天晚上，"}))["data"]
+            self.assertEqual(data["verdict"], "disabled")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_save_toggles_and_takes_effect(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            res = await self.api(
+                plugin, "debounce/save", body={"settings": {"enabled": True, "grace_seconds": 2.0}}
+            )
+            self.assertTrue(res["ok"])
+            self.assertTrue(res["data"]["settings"]["enabled"])
+            self.assertTrue(plugin.settings.debounce.enabled, "保存后立刻生效，不用重启")
+            self.assertEqual(plugin.settings.debounce.grace_seconds, 2.0)
+            again = (await self.api(plugin, "debounce"))["data"]
+            self.assertTrue(again["settings"]["enabled"], "覆盖层要留下来")
+            await plugin.terminate()
+
+        self.run_async(scenario())

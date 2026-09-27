@@ -158,6 +158,7 @@ const KNOWN_ROUTES = [
   PLUGIN + "/images", PLUGIN + "/images/upload", PLUGIN + "/images/trigger/add",
   PLUGIN + "/images/trigger/update", PLUGIN + "/images/trigger/delete",
   PLUGIN + "/images/delete", PLUGIN + "/images/batch", PLUGIN + "/_echo",
+  PLUGIN + "/debounce", PLUGIN + "/debounce/preview", PLUGIN + "/debounce/save",
   PLUGIN + "/splitter", PLUGIN + "/splitter/preview", PLUGIN + "/splitter/save",
   PLUGIN + "/splitter/reset", PLUGIN + "/relationship", PLUGIN + "/relationship/save",
   PLUGIN + "/relationship/reset", PLUGIN + "/theory", PLUGIN + "/theory/clear",
