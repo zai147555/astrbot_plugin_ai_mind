@@ -33,11 +33,16 @@ THINK_CLOSE = "</think>"
 
 #: 默认切分点：句末标点 + 换行
 #: （换行也算：模型想分点时，最常用的办法就是换行）
-DEFAULT_SPLIT_REGEX = "[。？！?!…；;~～\n]+"
+DEFAULT_SPLIT_REGEX = "[。？！?!…；;~～\n]+|\.{2,}"
 DEFAULT_SPLIT_CHARS = ["。", "？", "！", "?", "!", "；", ";", "…", "\n", "~"]
 
 #: 一段太长时的二次切分点（逗号、顿号、冒号、空白）
 SECONDARY_PATTERN = re.compile("[，,、:：;；]+")
+
+#: 停顿：中文省略号、两个以上的点、破折号、波浪号。
+#: 它们是「换气」而不是「断句」—— 犹豫本身就该分成两条发，
+#: 所以遇到它不看长度门槛（见 _should_split）。
+PAUSE_DELIM_RE = re.compile("^(?:…+|[.．]{2,}|—{2,}|~{2,})$")
 
 QUOTE_CHARS = set("“”‘’「」『』《》〈〉\"'")
 PAIR_MAP = {
@@ -781,6 +786,12 @@ def _should_split(
 ) -> bool:
     if depth > 0:
         return False  # 引号/括号没闭合，先别切
+    # 停顿是天然的换气点：她停一下、再接着说，本来就该分两条发。
+    # 这里不受长度门槛限制 —— 否则「你...你这什么造型啊」这种十来字的短句
+    # 永远切不开，读起来是一口气说完，犹豫的感觉全没了。
+    if weight >= 1 and _delim_weight(delim) >= 1 and PAUSE_DELIM_RE.match(delim):
+        if index + len(delim) < len(text):
+            return True
     # 均分模式：这一段还没攒够就先别切。
     # 标点自己的长度也要算进去 —— 否则「下午好。」这种四个字的短句会被判成「不够长」，
     # 切点被迫后移到下一个逗号上，气泡就变成以「，」结尾。
