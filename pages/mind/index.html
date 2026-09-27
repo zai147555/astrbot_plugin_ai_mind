@@ -1357,6 +1357,9 @@
     }
     if (res && typeof res === "object" && res.data && res.status === "ok") return res.data;
     if (typeof res === "string") {
+      // 有些版本的中转层会把最外层 data 再拆一层 —— 图片接口返回的正好就是
+      // "data:image/jpeg;base64,..."，那种情况别当成「登录页」报错。
+      if (res.indexOf("data:image/") === 0) return { image: res };
       throw new Error("返回的不是 JSON，可能是登录页：" + res.slice(0, 80));
     }
     return res;
@@ -3411,8 +3414,10 @@
       .then(function (data) {
         bgCount = data.count || bgCount;
         if (data.n) bgRemember(BG_KEY, data.n);
+        // image 是现在的字段名；data 是老名字，留着兼容（万一中转层又拆了一层）
+        var uri = data.image || data.data;
         var layer = document.querySelector(".bg-layer");
-        if (layer && data.data) layer.style.backgroundImage = 'url("' + data.data + '")';
+        if (layer && uri) layer.style.backgroundImage = 'url("' + uri + '")';
       })
       .catch(function (e) { toast("背景加载失败：" + e.message); });
   }
