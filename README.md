@@ -1,5 +1,9 @@
 # 🧠 astrbot_plugin_ai_mind
 
+[![tests](https://github.com/zai147555/astrbot_plugin_ai_mind/actions/workflows/ci.yml/badge.svg)](https://github.com/zai147555/astrbot_plugin_ai_mind/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](requirements.txt)
+
 > 作者：挽风随行+DSH(主代码编写)
 
 给 AstrBot 里的 AI 一套**会自己波动的情绪**和**记得住人的长期记忆**，
