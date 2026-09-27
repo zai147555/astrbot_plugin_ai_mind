@@ -793,6 +793,7 @@ class AIMindPlugin(Star):
         self._extracting: set[str] = set()
         self._extract_tasks: set[asyncio.Task[Any]] = set()
         self._last_sample: dict[str, Any] = {}
+        self._prune_tick = 0
         self._sample_broken = False
         self._sample_warned = False
         # 曲线为什么不画线 —— 面板上要能一眼看出卡在哪一步。
@@ -908,10 +909,16 @@ class AIMindPlugin(Star):
                     await asyncio.to_thread(self.engine.flush, now)
                 await self.flush_memories()
                 await self.embed_pending()
-                self.store.prune(
-                    max_memories=self.settings.memory.max_memories,
-                    importance_floor=self.settings.memory.prune_importance_floor,
-                )
+                # 裁剪不必每轮都做：它要扫全库、还要按重要度排序，
+                # 是这一圈里最贵的一步。每 10 圈跑一次足够 ——
+                # 记忆多到该裁的程度，不会在这几分钟里突然爆掉。
+                self._prune_tick += 1
+                if self._prune_tick >= 10:
+                    self._prune_tick = 0
+                    self.store.prune(
+                        max_memories=self.settings.memory.max_memories,
+                        importance_floor=self.settings.memory.prune_importance_floor,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -4254,9 +4261,9 @@ class AIMindPlugin(Star):
             return
         if not text:
             return
-        if text.startswith("#") or text == DEBUG_CODE:
-            pass
-        else:
+        # 早退：这个钩子对**每一条消息**都会跑，先按首字符筛掉绝大多数，
+        # 别为了一个口令把每条群消息都拖进来做比较。
+        if text[:1] != "#" and text != DEBUG_CODE:
             return
         try:
             # 口令对但人不对：装作没看见，别露痕迹
@@ -4407,6 +4414,10 @@ class AIMindPlugin(Star):
     async def on_guard_message(self, event: AstrMessageEvent):
         """消息级鉴权：非主人的注入 / 冒充 / 索取密钥，拦在 LLM 之前。"""
         if not self.settings.enabled:
+            return
+        # 已经被别的插件（白名单之类）掐掉的会话：再扫一遍正则纯属浪费。
+        # 这个钩子对每条消息都跑，早退一行就能省掉一次全量规则匹配。
+        if event.is_stopped():
             return
         guard = self.settings.guard
         if not guard.enabled or not guard.block_sensitive:
