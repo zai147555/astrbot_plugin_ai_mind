@@ -16,8 +16,11 @@ import vm from "node:vm";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HTML = readFileSync(join(HERE, "..", "pages", "mind", "index.html"), "utf8");
 const BLOCKS = [...HTML.matchAll(/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-if (BLOCKS.length !== 1) throw new Error("期望恰好 1 个内联 script，实际 " + BLOCKS.length);
-const SCRIPT = BLOCKS[0];
+if (BLOCKS.length === 0) throw new Error("页面里一个内联 script 都没有");
+// 页面里除了主逻辑，还可能有一小段引导脚本（例如「尽早贴上主题、避免白闪」——
+// 那段必须在 <head> 里同步跑，放到文末就来不及了）。
+// 真正要分析的是最长的那段，也就是主逻辑。
+const SCRIPT = BLOCKS.reduce((a, b) => (b.length > a.length ? b : a));
 
 // 静态检查：JS 的函数声明是"后者覆盖前者"，
 // 一旦文件里出现重复定义（例如补丁把一段插了两次），跑起来的可能根本不是新代码。
