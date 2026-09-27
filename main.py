@@ -1874,6 +1874,7 @@ class AIMindPlugin(Star):
             ("theory", self._api_theory, "理论基础与词表命中"),
             ("theory/clear", self._api_theory_clear, "清空词表命中记录"),
             ("relationship/save", self._api_relationship_save, "保存专属用户"),
+            ("relationship/relation", self._api_relationship_relation, "改好感度与熟悉度"),
             ("relationship/reset", self._api_relationship_reset, "还原专属用户"),
             ("debounce", self._api_debounce, "消息防抖状态"),
             ("debounce/preview", self._api_debounce_preview, "试判一段文字"),
@@ -4557,6 +4558,47 @@ class AIMindPlugin(Star):
         removed = self.lexicons.clear()
         logger.info(f"[ai_mind] 已清空 {removed} 条词表命中记录")
         return json_response({"ok": True, "removed": removed})
+
+    async def _api_relationship_relation(self) -> Any:
+        """手动改某人的好感度 / 熟悉度（同一个人在所有会话里一起改）。"""
+        params = await self._params()
+        body = await self._read_body()
+        payload: dict[str, Any] = body if isinstance(body, dict) else {}
+        if not payload and isinstance(params, dict):
+            payload = params
+        uid = str(payload.get("uid") or "").strip()
+        if not uid:
+            return error_response("没有指定要改谁")
+
+        def _num(key: str) -> float | None:
+            if key not in payload:
+                return None
+            raw = payload.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        affinity = _num("affinity")
+        familiarity = _num("familiarity")
+        if affinity is None and familiarity is None:
+            return error_response("没有收到要改的数值")
+        touched = self.engine.set_relation_values(uid, affinity, familiarity)
+        if not touched:
+            return error_response("这个人还没聊过 —— 等他发一条消息，面板里出现之后再改")
+        try:
+            self.engine.flush()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 保存好感度/熟悉度失败：{exc}")
+        logger.info(
+            f"[ai_mind] 手动设定 {uid}：好感度 {affinity} / 熟悉度 {familiarity}"
+            f"（{touched} 条关系）"
+        )
+        result = self._relationship_payload()
+        result["saved"] = True
+        return json_response(result)
 
     async def _api_relationship(self) -> Any:
         return json_response(self._relationship_payload())

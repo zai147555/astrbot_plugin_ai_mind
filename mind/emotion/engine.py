@@ -530,6 +530,41 @@ class EmotionEngine:
             self._dirty = True
         return removed
 
+    def set_relation_values(
+        self,
+        uid: str,
+        affinity: float | None = None,
+        familiarity: float | None = None,
+    ) -> int:
+        """手动设定某人的好感度 / 熟悉度，返回改了几条关系。
+
+        同一个人可能同时存在于私聊和好几个群会话里，这里一次全改 ——
+        否则面板上改了私聊、群里还是老数字，看着像没生效。
+        """
+        target = str(uid or "")
+        if not target:
+            return 0
+        touched = 0
+        for _key, relation in self.all_relations():
+            if str(getattr(relation, "uid", "") or "") != target:
+                continue
+            if affinity is not None:
+                relation.affinity = _clampf(
+                    affinity,
+                    relation.affinity,
+                    self.settings.affinity_min,
+                    self.settings.affinity_max,
+                )
+            if familiarity is not None:
+                # 熟悉度平时只增不减，但面板上的手动设定是明确意图：允许改小。
+                relation.familiarity = _clampf(
+                    familiarity, relation.familiarity, 0.0, 100.0
+                )
+            touched += 1
+        if touched:
+            self._dirty = True
+        return touched
+
     def all_relations(self) -> list[tuple[str, Relation]]:
         """(会话, 关系) 的全量快照 —— 面板靠它列出"聊过的人"。"""
         out: list[tuple[str, Relation]] = []

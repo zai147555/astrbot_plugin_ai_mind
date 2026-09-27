@@ -3561,3 +3561,97 @@ class DebouncePanelTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class RelationshipEditTest(PluginHarness, unittest.TestCase):
+    """面板上直接改好感度 / 熟悉度。"""
+
+    UID = "1000000001"
+
+    def conf(self):
+        return {"emotion": {"relationship": {"special_users": [self.UID]}}}
+
+    def test_edit_both_values(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            await self.send(plugin, "你好", uid=self.UID)
+            before = (await self.api(plugin, "relationship"))["data"]["members"]
+            self.assertTrue(before, "聊过之后应该出现在专属用户里")
+
+            out = await self.api(
+                plugin, "relationship/relation",
+                body={"uid": self.UID, "affinity": 88, "familiarity": 77},
+            )
+            self.assertTrue(out["ok"], out)
+            member = out["data"]["members"][0]
+            self.assertEqual(round(member["affinity"]), 88)
+            self.assertEqual(round(member["familiarity"]), 77)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_values_are_clamped(self) -> None:
+        """好感度封顶 100、熟悉度不能是负数。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            await self.send(plugin, "你好", uid=self.UID)
+            out = await self.api(
+                plugin, "relationship/relation",
+                body={"uid": self.UID, "affinity": 999, "familiarity": -50},
+            )
+            self.assertTrue(out["ok"])
+            member = out["data"]["members"][0]
+            self.assertEqual(round(member["affinity"]), 100)
+            self.assertEqual(round(member["familiarity"]), 0)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_all_sessions_are_updated(self) -> None:
+        """同一个人在私聊和群里各有一份关系，改一次要全改。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            await self.send(plugin, "私聊一句", umo=PRIVATE, uid=self.UID)
+            await self.send(plugin, "群里一句", umo=GROUP, uid=self.UID)
+            await self.api(
+                plugin, "relationship/relation", body={"uid": self.UID, "affinity": 66}
+            )
+            relations = [
+                rel for _key, rel in plugin.engine.all_relations()
+                if str(rel.uid) == self.UID
+            ]
+            self.assertGreaterEqual(len(relations), 2, "应该有两份关系")
+            for rel in relations:
+                self.assertEqual(round(rel.affinity), 66)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_never_talked_is_rejected(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            out = await self.api(
+                plugin, "relationship/relation", body={"uid": "424242", "affinity": 50}
+            )
+            self.assertFalse(out["ok"], "没聊过的人不该能改")
+            self.assertIn("还没聊过", str(out.get("message") or out))
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_missing_value_is_rejected(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin(self.conf())
+            await plugin.initialize()
+            await self.send(plugin, "你好", uid=self.UID)
+            out = await self.api(plugin, "relationship/relation", body={"uid": self.UID})
+            self.assertFalse(out["ok"], "没给数值就该拒绝")
+            await plugin.terminate()
+
+        self.run_async(scenario())
