@@ -575,7 +575,16 @@ class AIMindPlugin(Star):
             )
         if not should_sample(previous, pad, self.settings.panel.sample_epsilon, force=force):
             return
-        self.samples.append(session_key, now, pad, kind)
+        try:
+            self.samples.append(session_key, now, pad, kind)
+        except Exception as exc:  # noqa: BLE001
+            # 以前这里不兜，异常会一路冒到 on_llm_request 被记成「注入失败」，
+            # 真正的原因（曲线写不进去）反而看不见了。
+            self._sample_broken = True
+            if not self._sample_warned:
+                self._sample_warned = True
+                logger.warning(f"[ai_mind] 曲线采样失败，面板上的情绪曲线会退化：{exc}")
+            return
         self._last_sample[session_key] = self.samples.latest(session_key)
         if self.samples.conn is None:
             # 曲线表没建起来：别静默失败，否则面板上就是一片空白却查不出原因
@@ -2180,6 +2189,8 @@ class AIMindPlugin(Star):
             max_points=self.settings.panel.max_points_returned,
         )
         payload["frozen"] = key in self._frozen
+        # 让面板能直接说出「采样坏了」而不是只显示一片空白
+        payload["samples_broken"] = bool(self._sample_broken)
         payload["settings"] = {
             "curve_hours": self.settings.panel.curve_hours,
             "sample_epsilon": self.settings.panel.sample_epsilon,

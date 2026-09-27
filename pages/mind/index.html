@@ -1503,10 +1503,27 @@
 
     var note = $("curve-note");
     if (note) {
-      if (d.curve_source === "history") {
+      // 画不出线的原因有好几种，别再用一句「还没有记录」糊过去 ——
+      // 面板上直接说清楚卡在哪一步，省得用户只能对着空白猜。
+      var mine = d.sample_count || 0;    // 本会话的采样点总数（不限时间段）
+      var all = d.sample_total || 0;     // 全部会话
+      var talked = 0;
+      (d.users || []).forEach(function (u) { talked += (u.msg_count || 0); });
+      if (d.curve_source === "samples") {
+        note.textContent = "本会话采样点 " + mine + " 个（全部会话共 " + all + " 个）";
+      } else if (d.curve_source === "history") {
         note.textContent = "曲线由情绪事件近似还原（真实采样点从这次更新后开始积累，聊几句就会变精确）";
-      } else if (d.curve_source === "samples") {
-        note.textContent = "本会话采样点 " + (d.sample_count || 0) + " 个（全部会话共 " + (d.sample_total || 0) + " 个）";
+      } else if (d.samples_broken) {
+        note.textContent = "⚠️ 曲线采样表没建起来，所以画不出线。去 AstrBot 日志里搜 [ai_mind]，"
+          + "会有「曲线表初始化失败」或「曲线采样表不可用」的说明。";
+      } else if (mine > 0) {
+        note.textContent = "本会话有 " + mine + " 个采样点，但都不在选中的时间段里 —— "
+          + "把上面那排时段调长一点（比如「7 天」）。";
+      } else if (all > 0) {
+        note.textContent = "本会话还没有采样点（插件一共记了 " + all + " 个）—— 在这个会话里说一句就会开始记。";
+      } else if (talked > 0) {
+        note.textContent = "这个会话聊过 " + talked + " 条，却一个采样点都没有 —— 采样没生效。"
+          + "去 AstrBot 日志里搜 [ai_mind]，把 warning 那几行发出来就能定位。";
       } else {
         note.textContent = "这个会话还没有任何情绪记录 —— 聊几句，或者用上面的滑块／一键改成设定一下";
       }
