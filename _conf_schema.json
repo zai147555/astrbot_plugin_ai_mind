@@ -1062,8 +1062,8 @@
       "block_tools": {
         "description": "拦截非主人的工具调用",
         "type": "bool",
-        "default": true,
-        "hint": "请求级让模型看不见 + 执行期再校验一次，双保险。只对非主人生效，主人不受影响。"
+        "default": false,
+        "hint": "默认关着。装一个插件不该悄悄把模型手上的工具拿走 —— 那会让「本来能用的功能」突然失灵，还查不出原因。打开后：请求级让模型看不见 + 执行期再校验一次，只对非主人生效。"
       },
       "tool_mode": {
         "description": "工具名单模式",
@@ -1079,24 +1079,13 @@
         "description": "工具名单",
         "type": "list",
         "default": [
-          "*admin*",
-          "*config*",
-          "*setting*",
-          "*delete*",
-          "*remove*",
-          "*drop*",
-          "*clear*",
-          "*reset*",
-          "*install*",
           "*uninstall*",
-          "*restart*",
           "*shutdown*",
-          "*write*",
-          "*shell*",
-          "*exec*",
-          "*eval*"
+          "*reboot*",
+          "*restart*",
+          "*admin*"
         ],
-        "hint": "支持 * 通配，例如 write_* 。默认只拦「会改东西 / 会执行 / 会删」的工具；清空会回落到这份默认名单，想完全不拦请关掉上面那个开关。"
+        "hint": "支持 * 通配。默认只拦真正的管理/生命周期工具。注意：通配符只按名字猜，带 *exec* / *shell* / *write* 的老默认会把 astrbot_execute_python 这类正常工具一起摘掉 —— 想收紧请自己加，但先确认不会误伤你在用的功能。"
       },
       "scrub_reply": {
         "description": "发送前清理内部内容",

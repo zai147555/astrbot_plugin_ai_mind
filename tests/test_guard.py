@@ -158,13 +158,30 @@ class ToolDefaultRegressionTest(unittest.TestCase):
                 name + " 是普通工具，不该被默认名单拦掉",
             )
 
-    def test_default_blacklist_blocks_dangerous_tools(self) -> None:
+    def test_default_blacklist_only_blocks_lifecycle_tools(self) -> None:
+        """默认名单只拦真正的管理/生命周期工具。
+
+        教训：老默认里带着 *exec* / *shell* / *write* 之类的通配，把
+        astrbot_execute_python 这种正常工具也一起摘了 —— 用户看到的是
+        「装了插件之后，原来能用的功能不能用了」。通配符只按名字猜，
+        宁可少拦几个。"""
+
         blocked = list(guard.DEFAULT_TOOL_BLACKLIST)
-        for name in ("delete_memory", "write_file", "shell_exec",
-                     "update_config", "uninstall_plugin", "reset_database"):
+        for name in ("uninstall_plugin", "shutdown_host", "restart_bot", "admin_panel"):
             self.assertFalse(
                 guard.tool_allowed(name, "blacklist", blocked),
-                name + " 是高危工具，默认名单必须拦住",
+                name + " 是管理/生命周期工具，默认名单要拦住",
+            )
+
+    def test_default_blacklist_never_eats_normal_tools(self) -> None:
+        """正常工具绝不能被默认名单误伤 —— 老版本就是栽在这。"""
+
+        blocked = list(guard.DEFAULT_TOOL_BLACKLIST)
+        for name in ("astrbot_execute_python", "astrbot_execute_shell",
+                     "write_file", "delete_memory", "update_config"):
+            self.assertTrue(
+                guard.tool_allowed(name, "blacklist", blocked),
+                name + " 不该被默认名单摘掉（通配符只看名字，猜不准的宁可不拦）",
             )
 
 

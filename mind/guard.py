@@ -214,29 +214,29 @@ TOOL_MODE_LABELS = {
     TOOL_BLACKLIST: "黑名单：只摘掉名单里的工具（默认）",
 }
 
-#: 黑名单模式的默认名单：只摘「会改东西 / 会执行 / 会删」的高危工具。
+#: 黑名单模式的默认名单：只摘**真正的管理/生命周期**工具。
 #:
-#: 之前这里默认是**空白名单 + 白名单模式**，等于非主人一个工具都拿不到 ——
-#: 连「检查插件状态」这种只读工具都会被摘掉，用户看到的就是
-#: 「曾经还能用的功能，现在不能用了」。普通工具（搜索、查状态、
-#: 记忆召回…）本来就不该拦，所以默认改成黑名单。
+#: 教训：这里以前还带着 *exec* / *eval* / *shell* / *write* / *clear* 之类的
+#: 通配。看着很谨慎，实际后果是**把用户本来能用的功能悄悄弄坏** ——
+#: 「在私聊里问插件状态」走的是 astrbot_execute_python，被 *exec* 一网打尽，
+#: 表现就是「装了这个插件之后，她不再调用那个工具了」。
+#:
+#: 通配符不看上下文，只按名字猜。宁可少拦几个，也不要误伤正常功能 ——
+#: 真要收紧，去面板上自己加，或者把 block_tools 打开。
 DEFAULT_TOOL_BLACKLIST: tuple[str, ...] = (
-    "*admin*",
-    "*config*",
-    "*setting*",
-    "*delete*",
-    "*remove*",
-    "*drop*",
-    "*clear*",
-    "*reset*",
-    "*install*",
     "*uninstall*",
-    "*restart*",
     "*shutdown*",
-    "*write*",
-    "*shell*",
-    "*exec*",
-    "*eval*",
+    "*reboot*",
+    "*restart*",
+    "*admin*",
+)
+
+#: 老版本写进用户配置文件里的那份默认名单。
+#: from_config 认得出它 —— 只有「从来没改过」才会长得一模一样。
+LEGACY_TOOL_BLACKLIST: tuple[str, ...] = (
+    "*admin*", "*config*", "*setting*", "*delete*", "*remove*", "*drop*",
+    "*clear*", "*reset*", "*install*", "*uninstall*", "*restart*",
+    "*shutdown*", "*write*", "*shell*", "*exec*", "*eval*",
 )
 
 
@@ -336,5 +336,6 @@ __all__ = [
     "scrub_reply",
     "tool_allowed",
     "DEFAULT_TOOL_BLACKLIST",
+    "LEGACY_TOOL_BLACKLIST",
 ]
 
