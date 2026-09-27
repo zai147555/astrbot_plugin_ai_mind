@@ -1949,6 +1949,7 @@ class AIMindPlugin(Star):
             ("relationship/save", self._api_relationship_save, "保存专属用户"),
             ("relationship/relation", self._api_relationship_relation, "改好感度与熟悉度"),
             ("relationship/reset", self._api_relationship_reset, "还原专属用户"),
+            ("background", self._api_background, "面板背景图"),
             ("debounce", self._api_debounce, "消息防抖状态"),
             ("debounce/preview", self._api_debounce_preview, "试判一段文字"),
             ("debounce/save", self._api_debounce_save, "保存防抖设置"),
@@ -2707,6 +2708,43 @@ class AIMindPlugin(Star):
                 if key in known and value is not None:
                     merged[key] = value
         return merged
+
+    async def _api_background(self) -> Any:
+        """面板背景图：按编号返回一张 data URI。
+
+        为什么走这个接口、而不是让页面直接 <img src="bg/01.jpg">：
+        插件页的静态资源链路（asset token / 路由 / 鉴权）在不同 AstrBot 版本里
+        不一样，而面板的数据接口是确定通的 —— 所有面板数据都走它。
+        图片本来就是虚化过的，base64 一遍也大不到哪去。
+        """
+        params = await self._params()
+        folder = Path(__file__).resolve().parent / "pages" / "mind" / "bg"
+        try:
+            names = sorted(item.name for item in folder.glob("*.jpg"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 读取背景图目录失败：{exc}")
+            names = []
+        if not names:
+            return error_response("找不到背景图（pages/mind/bg 是空的）")
+        try:
+            index = int(params.get("n") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index < 1 or index > len(names):
+            # 没指定（或越界）就随机挑一张 —— 面板每次打开都会调这里
+            index = random.randint(1, len(names))
+        target = folder / names[index - 1]
+        try:
+            raw = await asyncio.to_thread(target.read_bytes)
+        except Exception as exc:  # noqa: BLE001
+            return error_response(f"读不到背景图 {names[index - 1]}：{exc}")
+        return json_response(
+            {
+                "n": index,
+                "count": len(names),
+                "data": "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii"),
+            }
+        )
 
     async def _api_debounce(self) -> Any:
         """防抖当前状态。"""
@@ -3563,14 +3601,29 @@ class AIMindPlugin(Star):
         if not payload and isinstance(params, dict):
             payload = dict(params)
         current = dict(self._load_simple_overrides("panel_mode.json", "面板模式"))
+        changed = False
         if "mode" in payload:
             mode = str(payload.get("mode") or "").strip().lower()
             if mode in ("simple", "expert"):
                 current["mode"] = mode
-                self._save_simple_overrides("panel_mode.json", current, "面板模式")
+                changed = True
+        if "bg_blur" in payload:
+            # 背景虚化强度：面板上拖滑杆就存这儿，不用改 config
+            try:
+                current["bg_blur"] = max(0, min(16, int(float(payload.get("bg_blur")))))
+                changed = True
+            except (TypeError, ValueError):
+                pass
+        if changed:
+            self._save_simple_overrides("panel_mode.json", current, "面板模式")
+        try:
+            blur = max(0, min(16, int(current.get("bg_blur"))))
+        except (TypeError, ValueError):
+            blur = max(0, min(16, int(getattr(self.settings.panel, "bg_blur", 4))))
         return json_response({
             "mode": str(current.get("mode") or "simple"),
             "background": bool(getattr(self.settings.panel, "background", True)),
+            "bg_blur": blur,
         })
 
     # ------------------------------------------------------------------

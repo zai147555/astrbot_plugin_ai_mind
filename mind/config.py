@@ -135,8 +135,10 @@ class PanelSettings:
     max_points_returned: int = 1500
     #: 是否允许非管理员读写面板数据
     public_access: bool = False
-    #: 面板背景图（每次打开随机一张虚化图 + 毛玻璃卡片）
+    #: 面板背景图（每次打开随机一张 + 毛玻璃卡片）
     background: bool = True
+    #: 背景虚化强度（px）。图片里只烤了一层很轻的底子，靠这个调清晰度
+    bg_blur: int = 4
 
     @staticmethod
     def from_config(config: Mapping[str, Any] | None) -> "PanelSettings":
@@ -148,6 +150,7 @@ class PanelSettings:
             max_points_returned=_i(cfg_get(config, "panel.max_points_returned", 1500), 1500, 50, 20000),
             public_access=_b(cfg_get(config, "panel.public_access", False), False),
             background=_b(cfg_get(config, "panel.background", True), True),
+            bg_blur=_i(cfg_get(config, "panel.bg_blur", 4), 4, 0, 16),
         )
 
 
