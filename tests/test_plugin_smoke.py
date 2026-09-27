@@ -4277,10 +4277,14 @@ class DbFailureIsLoudTest(PluginHarness, unittest.TestCase):
             plugin = self.make_plugin()
             await plugin.initialize()
             # 让记忆库指向一个绝对建不出来的路径：真实的打开失败
+            # 曲线存储现在是自足的：要让它真的打不开，直接掐掉它的连接与开库能力
+            plugin.samples._conn = None
+            plugin.samples.path = Path("/proc/definitely/not/writable/mind.db")
+            plugin.samples._db_path = None
+            plugin.samples._open = lambda: None          # type: ignore[assignment]
+            plugin.samples.last_error = "OperationalError: unable to open database file"
             plugin.store.path = Path("/proc/definitely/not/writable/mind.db")
             plugin.store._conn = None
-            plugin.samples._db_path = Path("/proc/definitely/not/writable/mind.db")
-            plugin.samples._spare_conn = None
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             check = data["db_check"]
             self.assertFalse(check["write"], "写不进去就得如实说")
@@ -4335,7 +4339,7 @@ class LazySchemaTest(PluginHarness, unittest.TestCase):
             plugin.samples.conn.execute("DROP TABLE IF EXISTS emotion_samples")
             plugin.samples.conn.commit()
             plugin.samples._schema_ready = False
-            plugin.samples._source = None              # 来源彻底不可用
+            plugin.samples._source = None              # 旧钩子，留着不该有事
             await self.send(plugin, "喂")
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             self.assertTrue(data["db_check"]["write"], "自己开连接也要写得进去：%s" % data["db_check"])
@@ -4384,7 +4388,7 @@ class ExternallyClosedTest(PluginHarness, unittest.TestCase):
             plugin = self.make_plugin()
             await plugin.initialize()
             await self.send(plugin, "喂")
-            plugin.store._conn.close()          # 有人绕过我们把连接关了
+            plugin.samples._conn.close()        # 有人绕过我们把曲线连接关了
             await self.send(plugin, "还在吗")
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             self.assertTrue(data["db_check"]["write"], "库要能重开：%s" % data["db_check"])
@@ -4400,7 +4404,7 @@ class ExternallyClosedTest(PluginHarness, unittest.TestCase):
             await plugin.initialize()
             await self.send(plugin, "喂")
             before = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
-            plugin.store._conn.close()
+            plugin.samples._conn.close()
             await self.send(plugin, "喂喂喂")
             after = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
             self.assertGreater(after, before, "重开之后曲线还得继续落点")
