@@ -210,9 +210,34 @@ TOOL_WHITELIST = "whitelist"
 TOOL_BLACKLIST = "blacklist"
 TOOL_MODES = (TOOL_WHITELIST, TOOL_BLACKLIST)
 TOOL_MODE_LABELS = {
-    TOOL_WHITELIST: "白名单：只保留名单里的工具（默认最安全）",
-    TOOL_BLACKLIST: "黑名单：只摘掉名单里的工具",
+    TOOL_WHITELIST: "白名单：只保留名单里的工具（名单为空 = 不限制）",
+    TOOL_BLACKLIST: "黑名单：只摘掉名单里的工具（默认）",
 }
+
+#: 黑名单模式的默认名单：只摘「会改东西 / 会执行 / 会删」的高危工具。
+#:
+#: 之前这里默认是**空白名单 + 白名单模式**，等于非主人一个工具都拿不到 ——
+#: 连「检查插件状态」这种只读工具都会被摘掉，用户看到的就是
+#: 「曾经还能用的功能，现在不能用了」。普通工具（搜索、查状态、
+#: 记忆召回…）本来就不该拦，所以默认改成黑名单。
+DEFAULT_TOOL_BLACKLIST: tuple[str, ...] = (
+    "*admin*",
+    "*config*",
+    "*setting*",
+    "*delete*",
+    "*remove*",
+    "*drop*",
+    "*clear*",
+    "*reset*",
+    "*install*",
+    "*uninstall*",
+    "*restart*",
+    "*shutdown*",
+    "*write*",
+    "*shell*",
+    "*exec*",
+    "*eval*",
+)
 
 
 def tool_allowed(
@@ -223,6 +248,11 @@ def tool_allowed(
     if not tool:
         return False
     patterns = [str(item).strip() for item in (names or ()) if str(item).strip()]
+    if not patterns:
+        # 名单是空的：不管白名单还是黑名单，都不该把工具全拦掉。
+        # 「空名单 = 谁都不给」听起来严谨，实际后果是非主人连搜索、查状态、
+        # 记忆召回都用不了 —— 空名单按「没配」处理。
+        return True
     hit = any(fnmatch.fnmatchcase(tool, pattern) for pattern in patterns)
     if (mode or TOOL_WHITELIST).lower() == TOOL_BLACKLIST:
         return not hit
@@ -305,5 +335,6 @@ __all__ = [
     "scan_message",
     "scrub_reply",
     "tool_allowed",
+    "DEFAULT_TOOL_BLACKLIST",
 ]
 

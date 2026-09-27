@@ -3366,7 +3366,19 @@ class AIMindPlugin(Star):
         kept = guard_engine.filter_tools(tools, guard.tool_mode, guard.kept_tools)
         if len(kept) == len(tools):
             return
-        logger.info(f"[ai_mind] 非主人：可用工具 {len(tools)} 个 → {len(kept)} 个")
+        dropped = [str(getattr(item, "name", "") or "?") for item in tools if item not in kept]
+        shown = ", ".join(dropped[:6])
+        if kept:
+            logger.info(
+                f"[ai_mind] 非主人：可用工具 {len(tools)} 个 → {len(kept)} 个（摘掉：{shown}）"
+            )
+        else:
+            logger.warning(
+                f"[ai_mind] 非主人：工具被全部摘掉了（模式 {guard.tool_mode}，"
+                f"名单 {guard.kept_tools}）—— 如果这不是你想要的，去面板"
+                "「全部功能设置 → 主人鉴权」把 tool_mode 改成 blacklist，"
+                "或把 block_tools 关掉。"
+            )
         try:
             tool_set.tools = kept
         except Exception:  # noqa: BLE001

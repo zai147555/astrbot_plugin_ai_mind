@@ -37,7 +37,7 @@ DEFAULT_SPLIT_REGEX = "[。？！?!…；;~～\n]+"
 DEFAULT_SPLIT_CHARS = ["。", "？", "！", "?", "!", "；", ";", "…", "\n", "~"]
 
 #: 一段太长时的二次切分点（逗号、顿号、冒号、空白）
-SECONDARY_PATTERN = re.compile("[，,、:：;；\\s]+")
+SECONDARY_PATTERN = re.compile("[，,、:：;；]+")
 
 QUOTE_CHARS = set("“”‘’「」『』《》〈〉\"'")
 PAIR_MAP = {
@@ -765,6 +765,11 @@ def _protected_span(text: str, index: int) -> int:
     return 0
 
 
+def _delim_weight(delim: str) -> int:
+    """这个标点自己占多少重量（换行/空格不算）。"""
+    return sum(1 for ch in delim if not ch.isspace())
+
+
 def _should_split(
     text: str,
     index: int,
@@ -776,8 +781,11 @@ def _should_split(
 ) -> bool:
     if depth > 0:
         return False  # 引号/括号没闭合，先别切
-    if ideal > 0 and weight < ideal * settings.balanced_ratio_min:
-        return False  # 均分模式：这一段还没攒够
+    # 均分模式：这一段还没攒够就先别切。
+    # 标点自己的长度也要算进去 —— 否则「下午好。」这种四个字的短句会被判成「不够长」，
+    # 切点被迫后移到下一个逗号上，气泡就变成以「，」结尾。
+    if ideal > 0 and weight + _delim_weight(delim) < ideal * settings.balanced_ratio_min:
+        return False
     n = len(text)
     if "\n" not in delim and NEUTRAL_DELIM_RE.match(delim):
         prev_char = text[index - 1] if index > 0 else ""
@@ -862,6 +870,7 @@ def _process_text_smart(
     stack: list[str] = []
     chunk = ""
     index = 0
+    last_break = 0  # 上一个「本可以切但没切」的位置
     n = len(text)
     while index < n:
         span = _protected_span(text, index)
@@ -879,21 +888,29 @@ def _process_text_smart(
                 if _flush(chunk, compiled, segments, buffer):
                     chunk = ""
                     weight = 0
+                last_break = 0
             else:
                 chunk += delim
-                weight += len(delim)
+                weight += _delim_weight(delim)
+                last_break = len(chunk)  # 这里本来可以切，先记下来
             index += len(delim)
             continue
         if ideal > 0 and weight >= ideal * settings.balanced_ratio_max and not stack:
-            secondary = SECONDARY_PATTERN.match(text, pos=index)
-            if secondary:
-                delim = secondary.group()
-                chunk += delim
-                if _flush(chunk, compiled, segments, buffer):
-                    chunk = ""
-                    weight = 0
-                index += len(delim)
-                continue
+            if SECONDARY_PATTERN.match(text, pos=index):
+                # 攒够长度了，但脚下是逗号/顿号这种「话还没说完」的标点。
+                # 直接在这儿切，气泡就会以「，」结尾（用户看到的就是这个）。
+                # 改成退回这一口气里最后一个句末标点处切；找不到就不切，
+                # 让这一口气接着说下去——宁可长一点，也不能把句子拦腰截断。
+                if last_break > 0:
+                    head, tail = chunk[:last_break], chunk[last_break:]
+                    if _has_body(head, compiled):
+                        buffer.append(make_plain(head))
+                        segments.append(buffer[:])
+                        buffer.clear()
+                        chunk = tail
+                        weight = sum(1 for ch in tail if not ch.isspace())
+                        last_break = 0
+                        continue
         char = text[index]
         if char in QUOTE_CHARS:
             if stack and stack[-1] == char:
