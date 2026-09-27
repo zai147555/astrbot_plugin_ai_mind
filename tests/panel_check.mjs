@@ -281,6 +281,7 @@ async function run({ bridge, fetchImpl, origin = "http://astrbot.local" }) {
   return {
     status: status ? status.textContent : "",
     statusBad: status ? status.className.indexOf("err") >= 0 : false,
+    diag: sandbox.__aiMindDiag || null,
     fetched,
     bridgeCalls,
     toast: elements.get("toast") ? elements.get("toast").textContent : ""
@@ -319,7 +320,7 @@ const cases = [
       }
     },
     check: (r) =>
-      r.status.includes("bridge") &&
+      r.diag && r.diag.transport === "bridge" && r.diag.prefix === "" &&
       !r.statusBad &&
       !r.toast &&
       r.bridgeCalls.length > 0 &&
@@ -331,27 +332,34 @@ const cases = [
   {
     name: "宿主原样发出：/api/plug/ 绝对路径也能用",
     opts: { bridge: (ep) => ep.indexOf("/api/plug/" + PLUGIN + "/") === 0 },
-    check: (r) => r.status.includes("/api/plug/") && !r.statusBad
+    check: (r) => r.diag && r.diag.transport === "bridge"
+      && r.diag.prefix === "/api/plug/" + PLUGIN + "/" && !r.statusBad
   },
   {
     name: "桥只认绝对 /api/plug/ 时也能命中",
     opts: { bridge: (ep) => ep.indexOf("/api/plug/" + PLUGIN + "/") === 0 },
-    check: (r) => r.status.includes("bridge") && r.status.includes("/api/plug/") && !r.statusBad && !r.toast
+    check: (r) => r.diag && r.diag.transport === "bridge"
+      && r.diag.prefix === "/api/plug/" + PLUGIN + "/" && !r.statusBad && !r.toast
   },
   {
     name: "桥只认 /plug/（父窗口自己补 /api）—— 应当跳过第一个候选",
     opts: { bridge: (ep) => ep.indexOf("/plug/" + PLUGIN + "/") === 0 },
-    check: (r) => r.status.includes("/plug/") && !r.status.includes("/api/plug/") && !r.statusBad && !r.toast
+    check: (r) => r.diag && r.diag.transport === "bridge"
+      && r.diag.prefix === "/plug/" + PLUGIN + "/" && !r.statusBad && !r.toast
   },
   {
     name: "桥只认 /plugins/extensions/（新版本路由）",
     opts: { bridge: (ep) => ep.indexOf("/plugins/extensions/" + PLUGIN + "/") === 0 },
-    check: (r) => r.status.includes("/plugins/extensions/") && !r.statusBad && !r.toast
+    check: (r) => r.diag && r.diag.transport === "bridge"
+      && r.diag.prefix === "/plugins/extensions/" + PLUGIN + "/"
+      && !r.statusBad && !r.toast
   },
   {
     name: "没有桥、同源 fetch 可用 —— 应当自动回退到 fetch",
     opts: { bridge: null, fetchImpl: (u) => u.indexOf("/api/plug/" + PLUGIN + "/") >= 0 },
-    check: (r) => r.status.includes("fetch") && !r.statusBad && !r.toast
+    check: (r) => r.diag && r.diag.transport === "fetch"
+      && r.fetched.some((u) => u.indexOf("/api/plug/" + PLUGIN + "/") >= 0)
+      && !r.statusBad && !r.toast
   },
   {
     name: "桥和 fetch 全不通 —— 必须给出可诊断的失败信息而不是静默",
@@ -371,6 +379,7 @@ const cases = [
       bridge: (ep) => ep.indexOf("/api/plug/" + PLUGIN + "/") === 0
     },
     check: (r) => r.fetched.length === 0 && !r.statusBad
+      && r.diag && r.diag.transport === "bridge"
   }
 ];
 
@@ -389,6 +398,7 @@ for (const item of cases) {
   if (!ok) {
     failed += 1;
     console.log("     status = " + JSON.stringify(result.status));
+    console.log("     diag   = " + JSON.stringify(result.diag));
     console.log("     toast  = " + JSON.stringify(result.toast));
     console.log("     bridge = " + JSON.stringify(result.bridgeCalls.map((c) => c.endpoint)));
     console.log("     fetch  = " + JSON.stringify(result.fetched));

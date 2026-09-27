@@ -4044,3 +4044,23 @@ class SamplingGateTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class StatusLineTest(unittest.TestCase):
+    """顶栏不再常驻状态行：正常时安静，出问题必须看得见。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        page = Path(__file__).resolve().parent.parent / "pages" / "mind" / "index.html"
+        cls.html = page.read_text(encoding="utf-8")
+
+    def test_no_always_on_ok_line(self) -> None:
+        self.assertNotIn('setStatus("接口正常', self.html,
+                         "正常状态不该往屏幕上写字")
+        self.assertIn('id="api-status"', self.html)
+        self.assertIn('display:none', self.html,
+                      "状态行默认要藏着，否则会占一行空白")
+
+    def test_errors_still_surface(self) -> None:
+        for text in ("接口不通", "加载失败"):
+            self.assertIn(text, self.html, f"出错时必须还能看见：{text}")

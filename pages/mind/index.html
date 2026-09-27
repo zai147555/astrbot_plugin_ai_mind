@@ -328,7 +328,8 @@
     <button id="theme-btn" class="ghost small" title="深浅色：跟随面板 / 浅色 / 深色">🖥 跟随面板</button>
     <button id="bg-btn" class="ghost small" title="背景设置：换一张、调清晰度">🎨 背景</button>
     <button id="refresh" class="ghost" title="重新拉取数据">刷新</button>
-    <span id="api-status" class="small muted" style="flex-basis:100%"></span>
+    <!-- 只在出问题时才出现；正常时不占屏幕（原来常驻一行「接口正常」） -->
+    <span id="api-status" class="small err" style="flex-basis:100%;display:none"></span>
   </div>
 
   <div class="bg-bar" id="bg-bar" style="display:none">
@@ -1374,11 +1375,19 @@
     return text;
   }
 
-  function setStatus(text, bad) {
+  function setStatus(text) {
+    // 只在出问题时说话。原来这里常驻一行「接口正常：postMessage → /api/plug/…」，
+    // 一切正常的时候不该占屏幕；但坏了必须看得见，所以错误照旧显示。
     var el = $("api-status");
     if (!el) return;
+    if (!text) {
+      el.textContent = "";
+      el.style.display = "none";
+      return;
+    }
     el.textContent = text;
-    el.className = "small " + (bad ? "err" : "muted");
+    el.style.display = "";
+    el.className = "small err";
   }
 
   function viaBridge(prefix, path, method, body, query) {
@@ -1456,7 +1465,9 @@
           throw new Error("返回内容不是会话列表");
         }
         resolved = combo;
-        setStatus("接口正常：" + combo.transport + " → " + combo.prefix);
+        // 一切正常就不占屏幕（用户嫌那行碍眼）。但走的是哪条路仍然记下来：
+        // 出错时能写进提示，排查时在控制台敲 __aiMindDiag 也能看到。
+        window.__aiMindDiag = { transport: combo.transport, prefix: combo.prefix };
         if (path === "sessions" && (method || "GET") === "GET") return data;
         return attempt(combo, path, method, body, query);
       }).catch(function (err) {
