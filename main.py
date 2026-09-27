@@ -1258,23 +1258,21 @@ class AIMindPlugin(Star):
             self._place(req, block, mode)
 
     @staticmethod
-    def _place_trusted(req: ProviderRequest, block: str) -> bool:
-        """塞进「系统级受信任位置」。
+    def _place_trusted(req: ProviderRequest, block: str, tail: list[str] | None = None) -> bool:
+        """把身份信息放进系统提示词。
 
-        AstrBot 的 ProviderRequest.contexts 是 OpenAI 格式的上下文列表，
-        会被放在 System Prompt 之后、用户消息之前 —— 这正是身份信息该待的地方。
-        拿不到 contexts 就退回系统提示词，绝不会退进用户消息。
+        这里**曾经**往 req.contexts 里塞一条 role=system，那是个要命的误解：
+        AstrBot 里 req.contexts 就是**对话历史本体**（每轮从 conv.history
+        json.loads 出来的消息数组），不是「系统提示词之后的空位」。塞进去等于
+        在历史末尾追加一条系统指令 —— 模型会把末尾的 system 当成**新一轮的设定**，
+        于是前面刚聊过的内容像被洗掉一样，问过的事又问一遍。
+
+        现在只写系统提示词：那是真正受信任的位置，而且身份块本身是稳定的，
+        放在最前面照样吃满前缀缓存。
         """
         if not block:
             return False
-        contexts = getattr(req, 'contexts', None)
-        if isinstance(contexts, list):
-            try:
-                contexts.append({'role': 'system', 'content': block})
-                return True
-            except Exception:  # noqa: BLE001
-                pass
-        req.system_prompt = ((req.system_prompt or '') + chr(10) + chr(10) + block).strip()
+        req.system_prompt = ((req.system_prompt or "") + chr(10) + chr(10) + block).strip()
         return True
 
     def _place(self, req: ProviderRequest, block: str, mode: str) -> None:

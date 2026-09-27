@@ -527,10 +527,11 @@ class PluginHarness:
     @staticmethod
     def all_injected(req) -> str:
         """本轮注入给模型的全部内容：用户消息附加块 + 系统级受信任位。"""
-        parts = [
+        parts = [getattr(req, "system_prompt", "") or ""]
+        parts.extend(
             getattr(p, "text", "")
             for p in (getattr(req, "extra_user_content_parts", None) or [])
-        ]
+        )
         for item in getattr(req, "contexts", []) or []:
             content = item.get("content") if isinstance(item, dict) else None
             if isinstance(content, str):
@@ -3267,18 +3268,28 @@ class GuardIntegrationTest(PluginHarness, unittest.TestCase):
         self.run_async(scenario())
 
     def test_identity_block_uses_trusted_position(self) -> None:
-        """身份块必须在系统级受信任位，不能躺在用户消息里。"""
+        """身份块必须在系统提示词里，绝不碰对话历史。
+
+        req.contexts 是对话历史本体（AstrBot 每轮从 conv.history json.loads
+        出来）。往里塞一条 role=system，模型会把历史末尾的 system 当成新一轮的
+        设定 —— 前面刚聊过的内容就像被洗掉了。所以这里不但要「在受信任位」，
+        还要钉死「历史一个字都没动」。
+        """
 
         async def scenario() -> None:
             plugin = self.make_plugin()
             await plugin.initialize()
             event = FakeEvent("在吗", umo=PRIVATE, uid=OWNER)
             req = FakeProviderRequest()
+            # 假装这一轮已经有历史了
+            history = [
+                {"role": "user", "content": "我今天考试考砸了"},
+                {"role": "assistant", "content": "哼，活该。"},
+            ]
+            req.contexts = [dict(item) for item in history]
             await plugin.on_llm_request(event, req)
-            in_contexts = "".join(
-                item.get("content", "") for item in req.contexts if isinstance(item, dict)
-            )
-            self.assertIn("他是你的宝宝", in_contexts, "身份块没进 contexts")
+            self.assertIn("他是你的宝宝", req.system_prompt or "", "身份块没进系统提示词")
+            self.assertEqual(req.contexts, history, "对话历史绝不能被注入块改动")
             in_user = "".join(getattr(p, "text", "") for p in req.extra_user_content_parts)
             self.assertNotIn("他是你的宝宝", in_user, "身份块不该出现在用户消息里")
             await plugin.terminate()
@@ -4224,5 +4235,29 @@ class ReplyTidyTest(PluginHarness, unittest.TestCase):
             event = await self.speak(plugin, "我在用 AstrBot 呢")
             self.assertEqual(self.final(event), "我在用 AstrBot 呢")
             await plugin.terminate()
+
+        self.run_async(scenario())
+
+class HistoryIsNotATailTest(PluginHarness, unittest.TestCase):
+    """对话历史不是我们的留言板 —— 任何配置下都不许往里塞东西。"""
+
+    def test_contexts_untouched_in_both_modes(self) -> None:
+        async def scenario() -> None:
+            history = [
+                {"role": "user", "content": "在吗"},
+                {"role": "assistant", "content": "干嘛"},
+            ]
+            for cfg in ({}, {"advanced": {"cache_friendly": False}}):
+                plugin = self.make_plugin(cfg)
+                await plugin.initialize()
+                event = FakeEvent("我刚说什么了", umo=PRIVATE, uid=OWNER)
+                req = FakeProviderRequest()
+                req.contexts = [dict(item) for item in history]
+                await plugin.on_llm_request(event, req)
+                self.assertEqual(
+                    req.contexts, history,
+                    "cache_friendly=%s 时对话历史被注入了东西" % bool(cfg),
+                )
+                await plugin.terminate()
 
         self.run_async(scenario())
