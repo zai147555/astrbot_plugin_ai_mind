@@ -2,6 +2,18 @@
 
 本项目遵循语义化版本。
 
+## 2.3.1
+
+### 修复
+- **v2.3.0 装不上**：新增的 @@debounce@@ 配置分组写成了扁平结构，少了 AstrBot 要求的
+  @@description@@ / @@type: "object"@@ / @@items@@ 外层。AstrBot 解析配置时直接取
+  @@v["type"]@@，缺了就是 @@KeyError: 'type'@@ —— 安装界面只显示一句
+  「加载插件时出现问题，原因：'type'」，看不出是哪里错了。已修正。
+- 新增 @@tests/test_schema.py@@：照抄 AstrBot 的 @@_config_schema_to_default_config@@
+  把 @@_conf_schema.json@@ 实跑一遍，并校验「每个节点都有 type」「object 必须有 items」
+  「类型在 AstrBot 的支持列表里」「默认值类型和 type 对得上」「下拉框默认值在选项里」。
+  这类错误以前只有装的时候才会暴露，现在单元测试就能拦住。
+
 ## 2.3.0
 
 ### 新增
