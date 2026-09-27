@@ -4335,3 +4335,29 @@ class LazySchemaTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class DisabledPluginTest(PluginHarness, unittest.TestCase):
+    """插件被停用时面板必须自己说出来 —— 否则查起来毫无头绪。
+
+    AstrBot 里停用的插件照样加载、面板照样打得开，但钩子一次都不会被调用，
+    日志里一个错都没有。"""
+
+    def test_notice_when_disabled(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            before = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertEqual(before["plugin_disabled"], "", "正常情况下不该乱报")
+            name = "astrbot_plugin_ai_mind"
+            pref = Path(plugin.data_dir).parent.parent / "shared_preferences.json"
+            pref.write_text(
+                '{"inactivated_plugins": ["data.plugins.' + name + '.main"]}',
+                encoding="utf-8",
+            )
+            after = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertIn("停用", after["plugin_disabled"])
+            self.assertIn(name, after["plugin_disabled"])
+            await plugin.terminate()
+
+        self.run_async(scenario())
