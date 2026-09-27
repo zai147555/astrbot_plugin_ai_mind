@@ -398,6 +398,19 @@ DEBUG_PROMPT = (
 DEBUG_ON_TEXT = "🔧 调试模式已开启：本会话她不再扮演，直接回答问题。再发一次口令关闭。"
 DEBUG_OFF_TEXT = "🔧 调试模式已关闭：恢复人设。"
 
+DEBUG_HELP = "\n".join([
+    "🔧 调试模式命令（只在开了调试模式的会话、只有你能用）",
+    "#状态　插件 / 情绪 / 关系 / 曲线 / 待抽取，一屏看完",
+    "#曲线　采样点数量、最近一点、数据库能不能写",
+    "#记忆　最近 5 条记忆 + 待抽取轮数",
+    "#抽取　立刻把攒着的对话送去抽记忆",
+    "#工具　工具闸门的开关与名单",
+    "#帮助　这份清单",
+    "",
+    "调试模式里插件完全让路：不注入情绪 / 记忆 / 身份，不分段，不记记忆。",
+    "再发一次 " + DEBUG_CODE + " 退出。",
+])
+
 @register(
     PLUGIN_NAME,
     PLUGIN_AUTHOR,
@@ -3901,32 +3914,166 @@ class AIMindPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1001)
     async def on_debug_code(self, event: AstrMessageEvent) -> None:
-        """隐藏调试开关：口令 + 指定 QQ，只作用于发口令的那一个会话。
+        """隐藏调试开关 + 调试命令，只作用于发口令的那一个会话。
 
         优先级比消息闸门还高，免得口令被当成可疑消息拦掉。
         刻意不做进面板、也不在任何接口里暴露 —— 面板是给人看的，
         这种能绕过人格的后门不该出现在上面被误触。
         """
         try:
-            if (event.message_str or "").strip() != DEBUG_CODE:
-                return
+            text = (event.message_str or "").strip()
+        except Exception:  # noqa: BLE001
+            return
+        if not text:
+            return
+        if text.startswith("#") or text == DEBUG_CODE:
+            pass
+        else:
+            return
+        try:
             # 口令对但人不对：装作没看见，别露痕迹
             if str(event.get_sender_id() or "") != DEBUG_UID:
                 return
         except Exception:  # noqa: BLE001
             return
         session_key = event.unified_msg_origin
-        on = self.debug.toggle(session_key)
-        logger.info(f"[ai_mind] 调试模式{'开启' if on else '关闭'}：{session_key}")
-        text = DEBUG_ON_TEXT if on else DEBUG_OFF_TEXT
+        if text == DEBUG_CODE:
+            on = self.debug.toggle(session_key)
+            logger.info(f"[ai_mind] 调试模式{'开启' if on else '关闭'}：{session_key}")
+            await self._debug_reply(event, DEBUG_ON_TEXT if on else DEBUG_OFF_TEXT)
+            return
+        # 口令之外的 # 命令只在已经开了调试模式的会话里认
+        if not self.debug.is_active(session_key):
+            return
+        reply = await self._debug_command(event, text)
+        await self._debug_reply(event, reply)
+
+    async def _debug_reply(self, event: AstrMessageEvent, text: str) -> None:
+        session_key = event.unified_msg_origin
         try:
-            await self.context.send_message(session_key, [Comp.Plain(text)])
+            await self.context.send_message(session_key, [Comp.Plain(str(text))])
         except Exception:  # noqa: BLE001
             try:
-                await event.send(event.plain_result(text))
+                await event.send(event.plain_result(str(text)))
             except Exception:  # noqa: BLE001
                 pass
-        event.stop_event()          # 口令本身绝不该发给模型
+        event.stop_event()          # 调试口令 / 命令本身绝不该发给模型
+
+    async def _debug_command(self, event: AstrMessageEvent, text: str) -> str:
+        word = text.lstrip("#").strip().lower()
+        key = event.unified_msg_origin
+        if word in ("帮助", "help", "h", "?", "？"):
+            return DEBUG_HELP
+        try:
+            if word in ("状态", "status", "st"):
+                return await self._debug_status(event, key)
+            if word in ("曲线", "curve"):
+                return self._debug_curve(key)
+            if word in ("记忆", "memory", "mem"):
+                return self._debug_memory()
+            if word in ("抽取", "extract"):
+                return await self._debug_extract()
+            if word in ("工具", "tools"):
+                return self._debug_tools()
+        except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
+            return f"调试命令出错：{type(exc).__name__}: {exc}"
+        return "不认识的调试命令。发 #帮助 看有哪些。"
+
+    async def _debug_status(self, event: AstrMessageEvent, key: str) -> str:
+        out = [
+            "【会话】" + key,
+            "调试模式：开（再发 " + DEBUG_CODE + " 退出）",
+            "情绪 " + ("开" if self.settings.emotion.enabled else "关")
+            + "｜记忆 " + ("开" if self.settings.memory.enabled else "关")
+            + "｜分段 " + ("开" if self.splitter.enabled else "关")
+            + "｜防抖 " + ("开" if self.settings.debounce.enabled else "关"),
+        ]
+        session = self.engine.sessions.get(key)
+        if session is None:
+            out.append("情绪状态：还没建（在这个会话说一句就会建）")
+        else:
+            pad = session.emotion
+            out.append("情绪 P/A/D：%+.2f / %+.2f / %+.2f" % (pad.p, pad.a, pad.d))
+            relation = session.users.get(str(event.get_sender_id() or ""))
+            if relation is not None:
+                out.append(
+                    "关系：好感 %.0f｜熟悉 %.0f｜累计 %d 条%s"
+                    % (relation.affinity, relation.familiarity, relation.msg_count,
+                       "｜★专属" if relation.special else "")
+                )
+        try:
+            check = self.samples.selfcheck()
+            out.append(
+                "曲线：本会话 %d 点 / 全库 %d 点｜数据库%s"
+                % (self.samples.count(key), check.get("rows", 0),
+                   "可写" if check.get("write")
+                   else ("写不进去 —— " + str(check.get("error") or "")))
+            )
+        except Exception as exc:  # noqa: BLE001
+            out.append("曲线自检失败：" + str(exc))
+        out.append(
+            "待抽取：本会话 %d 轮 / 全部 %d 轮"
+            % (len(self._buffers.get(key) or []),
+               sum(len(v) for v in self._buffers.values()))
+        )
+        out.append("工具闸门：" + ("开" if self.settings.guard.block_tools else "关"))
+        return "\n".join(out)
+
+    def _debug_curve(self, key: str) -> str:
+        check = self.samples.selfcheck()
+        last = self.samples.latest(key)
+        out = [
+            "库文件：" + str(check.get("path") or "?")
+            + ("（存在，%d 字节）" % int(check.get("size") or 0)
+               if check.get("exists") else "（不存在）"),
+            "写入自检：" + ("通过" if check.get("write")
+                            else ("失败 —— " + str(check.get("error") or ""))),
+            "采样点：本会话 %d / 全库 %d" % (self.samples.count(key), check.get("rows", 0)),
+        ]
+        if last is None:
+            out.append("最近一点：无")
+        else:
+            pad = last.pad()
+            out.append(
+                "最近一点：%s（%.0f 分钟前）P/A/D %+.2f/%+.2f/%+.2f"
+                % (time.strftime("%m-%d %H:%M", time.localtime(last.t)),
+                   max(0.0, (time.time() - last.t) / 60.0), pad.p, pad.a, pad.d)
+            )
+        if self._sample_broken:
+            out.append("注意：采样已被标记为不可用（面板上会出红条）")
+        return "\n".join(out)
+
+    def _debug_memory(self) -> str:
+        rows = self.store.list_memories(limit=5)
+        out = ["记忆共 %d 条，最近 5 条：" % int(self.store.stats().get("total", 0))]
+        for item in rows:
+            mark = "🔒" if item.sensitive else ("📌" if item.pinned else "·")
+            out.append("%s [%s] %s" % (mark, item.scope, (item.content or "")[:60]))
+        if not rows:
+            out.append("（还没有记忆）")
+        out.append("待抽取 %d 轮" % sum(len(v) for v in self._buffers.values()))
+        return "\n".join(out)
+
+    async def _debug_extract(self) -> str:
+        if not self.settings.memory.enabled:
+            return "记忆功能关着，抽不了。"
+        pending = sum(len(v) for v in self._buffers.values())
+        if not pending:
+            return ("没有待抽取的对话 —— 调试模式里这个会话不记，"
+                    "换个普通会话聊两句再来。")
+        await self.flush_memories(force=True)
+        return ("已把 %d 轮排队抽取（要调一次模型，几秒后看日志里的"
+                "「记忆抽取：新增 N / 合并 N / 跳过 N」）。" % pending)
+
+    def _debug_tools(self) -> str:
+        guard = self.settings.guard
+        return "\n".join([
+            "工具闸门：" + ("开" if guard.block_tools else "关（默认关，装插件不该拿走工具）"),
+            "模式：" + str(guard.tool_mode),
+            "名单：" + (", ".join(str(x) for x in guard.kept_tools) or "（空 = 不限制）"),
+            "想看模型实际拿到哪些工具：打开 advanced.debug_log，",
+            "每轮日志里会有一行「本轮模型可用工具 N 个：…」。",
+        ])
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_guard_message(self, event: AstrMessageEvent):

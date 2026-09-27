@@ -4529,3 +4529,95 @@ class DebugModeTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class DebugCommandTest(PluginHarness, unittest.TestCase):
+    """调试命令：只在开了调试模式的会话、只有指定 QQ 能用。"""
+
+    CODE = "369951"
+    UID = "2020689845"
+
+    async def _turn(self, plugin, text, umo=PRIVATE, uid=None):
+        event = FakeEvent(text, umo=umo, uid=uid or self.UID)
+        await plugin.on_debug_code(event)
+        return event
+
+    def _sent(self, plugin) -> str:
+        return " ".join(
+            "".join(getattr(c, "text", "") for c in chain)
+            for _umo, chain in plugin.context.sent
+        )
+
+    def test_help_lists_commands(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._turn(plugin, self.CODE)
+            event = await self._turn(plugin, "#帮助")
+            self.assertTrue(event.is_stopped(), "命令不该发给模型")
+            out = self._sent(plugin)
+            for word in ("#状态", "#曲线", "#记忆", "#抽取", "#工具"):
+                self.assertIn(word, out, "帮助里要列出 %s" % word)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_status_shows_the_whole_chain(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")          # 先产生一点状态
+            await self._turn(plugin, self.CODE)
+            await self._turn(plugin, "#状态")
+            out = self._sent(plugin)
+            for word in ("情绪 P/A/D", "曲线", "待抽取", "工具闸门"):
+                self.assertIn(word, out, "状态里要有 %s：%s" % (word, out))
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_curve_reports_write_check(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._turn(plugin, self.CODE)
+            await self._turn(plugin, "#曲线")
+            out = self._sent(plugin)
+            self.assertIn("写入自检", out)
+            self.assertIn("通过", out, "健康时自检该是通过：%s" % out)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_commands_need_debug_mode(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            event = await self._turn(plugin, "#状态")
+            self.assertFalse(event.is_stopped(), "没开调试模式时不该认这个命令")
+            self.assertEqual(self._sent(plugin), "", "更不该回消息")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_commands_need_the_right_person(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._turn(plugin, self.CODE)
+            event = await self._turn(plugin, "#状态", uid="999")
+            self.assertFalse(event.is_stopped(), "别人发口令就装没看见")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_unknown_command_says_so(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self._turn(plugin, self.CODE)
+            await self._turn(plugin, "#这是什么鬼")
+            self.assertIn("不认识", self._sent(plugin))
+            await plugin.terminate()
+
+        self.run_async(scenario())
