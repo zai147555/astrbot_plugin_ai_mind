@@ -61,21 +61,17 @@ class Sample:
 class SampleStore(ConnectionSource):
     """情绪曲线采样点仓库。所有异常都降级为空结果，不让插件崩掉。"""
 
+    _schema = _SCHEMA
+
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
         self.conn = connection
         self.logger = logger
         #: 最近一次写失败的原因。面板要拿它说话 —— 光说「采样没生效」
         #: 帮不上忙，得说清是 database is locked 还是表没建起来。
         self.last_error = ""
-        if self.conn is not None:
-            try:
-                self.conn.executescript(_SCHEMA)
-                self.conn.commit()
-            except sqlite3.Error as exc:
-                self.last_error = f"曲线表初始化失败：{exc}"
-                if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] {self.last_error}")
-                self.conn = None
+        # 建表交给 ConnectionSource：谁取连接谁顺手建，
+        # 构造那一刻连不上的话也不会漏掉这张表。
+        self.ensure_schema()
 
     # -- 基础 ---------------------------------------------------------------
     def _run(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor | None:
@@ -244,7 +240,10 @@ class SampleStore(ConnectionSource):
             info["ok"] = True
             info["error"] = ""
         else:
-            info["error"] = err or self.last_error or "插入没有生效（原因未知）"
+            info["error"] = (
+                err or self.last_error or self._schema_error
+                or "插入没有生效（原因未知）"
+            )
         info["rows"] = self.count()
         return info
     def count(self, session_id: str | None = None) -> int:
@@ -324,17 +323,12 @@ class LexiconHit:
 class LexiconStore(ConnectionSource):
     """词表命中记录。只追加，按时间和词聚合查询。"""
 
+    _schema = _LEXICON_SCHEMA
+
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
         self.conn = connection
         self.logger = logger
-        if self.conn is not None:
-            try:
-                self.conn.executescript(_LEXICON_SCHEMA)
-                self.conn.commit()
-            except sqlite3.Error as exc:
-                if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] 词表命中表初始化失败：{exc}")
-                self.conn = None
+        self.ensure_schema()
 
     def record(
         self,
@@ -524,17 +518,12 @@ class HumanizeEntry:
 class HumanizeStore(ConnectionSource):
     """去 AI 味的体检日志。只追加，按时间倒序读。"""
 
+    _schema = _HUMANIZE_SCHEMA
+
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
         self.conn = connection
         self.logger = logger
-        if self.conn is not None:
-            try:
-                self.conn.executescript(_HUMANIZE_SCHEMA)
-                self.conn.commit()
-            except sqlite3.Error as exc:
-                if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] 去 AI 味日志表初始化失败：{exc}")
-                self.conn = None
+        self.ensure_schema()
 
     def record(self, entry: HumanizeEntry) -> int:
         if self.conn is None:

@@ -4291,3 +4291,47 @@ class DbFailureIsLoudTest(PluginHarness, unittest.TestCase):
         html = page.read_text(encoding="utf-8")
         self.assertIn('id="db-alert"', html, "要有醒目横幅")
         self.assertIn("dbc.write === false", html, "横幅要真的挂在自检结果上")
+
+
+class LazySchemaTest(PluginHarness, unittest.TestCase):
+    """构造那一刻连不上库，表不能就这么永远不建。
+
+    以前建表只在 __init__ 里跑一次：那时记忆库要是还没打开好（启动时被旧实例
+    锁着、首次打开失败），emotion_samples 就永远不存在 —— 之后每次写采样都是
+    「no such table」，曲线一路空白，错误还被吞掉，面板上什么都看不出来。"""
+
+    def test_missing_table_is_rebuilt_on_next_use(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            # 把表删掉，再装作「从没建过」——正是用户遇到的现场
+            plugin.samples.conn.execute("DROP TABLE IF EXISTS emotion_samples")
+            plugin.samples.conn.commit()
+            plugin.samples._schema_ready = False
+            await self.send(plugin, "喂")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertTrue(data["db_check"]["table"], "表要能补建：%s" % data["db_check"])
+            self.assertTrue(data["db_check"]["write"], "补建之后要写得进去：%s" % data["db_check"])
+            self.assertGreater(data["sample_count"], 0, "补建之后曲线得有点")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_connect_later_still_builds(self) -> None:
+        """构造时 conn 是 None，之后库可用了也要补上。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.samples.conn.execute("DROP TABLE IF EXISTS emotion_samples")
+            plugin.samples.conn.commit()
+            plugin.samples._schema_ready = False
+            plugin.samples._source = None              # 构造那一刻连不上库
+            self.assertIsNone(plugin.samples.conn)
+            plugin.samples._source = plugin.store      # 之后库可用了
+            await self.send(plugin, "喂")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertTrue(data["db_check"]["write"], "得补建并写得进去：%s" % data["db_check"])
+            await plugin.terminate()
+
+        self.run_async(scenario())
