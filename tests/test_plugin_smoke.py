@@ -3982,3 +3982,65 @@ class GlassToggleTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class SamplingGateTest(PluginHarness, unittest.TestCase):
+    """曲线采样的闸门：任何一步卡住，都要能在面板上说清楚。"""
+
+    async def _turn(self, plugin, text: str, mid: str):
+        event = FakeEvent(text, umo=PRIVATE, uid=OWNER, mid=mid)
+        req = FakeProviderRequest()
+        await plugin.on_llm_request(event, req)
+        event.set_result(FakeResult([Plain("嗯")]))
+        await plugin.on_decorating_result(event)
+        return req
+
+    def test_repeated_message_id_still_samples(self) -> None:
+        """同一条消息被判成重复时，情绪可以不重复结算，曲线不能断。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            for i in range(3):
+                await self._turn(plugin, f"第{i}句", "same-mid")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertGreaterEqual(data["diag"]["gated"], 2, "后两条该被判成重复")
+            self.assertGreater(data["diag"]["writes"], 0, "被判重不该把采样一起掐掉")
+            self.assertGreater(data["sample_count"], 0, "聊过就该有采样点")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_diag_explains_every_step(self) -> None:
+        """面板要能一步一步看出采样卡在哪。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂喂喂")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            for key in ("turns", "prepares", "samples", "writes", "skipped", "gated",
+                        "frozen", "emotion_enabled"):
+                self.assertIn(key, data["diag"], f"面板要显示 {key}")
+            self.assertGreaterEqual(data["diag"]["turns"], 1)
+            self.assertGreaterEqual(data["diag"]["writes"], 1)
+            check = data["db_check"]
+            self.assertTrue(check["write"], f"数据库该是可写的：{check}")
+            self.assertGreater(check["rows"], 0, "写完该有行")
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_db_check_notices_a_dead_connection(self) -> None:
+        """连接坏掉时，自检要给出原因而不是只报「失败」。"""
+
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.samples.conn = None
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertFalse(data["db_check"]["write"])
+            self.assertTrue(data["db_check"]["error"], "要说清为什么写不进去")
+            await plugin.terminate()
+
+        self.run_async(scenario())

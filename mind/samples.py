@@ -62,26 +62,34 @@ class SampleStore:
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
         self.conn = connection
         self.logger = logger
+        #: 最近一次写失败的原因。面板要拿它说话 —— 光说「采样没生效」
+        #: 帮不上忙，得说清是 database is locked 还是表没建起来。
+        self.last_error = ""
         if self.conn is not None:
             try:
                 self.conn.executescript(_SCHEMA)
                 self.conn.commit()
             except sqlite3.Error as exc:
+                self.last_error = f"曲线表初始化失败：{exc}"
                 if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] 曲线表初始化失败：{exc}")
+                    self.logger.warning(f"[ai_mind] {self.last_error}")
                 self.conn = None
 
     # -- 基础 ---------------------------------------------------------------
     def _run(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor | None:
         if self.conn is None:
+            if not self.last_error:
+                self.last_error = "曲线表不可用（初始化失败）"
             return None
         try:
             cursor = self.conn.execute(sql, tuple(params))
             self.conn.commit()
+            self.last_error = ""
             return cursor
         except (sqlite3.Error, OSError) as exc:
+            self.last_error = f"曲线 SQL 失败：{exc}"
             if self.logger is not None:
-                self.logger.warning(f"[ai_mind] 曲线 SQL 失败：{exc}")
+                self.logger.warning(f"[ai_mind] {self.last_error}")
             return None
 
     def _all(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
@@ -181,6 +189,43 @@ class SampleStore:
             id=int(r["id"]), t=float(r["t"]), p=float(r["p"]), a=float(r["a"]),
             d=float(r["d"]), kind=str(r["kind"] or "auto"),
         )
+
+    def selfcheck(self) -> dict[str, Any]:
+        """真插一条再删掉，验证「能不能写」。
+
+        面板上必须能区分「压根没调用采样」和「调用了但写不进去」 ——
+        这两种情况的修法完全不同。
+        """
+        info: dict[str, Any] = {
+            "ok": False, "conn": self.conn is not None,
+            "table": False, "write": False, "rows": self.count(), "error": "",
+        }
+        if self.conn is None:
+            info["error"] = self.last_error or "数据库连接不可用"
+            return info
+        rows = self._all(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'emotion_samples'"
+        )
+        info["table"] = bool(rows)
+        if not info["table"]:
+            info["error"] = self.last_error or "曲线表没建起来"
+            return info
+        probe = "__selfcheck__"
+        self._run("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+        self._run(
+            "INSERT INTO emotion_samples (session_id, t, p, a, d, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (probe, now_ts(), 0.0, 0.0, 0.0, "probe"),
+        )
+        hit = self._all(
+            "SELECT COUNT(*) AS c FROM emotion_samples WHERE session_id = ?", (probe,)
+        )
+        info["write"] = bool(hit and int(hit[0]["c"]) > 0)
+        self._run("DELETE FROM emotion_samples WHERE session_id = ?", (probe,))
+        info["ok"] = info["write"]
+        info["error"] = "" if info["write"] else (self.last_error or "插入没有生效")
+        info["rows"] = self.count()
+        return info
 
     def count(self, session_id: str | None = None) -> int:
         if session_id is None:

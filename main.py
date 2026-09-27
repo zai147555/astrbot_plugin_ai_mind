@@ -469,6 +469,12 @@ class AIMindPlugin(Star):
         self._last_sample: dict[str, Any] = {}
         self._sample_broken = False
         self._sample_warned = False
+        # 曲线为什么不画线 —— 面板上要能一眼看出卡在哪一步。
+        # 计数只在本次进程内有效，重启就归零，所以文案写「本次启动以来」。
+        self._diag = {
+            "turns": 0, "prepares": 0, "gated": 0, "frozen": 0,
+            "samples": 0, "skipped": 0, "writes": 0,
+        }
         self._last_flush = 0.0
         self._task: asyncio.Task[None] | None = None
         self._embedding_key = ""
@@ -573,7 +579,9 @@ class AIMindPlugin(Star):
                 self.settings.emotion.emotion_half_life,
                 max(0.0, now - last.t),
             )
+        self._diag["samples"] += 1
         if not should_sample(previous, pad, self.settings.panel.sample_epsilon, force=force):
+            self._diag["skipped"] += 1
             return
         try:
             self.samples.append(session_key, now, pad, kind)
@@ -586,12 +594,18 @@ class AIMindPlugin(Star):
                 logger.warning(f"[ai_mind] 曲线采样失败，面板上的情绪曲线会退化：{exc}")
             return
         self._last_sample[session_key] = self.samples.latest(session_key)
+        self._diag["writes"] += 1
+        why = ""
         if self.samples.conn is None:
-            # 曲线表没建起来：别静默失败，否则面板上就是一片空白却查不出原因
+            why = "曲线表不可用"
+        elif getattr(self.samples, "last_error", ""):
+            why = str(self.samples.last_error)
+        if why:
+            # 别静默失败 —— 否则面板上就是一片空白，还查不出原因
             self._sample_broken = True
             if not self._sample_warned:
                 self._sample_warned = True
-                logger.warning("[ai_mind] 曲线采样表不可用，面板上的情绪曲线会退化")
+                logger.warning(f"[ai_mind] 曲线采样写不进去，情绪曲线会退化（{why}）")
 
     def _heartbeat(self, now: float) -> None:
         """没有事件时也定期打点，曲线上才看得见"自己衰减回去"的过程。"""
@@ -785,29 +799,41 @@ class AIMindPlugin(Star):
         dedup_key = f"{session_key}|{message_id}" if message_id else f"{session_key}|{round(now, 2)}"
 
         frozen = session_key in self._frozen
-        if self._mark_seen(dedup_key) and not frozen:
-            gap = max(0.0, now - session.last_interaction)
-            self.engine.apply_idle(session, now)
-            self.engine.touch(session, relation, now)
-            session.last_gap = gap
-            stimulus = self.engine.appraiser.appraise(
-                event.message_str or "", relation=relation, is_special=relation.special
-            )
-            if stimulus is not None:
-                if stimulus.source == "crisis" and not self.settings.emotion.crisis_enabled:
-                    stimulus = None
-                else:
-                    self.engine.apply_stimulus(session, stimulus, relation, now)
-                    hits = getattr(stimulus, "lexicon_hits", ()) or ()
-                    if hits:
-                        self._record_lexicon_hits(
-                            session_key, uid, hits, getattr(stimulus, "emotion", "")
+        fresh = self._mark_seen(dedup_key)
+        self._diag["prepares"] += 1
+        kind = "stimulus"
+        if frozen:
+            self._diag["frozen"] += 1
+        else:
+            if not fresh:
+                self._diag["gated"] += 1
+            else:
+                gap = max(0.0, now - session.last_interaction)
+                self.engine.apply_idle(session, now)
+                self.engine.touch(session, relation, now)
+                session.last_gap = gap
+                stimulus = self.engine.appraiser.appraise(
+                    event.message_str or "", relation=relation, is_special=relation.special
+                )
+                if stimulus is not None:
+                    if (stimulus.source == "crisis"
+                            and not self.settings.emotion.crisis_enabled):
+                        stimulus = None
+                    else:
+                        self.engine.apply_stimulus(session, stimulus, relation, now)
+                        hits = getattr(stimulus, "lexicon_hits", ()) or ()
+                        if hits:
+                            self._record_lexicon_hits(
+                                session_key, uid, hits, getattr(stimulus, "emotion", "")
+                            )
+                        if stimulus.source == "crisis":
+                            kind = "crisis"
+                        self._maybe_sample(
+                            session_key, session.emotion, kind, now, force=True,
                         )
-                    self._maybe_sample(
-                        session_key, session.emotion,
-                        "crisis" if stimulus.source == "crisis" else "stimulus", now, force=True,
-                    )
-            self._maybe_sample(session_key, session.emotion, "stimulus", now)
+            # 曲线是「观测」，不该因为这条消息被判成重复就整条断掉。
+            # 以前采样和去重绑在同一个 if 里：去重一旦误判，曲线就永远空着。
+            self._maybe_sample(session_key, session.emotion, kind, now)
             self._schedule_flush()
 
         return session, relation, self.engine.snapshot(session, relation, now)
@@ -1002,6 +1028,7 @@ class AIMindPlugin(Star):
             cache_tail: list[str] = []
 
             # ---------- 情绪 ----------
+            self._diag["turns"] += 1
             if self.settings.emotion.enabled:
                 _session, _relation, snapshot = self._prepare_emotion(event)
                 if self.emotion_inject_rules:
@@ -2204,8 +2231,16 @@ class AIMindPlugin(Star):
             max_points=self.settings.panel.max_points_returned,
         )
         payload["frozen"] = key in self._frozen
-        # 让面板能直接说出「采样坏了」而不是只显示一片空白
-        payload["samples_broken"] = bool(self._sample_broken)
+        # 让面板能直接说出「采样坏了、为什么坏」，而不是只显示一片空白
+        sample_error = str(getattr(self.samples, "last_error", "") or "")
+        payload["samples_broken"] = bool(self._sample_broken) or bool(sample_error)
+        payload["samples_error"] = sample_error
+        try:
+            payload["db_check"] = self.samples.selfcheck()
+        except Exception as exc:  # noqa: BLE001
+            payload["db_check"] = {"ok": False, "write": False, "error": str(exc), "rows": 0}
+        payload["diag"] = dict(self._diag)
+        payload["diag"]["emotion_enabled"] = bool(self.settings.emotion.enabled)
         payload["settings"] = {
             "curve_hours": self.settings.panel.curve_hours,
             "sample_epsilon": self.settings.panel.sample_epsilon,
