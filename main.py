@@ -3618,6 +3618,9 @@ class AIMindPlugin(Star):
             if mode in ("simple", "expert"):
                 current["mode"] = mode
                 changed = True
+        if "glass" in payload:
+            current["glass"] = bool(payload.get("glass"))
+            changed = True
         if "bg_blur" in payload:
             # 背景虚化强度：面板上拖滑杆就存这儿，不用改 config
             try:
@@ -3635,6 +3638,7 @@ class AIMindPlugin(Star):
             "mode": str(current.get("mode") or "simple"),
             "background": bool(getattr(self.settings.panel, "background", True)),
             "bg_blur": blur,
+            "glass": bool(current.get("glass", getattr(self.settings.panel, "glass_blur", False))),
         })
 
     # ------------------------------------------------------------------

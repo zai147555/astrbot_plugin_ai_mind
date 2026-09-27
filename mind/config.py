@@ -139,6 +139,9 @@ class PanelSettings:
     background: bool = True
     #: 背景虚化强度（px）。图片里只烤了一层很轻的底子，靠这个调清晰度
     bg_blur: int = 4
+    #: 真·毛玻璃（backdrop-filter）。默认关：滚动时每帧都要重算，手机很卡
+    glass_blur: bool = False
+    #: 真·毛玻璃（backdrop-filter）。默认关：滚动时每帧都要重算，手机很卡
 
     @staticmethod
     def from_config(config: Mapping[str, Any] | None) -> "PanelSettings":
@@ -151,6 +154,7 @@ class PanelSettings:
             public_access=_b(cfg_get(config, "panel.public_access", False), False),
             background=_b(cfg_get(config, "panel.background", True), True),
             bg_blur=_i(cfg_get(config, "panel.bg_blur", 4), 4, 0, 16),
+            glass_blur=_b(cfg_get(config, "panel.glass_blur", False), False),
         )
 
 
