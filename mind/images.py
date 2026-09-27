@@ -305,18 +305,13 @@ def row_to_trigger(row: sqlite3.Row) -> ImageTrigger:
 class ImageStore(ConnectionSource):
     """图片 + 触发词的仓库。所有异常降级为空结果，不让插件崩掉。"""
 
+    _schema = _SCHEMA
+
     def __init__(self, connection: sqlite3.Connection | None, root: Path, logger: Any = None) -> None:
         self.conn = connection
         self.root = Path(root)
         self.logger = logger
-        if self.conn is not None:
-            try:
-                self.conn.executescript(_SCHEMA)
-                self.conn.commit()
-            except sqlite3.Error as exc:
-                if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] 配图表初始化失败：{exc}")
-                self.conn = None
+        self.ensure_schema()
 
     # -- 基础 ---------------------------------------------------------------
     def _run(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor | None:

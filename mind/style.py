@@ -185,17 +185,12 @@ def _row(row: sqlite3.Row) -> StyleExample:
 class StyleStore(ConnectionSource):
     """表达示例仓库。异常一律降级，不让插件崩。"""
 
+    _schema = _SCHEMA
+
     def __init__(self, connection: sqlite3.Connection | None, logger: Any = None) -> None:
         self.conn = connection
         self.logger = logger
-        if self.conn is not None:
-            try:
-                self.conn.executescript(_SCHEMA)
-                self.conn.commit()
-            except sqlite3.Error as exc:
-                if self.logger is not None:
-                    self.logger.warning(f"[ai_mind] 表达示例表初始化失败：{exc}")
-                self.conn = None
+        self.ensure_schema()
 
     # -- 写 ---------------------------------------------------------------
     def add(self, example: StyleExample) -> int:
