@@ -3208,9 +3208,10 @@ class GuardIntegrationTest(PluginHarness, unittest.TestCase):
 
             class ToolSet:
                 def __init__(self) -> None:
-                    self.tools = [Tool("web_search"), Tool("shell")]
+                    self.tools = [Tool("web_search"), Tool("uninstall_plugin")]
 
-            plugin = self.make_plugin()
+            # block_tools 现在默认关着：装插件不该悄悄拿走工具，这里显式打开
+            plugin = self.make_plugin({"guard": {"block_tools": True}})
             await plugin.initialize()
             req = FakeProviderRequest()
             req.func_tool = ToolSet()
@@ -3218,10 +3219,10 @@ class GuardIntegrationTest(PluginHarness, unittest.TestCase):
             plugin._apply_tool_guard(event, req)
             names = [t.name for t in req.func_tool.tools]
             self.assertIn("web_search", names, "普通工具非主人照常能用")
-            self.assertNotIn("shell", names, "高危工具要从模型眼前摘掉")
+            self.assertNotIn("uninstall_plugin", names, "高危工具要从模型眼前摘掉")
 
             # 执行期再挡一次
-            tool = Tool("shell")
+            tool = Tool("uninstall_plugin")
             await plugin.on_using_llm_tool(FakeEvent("x", uid="999"), tool, {})
             self.assertTrue(getattr(tool, "_ai_mind_guarded", False))
             self.assertIn("主人", await tool.handler())
