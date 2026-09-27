@@ -187,6 +187,21 @@ class MemoryStore:
             return None
         return self._conn
 
+    def reset_connection(self) -> None:
+        """把连接丢掉，下次访问重开一个。
+
+        谁把库关了都行（宿主重载、老实例收尾、别处 close()）——
+        上层发现「已关闭的数据库」时会调这里，而不是一路静默失败。
+        """
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+            self._conn = None
+            self._closed = False
+
     def close(self) -> None:
         with self._lock:
             self._closed = True

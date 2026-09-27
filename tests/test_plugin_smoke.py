@@ -4362,3 +4362,41 @@ class DisabledPluginTest(PluginHarness, unittest.TestCase):
             await plugin.terminate()
 
         self.run_async(scenario())
+
+
+class ExternallyClosedTest(PluginHarness, unittest.TestCase):
+    """连接被别人直接 close() 掉时，要重开一个接着写。
+
+    日志里的原话是「曲线 SQL 失败：Cannot operate on a closed database.」——
+    这说明关连接的不是 terminate()（那条路上我们会把 _conn 置空、
+    下次访问自然重开）。真正的情况是：**缓存里那个连接对象被别处关了**，
+    而 _conn 还指着它，于是每一次写入都写进一个已死的库。"""
+
+    def test_closed_connection_is_reopened(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")
+            plugin.store._conn.close()          # 有人绕过我们把连接关了
+            await self.send(plugin, "还在吗")
+            data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
+            self.assertTrue(data["db_check"]["write"], "库要能重开：%s" % data["db_check"])
+            closed = [r for r in self.log.records if "closed database" in r[1]]
+            self.assertFalse(closed, "不该再报 closed database：%s" % closed)
+            await plugin.terminate()
+
+        self.run_async(scenario())
+
+    def test_samples_keep_coming_after_that(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            await self.send(plugin, "喂")
+            before = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
+            plugin.store._conn.close()
+            await self.send(plugin, "喂喂喂")
+            after = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]["sample_count"]
+            self.assertGreater(after, before, "重开之后曲线还得继续落点")
+            await plugin.terminate()
+
+        self.run_async(scenario())
