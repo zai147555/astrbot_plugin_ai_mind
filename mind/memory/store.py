@@ -134,6 +134,7 @@ class MemoryStore:
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._closed = False
+        self._reopen_warned = False
 
     # -- 连接与建表 ---------------------------------------------------------
     @property
@@ -141,9 +142,18 @@ class MemoryStore:
         if self._conn is not None:
             return self._conn
         if self._closed:
-            # 已经显式关闭过了。插件卸载时若有后台任务没收尾，
-            # 这里会拦住它重新开一个没人关的连接。
-            return None
+            # 已经显式关闭过了。但「关过」不等于「这个实例死了」：宿主重载
+            # 插件时会先调 terminate()（我们这时把库关了），老实例却有可能
+            # 还在继续收消息。要是就这么一直返回 None，记忆、曲线、词表会
+            # 全部静默失效 —— 面板上还看不出原因，只能对着空白猜。
+            # 所以这里重新打开，并在日志里留下线索。
+            self._closed = False
+            if not self._reopen_warned:
+                self._reopen_warned = True
+                if self.logger is not None:
+                    self.logger.warning(
+                        "[ai_memory] 记忆库关闭后又被使用（宿主重载插件时常见），已自动重新打开"
+                    )
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10.0)

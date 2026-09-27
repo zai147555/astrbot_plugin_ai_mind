@@ -435,11 +435,15 @@ class AIMindPlugin(Star):
 
         # ---- 记忆 ----
         self.store = MemoryStore(self.data_dir / "mind.db", logger)
-        self.samples = SampleStore(self.store.connection, logger)
-        self.lexicons = LexiconStore(self.store.connection, logger)
-        self.humanize_log = HumanizeStore(self.store.connection, logger)
-        self.styles = StyleStore(self.store.connection, logger)
-        self.images = ImageStore(self.store.connection, self.data_dir, logger)
+        # 传的是仓库本身而不是 self.store.connection：宿主重载插件会先调
+        # terminate()（我们把库关掉），老实例却可能还在收消息 —— 存下来的裸连接
+        # 就成了「已关闭的数据库」，之后所有写入静默失败（曲线永远空、记忆写不进）。
+        # 传仓库进去，每次都现取连接，库被重开也能跟上。
+        self.samples = SampleStore(self.store, logger)
+        self.lexicons = LexiconStore(self.store, logger)
+        self.humanize_log = HumanizeStore(self.store, logger)
+        self.styles = StyleStore(self.store, logger)
+        self.images = ImageStore(self.store, self.data_dir, logger)
         self.image_cooldown = Cooldown(self.settings.images.cooldown_seconds)
         self.extractor = MemoryExtractor(self.settings.memory, logger)
         self.retriever = Retriever(self.settings.memory, logger)

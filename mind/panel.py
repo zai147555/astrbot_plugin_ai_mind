@@ -111,6 +111,15 @@ def session_entries(
                 ensure(key)
         except Exception:
             pass
+
+    # 采样表里也留着会话 id。记忆库万一不可用，至少这些会话还能选到，
+    # 否则面板顶部的会话列表会凭空少掉一群群聊。
+    if sample_store is not None:
+        try:
+            for key in sample_store.sessions():
+                ensure(key)
+        except Exception:
+            pass
     for key in sample_store.sessions() if sample_store is not None else []:
         entry = ensure(key)
         entry["samples"] = sample_store.count(key)
