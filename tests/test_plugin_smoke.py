@@ -3968,7 +3968,9 @@ class CurveDiagnosticsTest(PluginHarness, unittest.TestCase):
         async def scenario() -> None:
             plugin = self.make_plugin()
             await plugin.initialize()
-            plugin.samples.conn = None          # 模拟曲线表没建起来
+            # 模拟数据库真的用不了：来源和自带连接都指向一个建不出来的路径
+            plugin.samples.conn = None
+            plugin.samples._db_path = Path("/proc/definitely/not/writable/mind.db")
             await self.send(plugin, "喂")
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             self.assertTrue(data["samples_broken"], "要如实报告采样不可用")
@@ -4050,6 +4052,7 @@ class SamplingGateTest(PluginHarness, unittest.TestCase):
             plugin = self.make_plugin()
             await plugin.initialize()
             plugin.samples.conn = None
+            plugin.samples._db_path = Path("/proc/definitely/not/writable/mind.db")
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             self.assertFalse(data["db_check"]["write"])
             self.assertTrue(data["db_check"]["error"], "要说清为什么写不进去")
@@ -4276,6 +4279,8 @@ class DbFailureIsLoudTest(PluginHarness, unittest.TestCase):
             # 让记忆库指向一个绝对建不出来的路径：真实的打开失败
             plugin.store.path = Path("/proc/definitely/not/writable/mind.db")
             plugin.store._conn = None
+            plugin.samples._db_path = Path("/proc/definitely/not/writable/mind.db")
+            plugin.samples._spare_conn = None
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
             check = data["db_check"]
             self.assertFalse(check["write"], "写不进去就得如实说")
@@ -4318,8 +4323,11 @@ class LazySchemaTest(PluginHarness, unittest.TestCase):
 
         self.run_async(scenario())
 
-    def test_connect_later_still_builds(self) -> None:
-        """构造时 conn 是 None，之后库可用了也要补上。"""
+    def test_store_survives_a_dead_source(self) -> None:
+        """来源彻底给不出连接时，仓库自己开一个照样干活。
+
+        这条比「来源重开」更强：连记忆库都不配合了，曲线也不能是空的 ——
+        数据库文件就在那儿，自己连上去就是了。"""
 
         async def scenario() -> None:
             plugin = self.make_plugin()
@@ -4327,12 +4335,11 @@ class LazySchemaTest(PluginHarness, unittest.TestCase):
             plugin.samples.conn.execute("DROP TABLE IF EXISTS emotion_samples")
             plugin.samples.conn.commit()
             plugin.samples._schema_ready = False
-            plugin.samples._source = None              # 构造那一刻连不上库
-            self.assertIsNone(plugin.samples.conn)
-            plugin.samples._source = plugin.store      # 之后库可用了
+            plugin.samples._source = None              # 来源彻底不可用
             await self.send(plugin, "喂")
             data = (await self.api(plugin, "emotion", query={"session": PRIVATE}))["data"]
-            self.assertTrue(data["db_check"]["write"], "得补建并写得进去：%s" % data["db_check"])
+            self.assertTrue(data["db_check"]["write"], "自己开连接也要写得进去：%s" % data["db_check"])
+            self.assertGreater(data["sample_count"], 0, "曲线得有点")
             await plugin.terminate()
 
         self.run_async(scenario())

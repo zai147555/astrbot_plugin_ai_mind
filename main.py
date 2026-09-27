@@ -452,7 +452,8 @@ class AIMindPlugin(Star):
         # ---- 记忆 ----
         # 单会话调试模式：聊天里发口令开关，刻意不做进面板（见 mind/debugmode.py）
         self.debug = DebugSessions(self.data_dir / "debug_sessions.json", logger)
-        self.store = MemoryStore(self.data_dir / "mind.db", logger)
+        db_file = self.data_dir / "mind.db"
+        self.store = MemoryStore(db_file, logger)
         # 传的是仓库本身而不是 self.store.connection：宿主重载插件会先调
         # terminate()（我们把库关掉），老实例却可能还在收消息 —— 存下来的裸连接
         # 就成了「已关闭的数据库」，之后所有写入静默失败（曲线永远空、记忆写不进）。
@@ -462,6 +463,11 @@ class AIMindPlugin(Star):
         self.humanize_log = HumanizeStore(self.store, logger)
         self.styles = StyleStore(self.store, logger)
         self.images = ImageStore(self.store, self.data_dir, logger)
+        # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
+        # 它们能自己连上这个文件继续干活，而不是一路静默失败。
+        for _store in (self.samples, self.lexicons, self.humanize_log,
+                       self.styles, self.images):
+            _store._db_path = db_file
         self.image_cooldown = Cooldown(self.settings.images.cooldown_seconds)
         self.extractor = MemoryExtractor(self.settings.memory, logger)
         self.retriever = Retriever(self.settings.memory, logger)
