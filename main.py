@@ -148,6 +148,7 @@ try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
         should_sample,
     )
     from .mind.debugmode import DEBUG_CODE, DEBUG_UID, DebugSessions
+    from .mind.groupswitch import COMMANDS as GROUP_COMMANDS, GroupSwitch
     from .mind.textfix import tidy_cjk_spaces
     from .mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel
     from .mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel
@@ -228,6 +229,7 @@ except ImportError:  # 兜底：以单模块方式加载时，把插件目录加
         should_sample,
     )
     from mind.debugmode import DEBUG_CODE, DEBUG_UID, DebugSessions  # type: ignore[no-redef]
+    from mind.groupswitch import COMMANDS as GROUP_COMMANDS, GroupSwitch  # type: ignore[no-redef]
     from mind.textfix import tidy_cjk_spaces  # type: ignore[no-redef]
     from mind.emotion.display import detail_panel, help_panel, history_panel, mood_panel, rank_panel, relation_panel  # type: ignore[no-redef]
     from mind.memory.display import clear_panel, forget_panel, help_panel as memory_help_panel, main_panel as memory_main_panel, remember_panel, search_panel  # type: ignore[no-redef]
@@ -780,6 +782,8 @@ class AIMindPlugin(Star):
         # ---- 记忆 ----
         # 单会话调试模式：聊天里发口令开关，刻意不做进面板（见 mind/debugmode.py）
         self.debug = DebugSessions(self.data_dir / "debug_sessions.json", logger)
+        # 群聊对话开关（从 astrbot_plugin_group_switch 并进来的）
+        self.groupswitch = GroupSwitch(self.data_dir / "group_switch.json", logger)
         db_file = self.data_dir / "mind.db"
         self.store = MemoryStore(db_file, logger)
         # 传的是仓库本身而不是 self.store.connection：宿主重载插件会先调
@@ -4423,6 +4427,55 @@ class AIMindPlugin(Star):
             # 但启动日志里已经明确提醒过去填专属用户了。
             return True
         return False
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1005)
+    async def on_group_switch(self, event: AstrMessageEvent) -> None:
+        """群聊对话开关：一句话让她在所有群 / 单个群里闭嘴或回魂。
+
+        优先级最高（1005）：闭嘴的群，消息要在**任何**处理之前就掐掉 ——
+        不然别的钩子还会为她算情绪、抽记忆，甚至插一句「这个我不能帮你做」。
+
+        判定顺序跟原插件一致：全局关 → 哪个群都不回；全局开 → 再看单群。
+        """
+        if not self.settings.enabled:
+            return
+        try:
+            key = event.unified_msg_origin
+        except Exception:  # noqa: BLE001
+            return
+        if not is_group_session(key):
+            return                       # 只管群聊，私聊不受影响
+        group_id = key.split(":")[-1]
+        try:
+            text = (event.message_str or "").strip()
+        except Exception:  # noqa: BLE001
+            return
+        # ---- 开关指令：只有主人能发 ----
+        if text in GROUP_COMMANDS:
+            try:
+                owner = self._is_owner(event)
+            except Exception:  # noqa: BLE001
+                owner = False
+            if not owner:
+                return                   # 别人发这四个词：当普通消息，别理
+            if text == GROUP_OPEN_ALL:
+                self.groupswitch.set_all(True)
+                reply = "已开启对话 —— 所有群都回。"
+            elif text == GROUP_CLOSE_ALL:
+                self.groupswitch.set_all(False)
+                reply = "已关闭对话 —— 所有群都不回。"
+            elif text == GROUP_OPEN_ONE:
+                self.groupswitch.set_one(group_id, True)
+                reply = "本群已开启对话。"
+            else:
+                self.groupswitch.set_one(group_id, False)
+                reply = "本群已关闭对话。"
+            logger.info(f"[ai_mind] 群聊开关：{text} -> {group_id}")
+            await self._debug_reply(event, reply)
+            return
+        # ---- 闭嘴的群：什么都不做，直接掐掉 ----
+        if not self.groupswitch.is_open(group_id):
+            event.stop_event()
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1002)
     async def on_force_search(self, event: AstrMessageEvent) -> None:
