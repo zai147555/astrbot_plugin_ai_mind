@@ -1489,6 +1489,17 @@ class AIMindPlugin(Star):
             # 只在系统提示词末尾盖一条覆盖指令，把人格压下去。
             req.system_prompt = ((req.system_prompt or "") + DEBUG_PROMPT).strip()
             return
+
+        # 每日日程：她今天在干什么（按日期 + 年龄/性别/性格生成，同一天内稳定）。
+        # 没有它，她凌晨三点也秒回、上课也长篇大论 —— 再像人的语气也架不住
+        # 「她好像 24 小时都在等我」。
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        _slot = _schedule.render(now)
+        if _slot:
+            req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _slot).strip()
         # 防抖把这条并进上一轮了：这一轮是被吃掉的那条，别再回一次，
         # 也别重复计入情绪与记忆。
         try:
