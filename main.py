@@ -4623,12 +4623,15 @@ class AIMindPlugin(Star):
         for item in rows:
             mark = "🔒" if item.sensitive else ("📌" if item.pinned else "·")
             try:
+                from .mind.memory.model import SCOPE_LABELS as _scope_labels
                 from .mind.panel import source_label as _source_label
             except ImportError:  # pragma: no cover
+                from mind.memory.model import SCOPE_LABELS as _scope_labels  # type: ignore[no-redef]
                 from mind.panel import source_label as _source_label  # type: ignore[no-redef]
             src = _source_label(getattr(item, "session_id", ""), item.scope)
+            scope_text = _scope_labels.get(item.scope, item.scope)
             out.append(
-                "%s [%s｜%s] %s" % (mark, item.scope, src, (item.content or "")[:60])
+                "%s [%s｜%s] %s" % (mark, scope_text, src, (item.content or "")[:60])
             )
         if not rows:
             out.append("（还没有记忆）")
