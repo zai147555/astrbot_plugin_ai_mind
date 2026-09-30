@@ -3359,6 +3359,67 @@
     });
   }
 
+  // ---- 设置导入 / 导出：把整份配置存成一段 JSON，换个实例粘回去就行 ----
+  // 用 JS 动态建，不假设 HTML 结构（上次就是假设结构，下拉没插进去）。
+  // 沙箱里没有 window.confirm，导入走两步确认。
+  function buildCfgBox() {
+    var host = $("view-wizard");
+    if (!host || $("cfgbox")) return;
+    var box = document.createElement("div");
+    box.className = "card";
+    box.id = "cfgbox";
+    box.innerHTML = "<div class='row' style='justify-content:space-between'>"
+      + "<b>📦 设置导入 / 导出</b>"
+      + "<span class='small muted'>整份配置存成一段 JSON，换实例时粘回去即可</span></div>"
+      + "<textarea id='cfgjson' rows='4' spellcheck='false' "
+      + "style='width:100%;margin-top:8px;font-family:monospace;font-size:12px' "
+      + "placeholder='点「导出」把当前设置填进来；或把别处的 JSON 粘进来点「导入」'></textarea>"
+      + "<div class='row' style='gap:6px;margin-top:8px'>"
+      + "<button class='ghost small' id='cfgexport'>导出当前设置</button>"
+      + "<button class='ghost small' id='cfgcopy'>全选复制</button>"
+      + "<button class='ghost small' id='cfgimport'>导入这段 JSON</button>"
+      + "<span class='small muted' id='cfgnote'></span></div>";
+    host.appendChild(box);
+    $("cfgexport").onclick = function () {
+      request("settings", "GET").then(function (data) {
+        var cfg = (data && data.settings) || {};
+        $("cfgjson").value = JSON.stringify(cfg, null, 2);
+        $("cfgnote").textContent = "已导出 " + Object.keys(cfg).length + " 组设置，全选复制走即可";
+      }).catch(function (e) { $("cfgnote").textContent = "导出失败：" + e.message; });
+    };
+    $("cfgcopy").onclick = function () {
+      var ta = $("cfgjson");
+      if (!ta.value) { $("cfgnote").textContent = "先点「导出当前设置」"; return; }
+      ta.focus(); ta.select();
+      $("cfgnote").textContent = "已全选，按复制（或长按）就行";
+    };
+    var armed = false;
+    $("cfgimport").onclick = function () {
+      var text = ($("cfgjson").value || "").trim();
+      if (!text) { $("cfgnote").textContent = "先把 JSON 粘进来"; return; }
+      var cfg;
+      try { cfg = JSON.parse(text); }
+      catch (e) { $("cfgnote").textContent = "这不是合法 JSON：" + e.message; return; }
+      if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+        $("cfgnote").textContent = "要是一个对象（花括号开头）"; return;
+      }
+      if (!armed) {
+        armed = true;
+        this.textContent = "再点一次确认覆盖";
+        $("cfgnote").textContent = "这会覆盖当前 " + Object.keys(cfg).length + " 组设置，再点一次确认";
+        return;
+      }
+      armed = false;
+      this.textContent = "导入这段 JSON";
+      request("settings/save", "POST", { values: cfg }).then(function () {
+        toast("已导入，正在重新加载");
+        return loadSettings();
+      }).then(function () {
+        $("cfgnote").textContent = "导入完成";
+      }).catch(function (e) { $("cfgnote").textContent = "导入失败：" + e.message; });
+    };
+  }
+
   function saveSettings() {
     var values = stChanged();
     var count = Object.keys(values).length;
@@ -4724,6 +4785,7 @@
   }
 
   bind();
+  buildCfgBox();   // 上手页默认就是打开的，启动时直接建好
   gpFillSelects();
   applyTheme(readStoredTheme());
   setBgBlur(bgStored(BG_BLUR_KEY, 4), false);
