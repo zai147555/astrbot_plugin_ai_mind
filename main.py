@@ -484,6 +484,12 @@ class _SampleStore:
         " kind TEXT NOT NULL DEFAULT {q}auto{q});"
         "CREATE INDEX IF NOT EXISTS idx_sample_session"
         " ON emotion_samples (session_id, t);"
+        "CREATE TABLE IF NOT EXISTS relation_samples ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " session_id TEXT NOT NULL, uid TEXT NOT NULL, t REAL NOT NULL,"
+        " affinity REAL NOT NULL, familiarity REAL NOT NULL);"
+        "CREATE INDEX IF NOT EXISTS idx_rel_session"
+        " ON relation_samples (session_id, uid, t);"
     ).format(q=chr(39))
 
     # 兼容旧的测试钩子：以前这些字段挂在 ConnectionSource 上。
@@ -655,6 +661,32 @@ class _SampleStore:
             if item["session_id"] and not str(item["session_id"]).startswith("__")
         ]
 
+    def record_relation(
+        self, session_id: str, uid: str, affinity: float,
+        familiarity: float, t: float,
+    ) -> None:
+        self._sql(
+            "INSERT INTO relation_samples"
+            " (session_id, uid, t, affinity, familiarity) VALUES (?,?,?,?,?)",
+            (str(session_id), str(uid), float(t), float(affinity), float(familiarity)),
+        )
+
+    def relation_series(
+        self, session_id: str, since: float, limit: int = 800
+    ) -> dict[str, list[list[float]]]:
+        """这个会话里每个人的关系随时间。返回 {uid: [[t, 好感], ...]}。"""
+        rows = self._rows(
+            "SELECT uid, t, affinity FROM relation_samples"
+            " WHERE session_id = ? AND t >= ? ORDER BY t ASC LIMIT ?",
+            (str(session_id), float(since), int(limit)),
+        )
+        out: dict[str, list[list[float]]] = {}
+        for item in rows:
+            out.setdefault(str(item["uid"]), []).append(
+                [float(item["t"]), float(item["affinity"])]
+            )
+        return out
+
     def selfcheck(self) -> dict[str, Any]:
         info: dict[str, Any] = {
             "ok": False, "conn": self.conn is not None, "table": True,
@@ -794,6 +826,7 @@ class AIMindPlugin(Star):
         self._extract_tasks: set[asyncio.Task[Any]] = set()
         self._last_sample: dict[str, Any] = {}
         self._prune_tick = 0
+        self._last_rel_sample: dict[Any, float] = {}
         self._sample_broken = False
         self._sample_warned = False
         # 曲线为什么不画线 —— 面板上要能一眼看出卡在哪一步。
@@ -970,6 +1003,27 @@ class AIMindPlugin(Star):
             if not self._sample_warned:
                 self._sample_warned = True
                 logger.warning(f"[ai_mind] 曲线采样写不进去，情绪曲线会退化（{why}）")
+
+    def _maybe_relation_sample(self, session_key: str, relation: Any, now: float) -> None:
+        """给「感情线」打一个点。
+
+        10 分钟一个点：关系变化本来就慢，打密了只是在写库 ——
+        而且这条路径每条消息都会走到。"""
+        try:
+            key = (session_key, str(getattr(relation, "uid", "")))
+            last = self._last_rel_sample.get(key, 0.0)
+            if last and now - last < 600.0:
+                return
+            self._last_rel_sample[key] = now
+            self.samples.record_relation(
+                session_key, key[1],
+                float(getattr(relation, "affinity", 0.0) or 0.0),
+                float(getattr(relation, "familiarity", 0.0) or 0.0),
+                now,
+            )
+        except Exception as exc:  # noqa: BLE001 - 打点失败不能影响聊天
+            if self.settings.debug_log:
+                logger.debug(f"[ai_mind] 感情线打点失败：{exc}")
 
     def _heartbeat(self, now: float) -> None:
         """没有事件时也定期打点，曲线上才看得见"自己衰减回去"的过程。"""
@@ -1256,6 +1310,7 @@ class AIMindPlugin(Star):
                         )
             # 曲线是「观测」，不该因为这条消息被判成重复就整条断掉。
             # 以前采样和去重绑在同一个 if 里：去重一旦误判，曲线就永远空着。
+            self._maybe_relation_sample(session_key, relation, now)
             self._maybe_sample(session_key, session.emotion, kind, now)
             self._schedule_flush()
 
@@ -2535,6 +2590,7 @@ class AIMindPlugin(Star):
             ("graph", self._api_graph, "记忆图谱"),
             ("memory/add", self._api_memory_add, "手动添加记忆"),
             ("memory/trash", self._api_memory_trash, "垃圾桶：列表 / 恢复 / 彻底删除"),
+            ("relation/series", self._api_relation_series, "感情线：关系随时间"),
             ("memory/update", self._api_memory_update, "修改记忆"),
             ("memory/delete", self._api_memory_delete, "删除记忆"),
             ("memory/batch", self._api_memory_batch, "批量管理记忆"),
@@ -2922,6 +2978,21 @@ class AIMindPlugin(Star):
                 in {"1", "true", "yes", "on"},
             )
         )
+
+    async def _api_relation_series(self) -> Any:
+        """感情线：这个会话里每个人的好感度随时间。"""
+        params = await self._params()
+        key = str(params.get("session") or "").strip() or self._session_from_request()
+        try:
+            hours = float(params.get("hours") or 336.0)
+        except (TypeError, ValueError):
+            hours = 336.0
+        hours = max(1.0, min(hours, 24 * 365.0))
+        try:
+            series = self.samples.relation_series(key, time.time() - hours * 3600.0)
+        except Exception as exc:  # noqa: BLE001
+            return error_response(f"读取感情线失败：{exc}", status_code=500)
+        return json_response({"session": key, "series": series, "hours": hours})
 
     async def _api_memory_trash(self) -> Any:
         """垃圾桶：GET 列表，POST 恢复或彻底删除。
@@ -4342,6 +4413,66 @@ class AIMindPlugin(Star):
             return True
         return False
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1002)
+    async def on_force_search(self, event: AstrMessageEvent) -> None:
+        """强制联网搜索：我说「搜一下 xxx」就搜，结果原样给你看。
+
+        和她自己判断的那种（web_search 工具）是两回事：
+        这条**不经过她改写**，直接把标题/摘要/链接摆出来，方便你自己核对。
+        群聊里只认冲她来的消息，且只有主人能用 —— 免得被人当查询机刷。
+        """
+        if not self.settings.enabled:
+            return
+        try:
+            text = (event.message_str or "").strip()
+        except Exception:  # noqa: BLE001
+            return
+        if not text:
+            return
+        # 先按首字/前两字筛掉绝大多数消息，这个钩子对每条消息都会跑
+        if text[:1] not in ("/", "／", "#") and not text.startswith(("搜一下", "搜索", "查一下")):
+            return
+        query = ""
+        for prefix in ("搜一下", "搜索", "查一下", "/搜", "／搜", "#搜", "/search", "#search"):
+            if text.startswith(prefix):
+                query = text[len(prefix):].strip(" ：:")
+                break
+        if not query:
+            return
+        session_key = event.unified_msg_origin
+        # 群里必须是在跟她说话；私聊直接认
+        if is_group_session(session_key) and not self._addressed_to_me(event):
+            return
+        # 只有主人能用：否则群里任何人都能拿她当查询机刷
+        try:
+            if not self._is_owner(event):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        event.stop_event()          # 这条由我来回，别再让她答一遍
+        try:
+            from .mind import websearch as _websearch
+        except ImportError:  # pragma: no cover
+            import mind.websearch as _websearch  # type: ignore[no-redef]
+        try:
+            results = await asyncio.to_thread(_websearch.search, query, 5)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 强制搜索失败：{exc}")
+            await self._debug_reply(event, "搜索出错了：" + str(exc))
+            return
+        logger.info(f"[ai_mind] 强制搜索 {query!r}：拿到 {len(results)} 条")
+        if not results:
+            await self._debug_reply(event, "没搜到（网络不通，或者对方限流了）。")
+            return
+        lines = ["🔍 " + query]
+        for index, item in enumerate(results, 1):
+            lines.append("")
+            lines.append(str(index) + ". " + str(item.get("title") or ""))
+            snippet = str(item.get("snippet") or "").strip()
+            if snippet:
+                lines.append("   " + snippet[:100])
+            lines.append("   " + str(item.get("url") or ""))
+        await self._debug_reply(event, chr(10).join(lines))
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1001)
     async def on_debug_code(self, event: AstrMessageEvent) -> None:
         """隐藏调试开关 + 调试命令，只作用于发口令的那一个会话。
