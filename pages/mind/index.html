@@ -3420,6 +3420,63 @@
     };
   }
 
+  // ---- 图谱上的整簇批量操作（A）：选中的记忆直接在图谱页处理 ----
+  // 点节点勾选、点虚线圈整簇勾上，然后就地设为常驻 / 取消常驻 / 改作用域 / 删除。
+  // 走的是长期记忆页同一条 memory/batch 接口，行为完全一致。
+  function buildGraphBulk() {
+    var host = $("gp-selcount") ? $("gp-selcount").parentNode : null;
+    if (!host || $("gpbulk")) return;
+    var box = document.createElement("span");
+    box.id = "gpbulk";
+    box.className = "row";
+    box.style.gap = "6px";
+    box.innerHTML = "<button class='ghost small' id='gp-pin'>设为常驻</button>"
+      + "<button class='ghost small' id='gp-unpin'>取消常驻</button>"
+      + "<select id='gp-scope' class='small'><option value=''>改作用域…</option>"
+      + "<option value='session'>本会话</option><option value='user'>本人</option>"
+      + "<option value='global'>全局</option></select>"
+      + "<button class='ghost small' id='gp-del'>删除选中</button>";
+    host.appendChild(document.createTextNode(" "));
+    host.appendChild(box);
+    function graphIds() {
+      var out = [];
+      Object.keys(state.graphSelected || {}).forEach(function (k) {
+        if (state.graphSelected[k]) out.push(k);
+      });
+      return out;
+    }
+    function act(action, extra) {
+      var list = graphIds();
+      if (!list.length) { toast("先在图谱上勾选：开多选后点节点，或点虚线圈整簇选中"); return; }
+      var body = { ids: list, action: action };
+      if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
+      request("memory/batch", "POST", body).then(function (res) {
+        toast("已处理 " + ((res && res.affected) || 0) + " 条（再点「刷新」看图谱）");
+        list.forEach(function (id) { delete state.graphSelected[id]; });
+      }).catch(function (e) { toast("失败：" + e.message); });
+    }
+    $("gp-pin").onclick = function () { act("pin"); };
+    $("gp-unpin").onclick = function () { act("unpin"); };
+    $("gp-scope").onchange = function () {
+      var picked = this.value;
+      this.value = "";
+      if (picked) act("scope", { scope: picked });
+    };
+    // 删除是两步确认：沙箱里没有 window.confirm
+    var armed = false;
+    $("gp-del").onclick = function () {
+      if (!graphIds().length) { toast("先在图谱上勾选记忆"); return; }
+      if (!armed) {
+        armed = true;
+        this.textContent = "再点一次真删";
+        return;
+      }
+      armed = false;
+      this.textContent = "删除选中";
+      act("delete");
+    };
+  }
+
   function saveSettings() {
     var values = stChanged();
     var count = Object.keys(values).length;
@@ -4785,6 +4842,7 @@
   }
 
   bind();
+  buildGraphBulk();
   buildCfgBox();   // 上手页默认就是打开的，启动时直接建好
   gpFillSelects();
   applyTheme(readStoredTheme());
