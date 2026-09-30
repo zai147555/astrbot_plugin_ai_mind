@@ -61,7 +61,7 @@ SCOPES: tuple[str, ...] = (SCOPE_SESSION, SCOPE_USER, SCOPE_GLOBAL)
 
 SCOPE_LABELS: dict[str, str] = {
     SCOPE_SESSION: "本会话",
-    SCOPE_USER: "该用户",
+    SCOPE_USER: "QQ号",     # 以前叫「该用户」，但记忆列表里看不出是谁，改成直说
     SCOPE_GLOBAL: "通用",
 }
 
