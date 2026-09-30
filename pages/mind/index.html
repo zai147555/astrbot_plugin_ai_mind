@@ -3444,6 +3444,41 @@
       }).catch(function () { /* 读不到不影响别的 */ });
   }
 
+  // ---- 触摸弹爱心：点哪儿冒一颗小心心飘上去 ----
+  // 轻量：一个固定层 + 一个 div，1 秒后自己删；同时最多 12 颗，连点也不会糊屏。
+  // 开了「减少动态效果」的系统会直接跳过（这是无障碍的基本礼貌）。
+  function initHeartTouch() {
+    try {
+      if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    } catch (e) { /* 拿不到就照常做 */ }
+    if ($("heartlayer")) return;
+    var layer = document.createElement("div");
+    layer.id = "heartlayer";
+    layer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999;overflow:hidden";
+    document.body.appendChild(layer);
+    var kinds = ["❤️", "💗", "💕", "🩷", "💖"];
+    function pop(x, y) {
+      if (layer.childElementCount > 12) return;
+      var el = document.createElement("div");
+      el.textContent = kinds[Math.floor(Math.random() * kinds.length)];
+      var size = 14 + Math.random() * 8;
+      el.style.cssText = "position:absolute;left:" + x + "px;top:" + y + "px;"
+        + "font-size:" + size.toFixed(0) + "px;transform:translate(-50%,-50%);opacity:.95;"
+        + "transition:transform 1s ease-out,opacity 1s ease-out";
+      layer.appendChild(el);
+      requestAnimationFrame(function () {
+        el.style.transform = "translate(-50%,-170%) scale(1.6) rotate("
+          + (Math.random() * 40 - 20).toFixed(0) + "deg)";
+        el.style.opacity = "0";
+      });
+      setTimeout(function () { el.remove(); }, 1100);
+    }
+    document.addEventListener("pointerdown", function (ev) {
+      if (ev.pointerType === "mouse" && ev.button !== 0) return;
+      pop(ev.clientX, ev.clientY);
+    }, true);
+  }
+
   function buildMoodWall() {
     var host = $("view-emotion");
     if (!host || $("moodwall")) return;
@@ -5005,6 +5040,7 @@
   bind();
   buildRelations();
   buildMoodWall();
+  initHeartTouch();
   buildKnowledge();
   buildGraphBulk();
   buildCfgBox();   // 上手页默认就是打开的，启动时直接建好
