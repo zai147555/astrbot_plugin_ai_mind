@@ -1783,6 +1783,19 @@ class AIMindPlugin(Star):
     #: 有了这个指针，旧实例就把请求转交给新实例，不用再重启。
     _LIVE: Any = None
 
+    @staticmethod
+    def _addressed_to_me(event: AstrMessageEvent) -> bool:
+        """这条群消息是不是冲着我来的（@ 了、或者用了唤醒词）。
+
+        AstrBot 的事件上带这几个标记，但不同版本名字不太一样，所以挨个试；
+        一个都拿不到就**按「是冲我来的」处理** —— 宁可多扫一遍，不可漏拦。
+        """
+        for name in ("is_at_or_wake_command", "is_wake", "is_at_or_wake"):
+            value = getattr(event, name, None)
+            if isinstance(value, bool):
+                return value
+        return True
+
     def _live_peer(self) -> Any:
         live = type(self)._LIVE
         if live is not None and live is not self:
@@ -4500,6 +4513,12 @@ class AIMindPlugin(Star):
         # 已经被别的插件（白名单之类）掐掉的会话：再扫一遍正则纯属浪费。
         # 这个钩子对每条消息都跑，早退一行就能省掉一次全量规则匹配。
         if event.is_stopped():
+            return
+        # ★ 群里跟机器人无关的消息（没 @、没唤醒词）压根不会进 LLM，
+        #   鉴权不该管它们 —— 否则她会在**别人的对话里**插一句
+        #   「这个我不能帮你做」，既冒犯人，又白白扫一遍全部规则。
+        #   私聊不做这个判断：私聊每句都算在跟她说话，必须全查。
+        if is_group_session(event.unified_msg_origin) and not self._addressed_to_me(event):
             return
         guard = self.settings.guard
         if not guard.enabled or not guard.block_sensitive:
