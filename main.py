@@ -4536,6 +4536,8 @@ class AIMindPlugin(Star):
                 return await self._debug_extract()
             if word in ("工具", "tools"):
                 return self._debug_tools()
+            if word in ("语音", "tts", "voice"):
+                return await self._debug_tts()
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
@@ -4625,6 +4627,30 @@ class AIMindPlugin(Star):
         await self.flush_memories(force=True)
         return ("已把 %d 轮排队抽取（要调一次模型，几秒后看日志里的"
                 "「记忆抽取：新增 N / 合并 N / 跳过 N」）。" % pending)
+
+    async def _debug_tts(self) -> str:
+        """语音自检：这台机器现在能不能用 Edge TTS 合成。
+
+        Edge 的接口是逆向的，而且会按 IP 拒绝（机房 / 代理 IP 通常直接 403）。
+        所以先在你自己的机器上验一次：能出字节，再谈接进回复。"""
+        try:
+            from .mind import edgetts as _edgetts
+        except ImportError:  # pragma: no cover
+            import mind.edgetts as _edgetts  # type: ignore[no-redef]
+        voice = _edgetts.DEFAULT_VOICE
+        try:
+            audio = await asyncio.to_thread(
+                _edgetts.synthesize, "哼，你怎么才来呀。", voice, "+0%", "+0Hz", 15.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return "Edge TTS 调用异常：" + type(exc).__name__ + ": " + str(exc)
+        if not audio:
+            return (
+                "Edge TTS 这次没拿到音频。最常见的原因是接口按 IP 拒绝"
+                "（机房 / 代理 IP 会直接 403），其次是接口改版。"
+                "出不来就当没有这个音色 —— 绝不弄丢回复。"
+            )
+        return "Edge TTS 可用：拿到 " + str(len(audio)) + " 字节 MP3（音色 " + voice + "）"
 
     def _debug_tools(self) -> str:
         guard = self.settings.guard
