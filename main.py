@@ -3980,6 +3980,37 @@ class AIMindPlugin(Star):
             logger.warning(f"[ai_mind] 回忆工具失败：{exc}")
             return "想不起来了（内部出错了）。"
 
+    @llm_tool(name="web_search")
+    async def tool_web_search(self, event: AstrMessageEvent, query: str = "") -> str:
+        """联网搜索。要查最新消息、查资料、确认记不准的事实时调用。
+
+        平时不用它；只有你不确定、或者事情明显是「最近才发生的」才用。
+        搜不到就照实说没查到，别硬编。
+
+        Args:
+            query(string): 要搜的关键词，尽量短而准
+        """
+        text = str(query or "").strip()
+        if not text:
+            return "没给关键词，搜不了。"
+        try:
+            from .mind import websearch as _websearch
+        except ImportError:  # pragma: no cover
+            import mind.websearch as _websearch  # type: ignore[no-redef]
+        try:
+            # urllib 是阻塞的：必须丢到线程里，否则最长 8 秒会把事件循环卡住
+            # （卡住的不只是这一条，是整个 AstrBot）。
+            results = await asyncio.to_thread(_websearch.search, text, 5)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 联网搜索失败：{exc}")
+            return "搜索出错了，这次先按你已知的回答。"
+        if not results:
+            return "没搜到（可能网络不通，或者对方限流）。可以凭已有知识回答，但要说清不确定。"
+        logger.info(f"[ai_mind] 联网搜索 {text!r}：拿到 {len(results)} 条")
+        return (
+            "搜索结果：\n" + _websearch.render(results, limit=5)
+            + "\n\n用这些内容回答，别把链接念出来，也别照抄整段。"
+        )
     @llm_tool(name="memorize_long_term_memory")
     async def tool_memorize(
         self, event: AstrMessageEvent, content: str, kind: str = "fact"
