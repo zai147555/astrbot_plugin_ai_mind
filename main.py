@@ -4622,7 +4622,14 @@ class AIMindPlugin(Star):
         out = ["记忆共 %d 条，最近 5 条：" % int(self.store.stats().get("total", 0))]
         for item in rows:
             mark = "🔒" if item.sensitive else ("📌" if item.pinned else "·")
-            out.append("%s [%s] %s" % (mark, item.scope, (item.content or "")[:60]))
+            try:
+                from .mind.panel import source_label as _source_label
+            except ImportError:  # pragma: no cover
+                from mind.panel import source_label as _source_label  # type: ignore[no-redef]
+            src = _source_label(getattr(item, "session_id", ""), item.scope)
+            out.append(
+                "%s [%s｜%s] %s" % (mark, item.scope, src, (item.content or "")[:60])
+            )
         if not rows:
             out.append("（还没有记忆）")
         out.append("待抽取 %d 轮" % sum(len(v) for v in self._buffers.values()))

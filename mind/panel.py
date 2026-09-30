@@ -369,6 +369,7 @@ def memory_to_dict(memory: Any, now: float | None = None) -> dict[str, Any]:
         "subject": memory.subject,
         "scope": memory.scope,
         "session_id": memory.session_id,
+        "source": source_label(memory.session_id, memory.scope),
         "owner_id": memory.owner_id,
         "importance": round(memory.importance, 3),
         "pinned": bool(memory.pinned),
@@ -382,6 +383,23 @@ def memory_to_dict(memory: Any, now: float | None = None) -> dict[str, Any]:
         "embedded": memory.embedding is not None,
     }
 
+
+def source_label(session_id: str, scope: str = "") -> str:
+    """这条记忆是从哪儿来的：群聊:群号 / 私聊 / 全局。
+
+    session_id 本身就是 aiocqhttp:GroupMessage:123456 这种形状，
+    但直接给用户看太生硬，这里翻成人话。"""
+    key = str(session_id or "")
+    if not key or str(scope or "") == "global":
+        return "全局"
+    parts = key.split(":")
+    tail = parts[-1] if parts else key
+    low = key.lower()
+    if "group" in low:
+        return "群聊:" + tail
+    if "friend" in low or "private" in low or "direct" in low:
+        return "私聊"
+    return key
 
 def memory_payload(
     *,
