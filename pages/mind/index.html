@@ -1521,6 +1521,8 @@
         state.data = data;
         renderEmotion();
         renderRelations();
+        renderMoodWall();
+        loadRelationSeries();
       });
   }
 
@@ -3409,6 +3411,78 @@
       + "<span class='small mono' style='width:70px;text-align:right'>" + text + "</span></div>";
   }
 
+  // ---- 多会话心情显示器：一眼看见所有会话现在什么心情，点一下切过去 ----
+  // 数据来自 loadSessions 已经拿到的 state.sessions，零额外请求。
+  // 感情线：每 10 分钟一个点（后端打的），这里画成迷你折线。
+  function loadRelationSeries() {
+    if (!state.session) return;
+    request("relation/series", "GET", null, { session: state.session, hours: 336 })
+      .then(function (data) {
+        var series = (data && data.series) || {};
+        document.querySelectorAll("[data-reluid]").forEach(function (row) {
+          var pts = series[row.getAttribute("data-reluid")] || [];
+          var host = row.querySelector(".relspark");
+          if (!host) return;
+          if (pts.length < 2) {
+            host.textContent = "感情线还不够画（每 10 分钟一个点，聊几次就有了）";
+            return;
+          }
+          var vals = pts.map(function (p) { return p[1]; });
+          var lo = Math.min.apply(null, vals);
+          var hi = Math.max.apply(null, vals);
+          var span = (hi - lo) || 1;
+          var w = 150, h = 26;
+          var poly = pts.map(function (p, i) {
+            var x = (i / (pts.length - 1)) * w;
+            var y = h - ((p[1] - lo) / span) * (h - 4) - 2;
+            return x.toFixed(1) + "," + y.toFixed(1);
+          }).join(" ");
+          host.innerHTML = "<svg width='" + w + "' height='" + h + "' style='vertical-align:middle'>"
+            + "<polyline fill='none' stroke='var(--p)' stroke-width='1.5' points='" + poly + "'/></svg>"
+            + " <span class='small muted'>" + lo.toFixed(0) + " → " + hi.toFixed(0) + "</span>";
+        });
+      }).catch(function () { /* 读不到不影响别的 */ });
+  }
+
+  function buildMoodWall() {
+    var host = $("view-emotion");
+    if (!host || $("moodwall")) return;
+    var box = document.createElement("div");
+    box.className = "card";
+    box.id = "moodwall";
+    box.innerHTML = "<div class='row' style='justify-content:space-between'>"
+      + "<b>🌤 各会话心情</b>"
+      + "<span class='small muted'>点一行就切到那个会话</span></div>"
+      + "<div id='moodlist' class='small' style='margin-top:6px'></div>";
+    host.insertBefore(box, host.firstChild);
+  }
+
+  function renderMoodWall() {
+    var list = $("moodlist");
+    if (!list) return;
+    var rows = (state.sessions || []).slice().sort(function (a, b) {
+      return (b.last_active || 0) - (a.last_active || 0);
+    });
+    if (!rows.length) { list.innerHTML = "<span class='muted'>还没有任何会话</span>"; return; }
+    list.innerHTML = rows.map(function (one) {
+      var me = one.key === state.session;
+      var emo = one.emotion ? (one.emotion_emoji + " " + one.emotion + " " + one.emotion_level + "/5") : "—";
+      return "<div class='row mwrow' data-mwkey='" + esc(one.key) + "' "
+        + "style='justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);cursor:pointer'>"
+        + "<span>" + (me ? "▶ " : "") + esc(one.label) + (one.frozen ? " 🧊" : "") + "</span>"
+        + "<span class='mono small'>" + esc(emo) + "</span>"
+        + "<span class='small muted'>" + (one.messages || 0) + " 条</span></div>";
+    }).join("");
+    list.querySelectorAll("[data-mwkey]").forEach(function (row) {
+      row.onclick = function () {
+        state.session = row.getAttribute("data-mwkey");
+        var sel = $("session");
+        if (sel) sel.value = state.session;
+        refreshAll();
+      };
+    });
+  }
+
   function buildRelations() {
     var host = $("view-emotion");
     if (!host || $("relbox")) return;
@@ -3430,11 +3504,13 @@
       list.innerHTML = "<span class='muted'>这个会话还没有聊过天的人</span>";
       return;
     }
+    window.__relUsers = users;
     list.innerHTML = users.map(function (u) {
       var aff = Math.max(-100, Math.min(100, Number(u.affinity) || 0));
       var fam = Math.max(0, Math.min(100, Number(u.familiarity) || 0));
       var hot = Math.max(0, Math.min(100, (aff + 100) / 2));
-      return "<div style='margin-top:10px;padding-top:8px;border-top:1px solid var(--line)'>"
+      return "<div data-reluid='" + esc(u.uid) + "' "
+        + "style='margin-top:10px;padding-top:8px;border-top:1px solid var(--line)'>"
         + "<div class='row' style='justify-content:space-between'>"
         + "<span><b>" + esc(u.name || u.uid) + "</b>"
         + (u.special ? " <span class='small'>★专属</span>" : "") + "</span>"
@@ -3442,6 +3518,7 @@
         + " · 聊过 " + (u.msg_count || 0) + " 条</span></div>"
         + relBar("好感度", hot, aff.toFixed(0) + " / 100", "var(--p)")
         + relBar("熟悉度", fam, fam.toFixed(0) + " / 100", "var(--d)")
+        + "<div class='relspark small muted' style='margin-top:4px'>感情线加载中…</div>"
         + "</div>";
     }).join("");
   }
@@ -4927,6 +5004,7 @@
 
   bind();
   buildRelations();
+  buildMoodWall();
   buildKnowledge();
   buildGraphBulk();
   buildCfgBox();   // 上手页默认就是打开的，启动时直接建好
