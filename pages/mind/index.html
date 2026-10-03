@@ -231,6 +231,30 @@
   @keyframes viewIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   .view-in { animation: viewIn .18s ease-out; }
 
+  /* ---- 宽屏两栏：把卡片排成两列，信息密度拉齐参考面板 ----
+     窄屏（手机竖屏）仍然是一列 —— 手机上两栏会挤成豆腐块。
+     图谱页刻意不做：那张力导向图需要整幅宽度，分栏就转不开了。 */
+  @media (min-width: 900px) {
+    #view-emotion, #view-manage, #view-memory, #view-images,
+    #view-persona, #view-split, #view-debounce, #view-humanize,
+    #view-style, #view-prompts, #view-theory, #view-wizard {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+    /* 这两块在情绪页里天生该通栏：一个是出错横幅，一个是关系列表 */
+    #view-emotion > #db-alert,
+    #view-emotion > #relbox { grid-column: 1 / -1; }
+    /* 栅格靠 gap 控制间距，卡片自身的下边距要去掉，否则两栏高度对不齐 */
+    #view-emotion > .card, #view-manage > .card, #view-memory > .card,
+    #view-images > .card, #view-persona > .card, #view-split > .card,
+    #view-debounce > .card, #view-humanize > .card, #view-style > .card,
+    #view-prompts > .card, #view-theory > .card, #view-wizard > .card {
+      margin-bottom: 0;
+    }
+  }
+
   body.simple-mode .tabs button[data-adv="1"] { display: none; }
 
   /* ===================== 窄屏 ===================== */
