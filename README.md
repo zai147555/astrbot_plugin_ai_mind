@@ -15,7 +15,7 @@
 > `astrbot_plugin_ai_emotion` 和 `astrbot_plugin_ai_memory` 删掉（或停用），
 > 否则两套逻辑会同时注入，情绪会被算两遍。
 
-许可证 **AGPL-3.0** ｜ 零第三方依赖（纯标准库）｜ 664 条自动化测试 + 9 项面板自检
+许可证 **AGPL-3.0** ｜ 零第三方依赖（纯标准库）｜ 705 条自动化测试 + 9 项面板自检
 
 ---
 
@@ -931,7 +931,7 @@ WebUI 里每一项都有说明，这里只列最值得动的：
 ```bash
 cd astrbot_plugin_ai_mind
 
-# 590 条测试（内核单测 + 带假 astrbot 运行时的端到端测试 + 面板接口 + 面板接线检查）
+# 705 条测试（内核单测 + 带假 astrbot 运行时的端到端测试 + 面板接口 + 面板接线检查）
 python3 -m unittest discover -s tests -t .   # 590 条
 
 # 面板前端的沙箱测试（需要 node）：验证接口地址探测逻辑
@@ -1046,7 +1046,7 @@ astrbot_plugin_ai_mind/
 │       ├── display.py         #   指令面板
 │       └── config.py          #   配置解析
 ├── pages/mind/index.html      # 📊 心智面板（零构建、零外部依赖）
-├── tests/                     # 590 条测试 + 三个演示脚本
+├── tests/                     # 705 条测试 + 三个演示脚本
 ├── .github/workflows/ci.yml   # GitHub Actions：跑测试与面板自检
 ├── metadata.yaml
 ├── _conf_schema.json
