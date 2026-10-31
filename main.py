@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
+    from .mind import imagegen as imagegen_engine
+except ImportError:  # pragma: no cover
+    from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
+
 try:  # 知识树（按会话激活的结构化知识，模型改件待审）
     from .mind import knowledge as knowledge_engine
 except ImportError:  # pragma: no cover
@@ -487,6 +492,7 @@ DEBUG_HELP = "\n".join([
     "#动图 <文件>　GIF/动态WebP 摊成带时间的帧序列",
     "#听歌 <文件>　响度/动态/峰值 + 一句结论",
     "#知识　知识树：列表 / 学 <名> / 开|关 <名> / 加 <名> <标题> <内容> / 待审 / 批|否 <id>",
+    "#画 <描述>　文生图；#画 改 <图片> <说明>　参考图编辑",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -873,6 +879,9 @@ class AIMindPlugin(Star):
             Path(self.data_dir) / "delivery.json"
         )
         self.knowledge = knowledge_engine.load(Path(self.data_dir) / "knowledge.json")
+        self.imagegen_settings = imagegen_engine.load_settings(
+            Path(self.data_dir) / "imagegen.json"
+        )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -2759,6 +2768,10 @@ class AIMindPlugin(Star):
             ("bili/scroll", self._api_bili_scroll, "刷一轮"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
+            ("imagegen", self._api_imagegen, "生图设置与最近作品"),
+            ("imagegen/save", self._api_imagegen_save, "保存生图配置"),
+            ("imagegen/generate", self._api_imagegen_generate, "文生图"),
+            ("imagegen/edit", self._api_imagegen_edit, "参考图编辑"),
             ("knowledge", self._api_knowledge, "知识树"),
             ("knowledge/tree", self._api_knowledge_tree, "建树 / 加节点"),
             ("knowledge/active", self._api_knowledge_active, "给会话挂上/摘掉"),
@@ -4755,6 +4768,8 @@ class AIMindPlugin(Star):
                 return await self._debug_storyboard(event, text)
             if word.split()[0] in ("刷b站", "刷b", "bili"):
                 return await self._debug_bili(event, text)
+            if word.split()[0] in ("画", "画图", "draw"):
+                return await self._debug_imagegen(event, text)
             if word.split()[0] in ("知识", "kb"):
                 return self._debug_knowledge(event, text)
             if word.split()[0] in ("动图", "gif"):
@@ -5051,6 +5066,56 @@ class AIMindPlugin(Star):
         for sheet in result.get("sheets") or []:
             images.extend(str(item) for item in (sheet.get("images") or []))
         return await self._emit_bulk(event, text, images, "今天的 B 站日报")
+
+    # -- 生图 ---------------------------------------------------------------
+    def _imagegen_out(self) -> Path:
+        root = Path(self.data_dir) / "imagegen" / "out"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _imagegen_report(self) -> str:
+        conf = self.imagegen_settings
+        shown = conf.masked()
+        rows = [
+            "生图：%s｜%s｜模型 %s｜适配器 %s｜尺寸 %s"
+            % ("开" if conf.enabled else "关", shown["base_url"], shown["model"],
+               shown["resolved_adapter"], conf.size),
+        ]
+        if not shown["has_key"]:
+            rows.append("还没填 API Key —— 面板「画图」页填，或者 #画 状态 看缺什么。")
+        rows.append("")
+        rows.append("用法：#画 <描述>　　文生图")
+        rows.append("　　　#画 改 <图片路径> <说明>　　只改指定的部分")
+        return "\n".join(rows)
+
+    async def _debug_imagegen(self, event: AstrMessageEvent, text: str) -> str:
+        conf = self.imagegen_settings
+        parts = text.lstrip("#").strip().split(None, 1)
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if not rest or rest in ("状态", "status"):
+            return self._imagegen_report()
+        if not conf.enabled:
+            return "生图关着（面板「画图」页打开，或 data/imagegen.json）。"
+        if rest.startswith("改"):
+            tail = rest[1:].strip()
+            if not tail:
+                return "用法：#画 改 <图片路径> <说明>"
+            pieces = tail.split(None, 1)
+            path = pieces[0].strip('"').strip("'")
+            note = pieces[1].strip() if len(pieces) > 1 else ""
+            if not note:
+                return "用法：#画 改 <图片路径> <说明>"
+            result = await asyncio.to_thread(
+                imagegen_engine.edit, note, conf, self._imagegen_out(), [path], conf.size
+            )
+        else:
+            result = await asyncio.to_thread(
+                imagegen_engine.generate, rest, conf, self._imagegen_out(), conf.size
+            )
+        text_out = imagegen_engine.report(result)
+        if not result.get("ok"):
+            return text_out
+        return await self._emit_bulk(event, text_out, result.get("images") or [], "画好了")
 
     # -- 知识树 -------------------------------------------------------------
     def _knowledge_save(self) -> bool:
@@ -6368,6 +6433,91 @@ class AIMindPlugin(Star):
         data = self._bili_payload()
         data["removed"] = removed
         return json_response(data)
+
+    # -- 面板：生图 ---------------------------------------------------------
+    def _imagegen_payload(self) -> dict[str, Any]:
+        conf = self.imagegen_settings
+        folder = Path(self.data_dir) / "imagegen" / "out"
+        recent: list[dict[str, Any]] = []
+        if folder.is_dir():
+            files = sorted(
+                (item for item in folder.iterdir() if item.suffix.lower() in (".png", ".jpg")),
+                key=lambda item: item.stat().st_mtime, reverse=True,
+            )[:12]
+            for item in files:
+                try:
+                    blob = base64.b64encode(item.read_bytes()).decode("ascii")
+                except OSError:
+                    continue
+                recent.append({"name": item.name, "image": "data:image/png;base64," + blob})
+        return {
+            "settings": conf.masked(),
+            "adapters": [
+                {"key": key, "label": value.get("label", key)}
+                for key, value in imagegen_engine.ADAPTERS.items()
+            ],
+            "recent": recent,
+        }
+
+    async def _api_imagegen(self) -> Any:
+        return json_response(self._imagegen_payload())
+
+    async def _api_imagegen_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.imagegen_settings
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        for key in ("base_url", "model", "adapter", "size", "quality"):
+            if payload.get(key) is not None:
+                setattr(conf, key, str(payload.get(key) or "").strip())
+        if str(payload.get("api_key") or "").strip():
+            conf.api_key = str(payload.get("api_key")).strip()
+        if payload.get("clear_key"):
+            conf.api_key = ""
+        for key, low, high in (("count", 1, 4), ("timeout", 10, 600)):
+            if payload.get(key) is not None:
+                try:
+                    setattr(conf, key, max(low, min(high, int(payload[key]))))
+                except (TypeError, ValueError):
+                    pass
+        ok = imagegen_engine.save_settings(Path(self.data_dir) / "imagegen.json", conf)
+        data = self._imagegen_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入生图配置失败，详细原因见日志")
+        return json_response(data)
+
+    async def _api_imagegen_generate(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            return json_response({"ok": False, "error": "先说画什么"})
+        result = await self._mail_call(
+            imagegen_engine.generate, prompt, self.imagegen_settings,
+            self._imagegen_out(), str(payload.get("size") or self.imagegen_settings.size),
+        )
+        result["images_b64"] = self._images_payload(result.get("images") or [])
+        result["text"] = imagegen_engine.report(result)
+        return json_response(result)
+
+    async def _api_imagegen_edit(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        prompt = str(payload.get("prompt") or "").strip()
+        refs = payload.get("refs")
+        paths = [str(item) for item in (refs if isinstance(refs, list) else []) if item]
+        if not prompt or not paths:
+            return json_response({"ok": False, "error": "要说明改什么，并给一张参考图"})
+        result = await self._mail_call(
+            imagegen_engine.edit, prompt, self.imagegen_settings,
+            self._imagegen_out(), paths, str(payload.get("size") or self.imagegen_settings.size),
+        )
+        result["images_b64"] = self._images_payload(result.get("images") or [])
+        result["text"] = imagegen_engine.report(result)
+        return json_response(result)
 
     # -- 面板：知识树 / 动图 / 听音频 ---------------------------------------
     def _knowledge_payload(self, session: str = "") -> dict[str, Any]:

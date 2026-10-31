@@ -704,6 +704,27 @@ ffmpeg `ebur128` + `volumedetect` 算响度（LUFS）、动态范围（LRA）、
 
 ---
 
+## 🎨 画图（dsh-mo-image）
+
+移植 [CM-Silence/dsh-mo-image](https://github.com/CM-Silence/dsh-mo-image)（MIT）：
+接 OpenAI Images 兼容接口，文生图 + 参考图编辑。
+
+- **适配层**：不同平台的字段名 / 尺寸规则 / 回应形状收进描述符表
+  （`openai-images`、`gpt-image`、`dall-e-3`、`siliconflow`、`dashscope-wanx`），
+  调用方只认一套规范参数；选择顺序是「显式指定 → 域名 → 模型 ID → 通用兜底」。
+- **尺寸自动适配**：要 512x512 而模型只出 1024x1024 时，按最近合法尺寸生成并如实说明。
+- **回应四种形状都认**：b64_json / data url / 外链 / 直接二进制。
+- **报错自愈**：上游说"不认识某参数"就摘掉重试一次；429/5xx 退避重试一次。
+- **Key 不外显**：面板只显示「有没有」，留空表示不改。
+
+命令：`#画 <描述>`、`#画 改 <图片> <说明>`、`#画`（看配置）；面板「画图」页。
+生成结果存在 `data/imagegen/out/`，面板显示最近 12 张。
+群里发指令时按「结果投递」规则进你的私聊。
+
+新增 `tests/test_imagegen.py`（38 条）+ `tests/test_imagegen_plugin.py`（11 条）。
+
+---
+
 ## 🧹 去 AI 味
 
 她的回复从模型出来之后、发出去之前，会先过一道**阀门**：像不像机器写的？

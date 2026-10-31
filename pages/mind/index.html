@@ -382,6 +382,7 @@
     <button id="tab-storyboard" data-adv="1">分镜</button>
     <button id="tab-bili" data-adv="1">刷B站</button>
     <button id="tab-knowledge" data-adv="1">知识</button>
+    <button id="tab-imagegen" data-adv="1">画图</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1527,6 +1528,53 @@
         <span class="small muted" id="kb-pending-note"></span>
       </div>
       <div id="kb-pending" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="view-imagegen" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>生图</h3>
+        <span class="small muted">OpenAI Images 兼容接口，自带模型适配层</span>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="ig-status"></div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="ig-enabled"> 启用</label>
+        <label class="small muted">API 地址 <input id="ig-base" style="width:230px" placeholder="https://api.openai.com/v1"></label>
+        <label class="small muted">模型 <input id="ig-model" style="width:180px" placeholder="gpt-image-1"></label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small muted">API Key <input id="ig-key" type="password" style="width:200px" placeholder="留空 = 不改"></label>
+        <label class="small muted">适配器 <select id="ig-adapter"></select></label>
+        <label class="small muted">尺寸 <input id="ig-size" style="width:120px" placeholder="1024x1024"></label>
+        <label class="small muted">张数 <input id="ig-count" type="number" min="1" max="4" style="width:70px"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="ig-save">保存</button>
+        <button class="ghost small" id="ig-reload">刷新</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ig-note"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">画一张</h3>
+      <textarea id="ig-prompt" placeholder="画一张 1024x1024 的电商主图，白底，产品居中" style="width:100%;min-height:90px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="ig-go">生成</button>
+        <button class="ghost small" id="ig-fill">填个例子</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ig-go-status"></span>
+      </div>
+      <div id="ig-result" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>最近画的</h3>
+        <span class="small muted">最多 12 张</span>
+      </div>
+      <div id="ig-recent" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -3049,6 +3097,51 @@
       $("sc-result").innerHTML = "<div class='small muted'>正在听…（长歌要几十秒）</div>";
       request("soundcheck", "POST", { path: path }).then(renderSound).catch(function (e) {
         $("sc-result").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
+      });
+    };
+    $("tab-imagegen").onclick = function () {
+      setView("imagegen");
+      loadImagegen().catch(function (e) { toast("加载生图设置失败：" + e.message); });
+    };
+    $("ig-reload").onclick = function () {
+      loadImagegen().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("ig-save").onclick = function () {
+      request("imagegen/save", "POST", {
+        enabled: $("ig-enabled").checked,
+        base_url: $("ig-base").value,
+        model: $("ig-model").value,
+        adapter: $("ig-adapter").value,
+        size: $("ig-size").value,
+        count: Number($("ig-count").value) || 1,
+        api_key: $("ig-key").value
+      }).then(function (data) {
+        $("ig-key").value = "";
+        renderImagegen(data);
+        toast("已保存");
+      }).catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("ig-fill").onclick = function () {
+      $("ig-prompt").value = "画一张 1024x1024 的电商主图，白色背景，产品居中，光线柔和";
+    };
+    $("ig-go").onclick = function () {
+      var prompt = ($("ig-prompt").value || "").trim();
+      if (!prompt) { toast("先说画什么"); return; }
+      $("ig-go-status").textContent = "正在画…";
+      request("imagegen/generate", "POST", { prompt: prompt }).then(function (data) {
+        $("ig-go-status").textContent = "";
+        if (!data.ok) {
+          $("ig-result").innerHTML = "<div class='small'>失败：" + esc(data.error || data.text || "未知") + "</div>";
+          return;
+        }
+        var images = (data.images_b64 || []).map(function (row) {
+          return "<img src='" + row.image + "' style='max-width:100%;border-radius:8px;margin-top:8px'>";
+        }).join("");
+        $("ig-result").innerHTML = "<div class='small'>" + esc(data.text || "") + "</div>" + images;
+        loadImagegen().catch(function () {});
+      }).catch(function (e) {
+        $("ig-go-status").textContent = "失败：" + e.message;
       });
     };
     $("tab-style").onclick = function () {
@@ -5580,6 +5673,37 @@
     $("sb-result").innerHTML = html;
   }
 
+  // ---- 生图 ---------------------------------------------------------------
+  function renderImagegen(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    $("ig-enabled").checked = !!settings.enabled;
+    $("ig-base").value = settings.base_url || "";
+    $("ig-model").value = settings.model || "";
+    $("ig-size").value = settings.size || "";
+    $("ig-count").value = settings.count || 1;
+    var adapters = data.adapters || [];
+    $("ig-adapter").innerHTML = "<option value=''>自动（按地址/模型猜）</option>" +
+      adapters.map(function (item) {
+        return "<option value='" + esc(item.key) + "'" +
+          (settings.adapter === item.key ? " selected" : "") + ">" +
+          esc(item.label) + "</option>";
+      }).join("");
+    $("ig-status").textContent = !settings.enabled ? "没启用"
+      : (settings.has_key ? "已配 Key" : "缺 API Key") +
+        "｜实际适配器：" + (settings.resolved_adapter || "自动");
+    var recent = data.recent || [];
+    $("ig-recent").innerHTML = recent.length ? recent.map(function (row) {
+      return "<div style='display:inline-block;margin:0 10px 10px 0;vertical-align:top'>" +
+        "<img src='" + row.image + "' style='width:180px;border-radius:8px'>" +
+        "<div class='small muted'>" + esc(row.name) + "</div></div>";
+    }).join("") : "<div class='small muted'>还没画过。</div>";
+  }
+
+  function loadImagegen() {
+    return request("imagegen", "GET").then(renderImagegen);
+  }
+
   // ---- 知识树 / 动图 / 音检 -----------------------------------------------
   function renderKnowledge(data) {
     data = data || {};
@@ -5857,7 +5981,7 @@
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
       imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
-      bili: "view-bili", knowledge: "view-knowledge"
+      bili: "view-bili", knowledge: "view-knowledge", imagegen: "view-imagegen"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

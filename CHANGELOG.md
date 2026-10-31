@@ -8,6 +8,15 @@
 > 装一次 3.0.0，之后我改的东西仍然叫 3.0.0 —— 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0 持续新增
+- **画图**（新模块 `mind/imagegen.py`，移植 dsh-mo-image，MIT）：
+  - 文生图 + 参考图编辑（multipart），OpenAI Images 兼容；
+  - 适配器层：openai-images / gpt-image / dall-e-3 / siliconflow / dashscope-wanx，
+    按「显式 → 域名 → 模型 ID → 兜底」选择；尺寸自动适配到最近合法值并说明；
+  - 回应认 b64 / data url / 外链 / 二进制；上游不认某参数就摘掉重试，429/5xx 退避一次；
+  - 命令 `#画 <描述>`、`#画 改 <图片> <说明>`；面板新增「画图」页（配置 + 生成 + 最近 12 张）；
+  - API Key 只在面板显示「有没有」，留空不改；群里发指令按投递规则走私聊。
+  - 新增 tests/test_imagegen.py（38 条）+ tests/test_imagegen_plugin.py（11 条）。
+
 - **统一记忆检索**（新模块 `mind/memory/unified.py`，移植 dsh-unified-memory，MIT）：
   - 四力打分：BM25 相关 / 重要 / 新鲜（半衰期按重要度 180·60·21 天，档案永不过期）/ 强度（用过几次）；
   - 分层：pinned=档案层，fact·preference·relation=长期层，其余=一次性层；
