@@ -384,6 +384,7 @@
     <button id="tab-knowledge" data-adv="1">知识</button>
     <button id="tab-imagegen" data-adv="1">画图</button>
     <button id="tab-market" data-adv="1">市场</button>
+    <button id="tab-sticker" data-adv="1">表情</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1615,6 +1616,40 @@
     <div class="card">
       <h3 style="margin-bottom:8px">最近查过</h3>
       <div id="mk-history"></div>
+    </div>
+  </div>
+
+  <div id="view-sticker" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>表情包库</h3>
+        <span class="small muted">从聊天里自己收，按她此刻的情绪补一张</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        和「关键词配图」不同：那个是你放好的图、命中词才发；这里收的是群友发的表情，
+        按情绪（开心/无语/害羞…）打标后随机发一张。默认**关**，先收一会儿确认无害再开。
+      </div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="sk-enabled"> 启用发送</label>
+        <label class="small"><input type="checkbox" id="sk-collect"> 自动收集</label>
+        <label class="small muted">概率 <input id="sk-chance" type="number" min="0" max="100" style="width:70px"> %</label>
+        <label class="small muted">每小时 <input id="sk-hour" type="number" min="0" max="20" style="width:70px"> 张</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="sk-save">保存</button>
+        <button class="ghost small" id="sk-reload">刷新</button>
+        <button class="ghost small" id="sk-clear">清空表情库</button>
+        <span class="grow"></span>
+        <span class="small muted" id="sk-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>收着的表情</h3>
+        <span class="small muted" id="sk-count"></span>
+      </div>
+      <div id="sk-list" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -3211,6 +3246,29 @@
       }).catch(function (e) {
         $("mk-hits").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
       });
+    };
+    $("tab-sticker").onclick = function () {
+      setView("sticker");
+      loadSticker().catch(function (e) { toast("加载表情库失败：" + e.message); });
+    };
+    $("sk-reload").onclick = function () {
+      loadSticker().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("sk-save").onclick = function () {
+      request("sticker/save", "POST", {
+        enabled: $("sk-enabled").checked,
+        collect: $("sk-collect").checked,
+        chance: (Number($("sk-chance").value) || 0) / 100,
+        per_hour: Number($("sk-hour").value) || 0
+      }).then(function (data) { renderSticker(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("sk-clear").onclick = function () {
+      request("sticker/clear", "POST", {}).then(function (data) {
+        renderSticker(data);
+        toast("已清空");
+      }).catch(function (e) { toast("清空失败：" + e.message); });
     };
     $("tab-style").onclick = function () {
       setView("style");
@@ -5741,6 +5799,57 @@
     $("sb-result").innerHTML = html;
   }
 
+  // ---- 表情包 -------------------------------------------------------------
+  function renderSticker(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    var stats = data.stats || {};
+    $("sk-enabled").checked = !!settings.enabled;
+    $("sk-collect").checked = settings.collect !== false;
+    $("sk-chance").value = Math.round((settings.chance || 0) * 100);
+    $("sk-hour").value = settings.per_hour || 0;
+    $("sk-status").textContent = (settings.enabled ? "开" : "关") +
+      "｜共 " + (stats.total || 0) + " 张（打标 " + (stats.tagged || 0) +
+      "，用过 " + (stats.used || 0) + "）";
+    var items = data.items || [];
+    $("sk-count").textContent = items.length + " 张";
+    if (!items.length) {
+      $("sk-list").innerHTML = "<div class='small muted'>还没收到表情。开着收集，等群友发几张。</div>";
+      return;
+    }
+    $("sk-list").innerHTML = items.map(function (item) {
+      return "<div style='display:inline-block;width:170px;margin:0 10px 12px 0;vertical-align:top'>" +
+        "<img src='" + item.image + "' style='width:170px;height:120px;object-fit:contain;background:#0001;border-radius:8px'>" +
+        "<div class='small muted'>#" + item.id + "　用过 " + (item.hits || 0) + " 次</div>" +
+        "<input data-sk-tag='" + item.id + "' value='" + esc((item.emotions || []).join(",")) +
+        "' placeholder='joy,shy' style='width:100%;margin-top:4px'>" +
+        "<div class='row' style='margin-top:4px'>" +
+        "<button class='ghost small' data-sk-save='" + item.id + "'>存标签</button>" +
+        "<button class='ghost small' data-sk-del='" + item.id + "'>删</button></div></div>";
+    }).join("");
+    Array.prototype.forEach.call($("sk-list").querySelectorAll("[data-sk-save]"), function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute("data-sk-save");
+        var box = $("sk-list").querySelector("[data-sk-tag='" + id + "']");
+        var words = (box && box.value || "").split(/[,，\s]+/).filter(Boolean);
+        request("sticker/tag", "POST", { id: Number(id), emotions: words })
+          .then(renderSticker).then(function () { toast("已保存标签"); })
+          .catch(function (e) { toast("保存失败：" + e.message); });
+      };
+    });
+    Array.prototype.forEach.call($("sk-list").querySelectorAll("[data-sk-del]"), function (btn) {
+      btn.onclick = function () {
+        request("sticker/delete", "POST", { id: Number(btn.getAttribute("data-sk-del")) })
+          .then(renderSticker).then(function () { toast("已删除"); })
+          .catch(function (e) { toast("删除失败：" + e.message); });
+      };
+    });
+  }
+
+  function loadSticker() {
+    return request("sticker", "GET").then(renderSticker);
+  }
+
   // ---- 市场 ---------------------------------------------------------------
   function renderMarket(data) {
     data = data || {};
@@ -6107,7 +6216,7 @@
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
       imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
       bili: "view-bili", knowledge: "view-knowledge", imagegen: "view-imagegen",
-      market: "view-market"
+      market: "view-market", sticker: "view-sticker"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

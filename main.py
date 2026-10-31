@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 表情包库（收 → 打标 → 按情绪发）
+    from .mind import sticker as sticker_engine
+except ImportError:  # pragma: no cover
+    from mind import sticker as sticker_engine  # type: ignore[no-redef]
+
 try:  # 需求先搜市场（DSH 插件目录）
     from .mind import market as market_engine
 except ImportError:  # pragma: no cover
@@ -504,6 +509,7 @@ DEBUG_HELP = "\n".join([
     "#知识　知识树：列表 / 学 <名> / 开|关 <名> / 加 <名> <标题> <内容> / 待审 / 批|否 <id>",
     "#画 <描述>　文生图；#画 改 <图片> <说明>　参考图编辑",
     "#市场 <能力词>　去开源插件市场搜有没有现成的",
+    "#表情　表情包库：状态 / 开|关 / 标签 <id> <情绪> / 删 <id> / 清",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -904,6 +910,13 @@ class AIMindPlugin(Star):
             Path(self.data_dir) / "market_history.json"
         )
         self._market_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self.stickers = sticker_engine.StickerStore(self.store, logger)
+        self.sticker_settings = sticker_engine.load_settings(
+            Path(self.data_dir) / "sticker.json"
+        )
+        #: 每个会话最近发过的表情（避免连续同一张）与发送时间
+        self._sticker_recent: dict[str, list[int]] = {}
+        self._sticker_sent: dict[str, list[float]] = {}
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -2002,6 +2015,10 @@ class AIMindPlugin(Star):
             await self._split_and_send(event, session_key, is_llm=is_llm)
         except Exception as exc:  # noqa: BLE001 - 分段出问题也绝不能吞掉回复
             logger.error(f"[ai_mind] 分段发送失败：{exc}", exc_info=True)
+        try:
+            await self._maybe_sticker(event)
+        except Exception as exc:  # noqa: BLE001 - 表情发不出去不影响正文
+            logger.debug(f"[ai_mind] 发表情失败：{exc}")
 
     #: 当前活着的实例。插件重载时旧实例不会立刻消失，它的路由还会抢走
     #: 面板请求 —— 而旧实例的库是关着的、计数器停在 0，于是面板显示成
@@ -2642,6 +2659,30 @@ class AIMindPlugin(Star):
     # ------------------------------------------------------------------
     # 关键词配图
     # ------------------------------------------------------------------
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=998)
+    async def on_sticker_capture(self, event: AstrMessageEvent) -> None:
+        """群友发的图/表情，收进表情包库（按内容哈希去重）。"""
+        try:
+            conf = self.sticker_settings
+            if not conf.enabled or not conf.collect:
+                return
+            key = str(getattr(event, "unified_msg_origin", "") or "")
+            if conf.sessions and key not in conf.sessions:
+                return
+            sender = str(event.get_sender_id() or "")
+            if self._sender_denied(event):
+                return
+            for name, blob in self._event_image_blobs(event, conf.max_bytes):
+                item = await asyncio.to_thread(
+                    self.stickers.add, blob, Path(self.data_dir) / "stickers",
+                    name, sticker_engine.guess_emotions(name, sender), "", "auto",
+                    conf.max_bytes,
+                )
+                if item is not None and self.settings.debug_log:
+                    logger.info(f"[ai_mind] 收到表情 {item.hash[:8]}（{item.path}）")
+        except Exception as exc:  # noqa: BLE001 - 收图失败绝不能影响聊天
+            logger.debug(f"[ai_mind] 收集表情失败：{exc}")
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=999)
     async def on_imitate_capture(self, event: AstrMessageEvent) -> None:
         """只学指定 QQ 说过的话（模仿用）。默认关，显式打开才开始记。"""
@@ -2814,6 +2855,11 @@ class AIMindPlugin(Star):
             ("bili/scroll", self._api_bili_scroll, "刷一轮"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
+            ("sticker", self._api_sticker, "表情包库"),
+            ("sticker/save", self._api_sticker_save, "保存表情设置"),
+            ("sticker/tag", self._api_sticker_tag, "给表情打标"),
+            ("sticker/delete", self._api_sticker_delete, "删一张表情"),
+            ("sticker/clear", self._api_sticker_clear, "清空表情库"),
             ("market", self._api_market, "插件市场搜索"),
             ("market/search", self._api_market_search, "搜市场"),
             ("market/save", self._api_market_save, "保存市场搜索设置"),
@@ -4821,6 +4867,8 @@ class AIMindPlugin(Star):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
+            if word.split()[0] in ("表情", "sticker"):
+                return self._debug_sticker(text)
             if word.split()[0] in ("知识", "kb"):
                 return self._debug_knowledge(event, text)
             if word.split()[0] in ("动图", "gif"):
@@ -5117,6 +5165,129 @@ class AIMindPlugin(Star):
         for sheet in result.get("sheets") or []:
             images.extend(str(item) for item in (sheet.get("images") or []))
         return await self._emit_bulk(event, text, images, "今天的 B 站日报")
+
+    # -- 表情包 -------------------------------------------------------------
+    @staticmethod
+    def _fetch_bytes(url: str, limit: int) -> bytes:
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:
+                blob = response.read(limit + 1)
+        except (OSError, ValueError):
+            return b""
+        return blob if 0 < len(blob) <= limit else b""
+
+    def _event_image_blobs(self, event: AstrMessageEvent,
+                           max_bytes: int) -> list[tuple[str, bytes]]:
+        """从事件里抠图片字节：本地文件优先，其次 http 链接。"""
+        out: list[tuple[str, bytes]] = []
+        message = getattr(getattr(event, "message_obj", None), "message", None)
+        if not isinstance(message, list):
+            return out
+        for comp in message:
+            name = type(comp).__name__.lower()
+            if name not in ("image", "sticker", "face"):
+                continue
+            path = str(getattr(comp, "file", "") or getattr(comp, "path", "") or "")
+            if path:
+                local = Path(path)
+                if local.is_file():
+                    try:
+                        blob = local.read_bytes()
+                    except OSError:
+                        continue
+                    if 0 < len(blob) <= max_bytes:
+                        out.append((local.name, blob))
+                    continue
+            url = str(getattr(comp, "url", "") or "")
+            if url.startswith("http"):
+                blob = self._fetch_bytes(url, max_bytes)
+                if blob:
+                    out.append((url.rsplit("/", 1)[-1].split("?")[0] or "sticker.png", blob))
+        return out
+
+    async def _maybe_sticker(self, event: AstrMessageEvent) -> str:
+        """按她此刻的情绪，按概率补发一张表情。"""
+        conf = self.sticker_settings
+        if not conf.enabled or conf.chance <= 0 or Comp is None:
+            return ""
+        key = str(getattr(event, "unified_msg_origin", "") or "")
+        now = time.time()
+        stamps = [item for item in self._sticker_sent.get(key, []) if now - item < 3600]
+        self._sticker_sent[key] = stamps
+        if len(stamps) >= conf.per_hour:
+            return ""
+        if random.random() > conf.chance:
+            return ""
+        emotion = ""
+        try:
+            session = self.engine.sessions.get(key)
+            if session is not None:
+                emotion = str(getattr(session, "emotion_hint", "") or "")
+                if not emotion:
+                    from .mind.emotion.model import classify as _classify
+
+                    emotion = _classify(session.emotion).key
+        except Exception:  # noqa: BLE001
+            emotion = ""
+        item = self.stickers.pick(emotion, self._sticker_recent.get(key, []))
+        if item is None or not Path(item.path).is_file():
+            return ""
+        try:
+            await self.context.send_message(key, [Comp.Image.fromFileSystem(item.path)])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 发送表情失败：{exc}")
+            return ""
+        self.stickers.mark_used(item.id)
+        stamps.append(now)
+        recent = self._sticker_recent.setdefault(key, [])
+        recent.append(item.id)
+        del recent[:-8]
+        return item.path
+
+    def _sticker_save(self) -> bool:
+        return sticker_engine.save_settings(
+            Path(self.data_dir) / "sticker.json", self.sticker_settings
+        )
+
+    def _debug_sticker(self, text: str) -> str:
+        conf = self.sticker_settings
+        stats = self.stickers.stats()
+        parts = text.lstrip("#").strip().split()
+        args = parts[1:] if parts and parts[0].lower() in ("表情", "sticker") else parts
+        head = args[0].lower() if args else ""
+        if head in ("开", "on"):
+            conf.enabled = True
+            self._sticker_save()
+            return "表情包：开（每 %.0f%% 概率补一张，每小时最多 %d 张）" % (
+                conf.chance * 100, conf.per_hour)
+        if head in ("关", "off"):
+            conf.enabled = False
+            self._sticker_save()
+            return "表情包：关（已收的还在，随时能开回来）"
+        if head in ("清", "clear"):
+            removed = self.stickers.clear()
+            return "清掉了 %d 张表情。" % removed
+        if head in ("删", "del") and len(args) > 1 and args[1].isdigit():
+            ok = self.stickers.delete(int(args[1]))
+            return "删掉了。" if ok else "没有这张。"
+        if head in ("标签", "tag") and len(args) > 1 and args[1].isdigit():
+            emotions = sticker_engine.parse_emotions(" ".join(args[2:]))
+            ok = self.stickers.tag(int(args[1]), emotions=emotions)
+            return ("已打标：" + ",".join(emotions)) if ok else "没打上（id 不对？）"
+        rows = [
+            "表情包：%s｜收集 %s｜共 %d 张（打标 %d，用过 %d）｜概率 %.0f%%｜每小时最多 %d 张"
+            % ("开" if conf.enabled else "关", "开" if conf.collect else "关",
+               stats["total"], stats["tagged"], stats["used"],
+               conf.chance * 100, conf.per_hour),
+            "用法：#表情 开|关 / 标签 <id> <情绪> / 删 <id> / 清",
+        ]
+        recent = self.stickers.list(limit=5)
+        for item in recent:
+            rows.append("  #%d %s %s" % (item.id, ",".join(item.emotions) or "（未打标）",
+                                         Path(item.path).name))
+        return "\n".join(rows)
 
     # -- 需求先搜市场 -------------------------------------------------------
     def _market_is_owner(self, sender: str) -> bool:
@@ -6625,6 +6796,92 @@ class AIMindPlugin(Star):
     async def _api_bili_clear(self) -> Any:
         removed = self.bili_seen.clear()
         data = self._bili_payload()
+        data["removed"] = removed
+        return json_response(data)
+
+    # -- 面板：表情包 -------------------------------------------------------
+    def _sticker_payload(self, limit: int = 60) -> dict[str, Any]:
+        rows = self.stickers.list(limit=limit)
+        items: list[dict[str, Any]] = []
+        for item in rows:
+            path = Path(item.path)
+            if not path.is_file():
+                continue
+            try:
+                blob = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            items.append({
+                "id": item.id,
+                "desc": item.desc,
+                "emotions": list(item.emotions),
+                "hits": item.hits,
+                "name": path.name,
+                "image": "data:image/png;base64," + blob,
+            })
+        return {
+            "settings": self.sticker_settings.to_dict(),
+            "stats": self.stickers.stats(),
+            "items": items,
+            "emotions": sorted(sticker_engine.EMOTION_WORDS.keys()),
+        }
+
+    async def _api_sticker(self) -> Any:
+        return json_response(self._sticker_payload())
+
+    async def _api_sticker_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        merged = dict(self.sticker_settings.to_dict())
+        for key in ("enabled", "collect", "chance", "per_hour", "max_bytes"):
+            if payload.get(key) is not None:
+                merged[key] = payload[key]
+        self.sticker_settings = sticker_engine.StickerSettings.from_dict(merged)
+        ok = self._sticker_save()
+        data = self._sticker_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入表情设置失败，详细原因见日志")
+        return json_response(data)
+
+    async def _api_sticker_tag(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        try:
+            sticker_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            sticker_id = 0
+        if sticker_id <= 0:
+            return error_response("缺表情 id")
+        desc = payload.get("desc")
+        emotions = payload.get("emotions")
+        ok = self.stickers.tag(
+            sticker_id,
+            desc=None if desc is None else str(desc),
+            emotions=None if emotions is None else [
+                str(item) for item in (emotions if isinstance(emotions, list) else [])
+            ],
+        )
+        data = self._sticker_payload()
+        data["tagged"] = ok
+        return json_response(data)
+
+    async def _api_sticker_delete(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        try:
+            sticker_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            sticker_id = 0
+        ok = self.stickers.delete(sticker_id) if sticker_id > 0 else False
+        data = self._sticker_payload()
+        data["deleted"] = ok
+        return json_response(data)
+
+    async def _api_sticker_clear(self) -> Any:
+        removed = self.stickers.clear()
+        data = self._sticker_payload()
         data["removed"] = removed
         return json_response(data)
 
