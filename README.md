@@ -685,6 +685,25 @@ ffmpeg `ebur128` + `volumedetect` 算响度（LUFS）、动态范围（LRA）、
 
 ---
 
+## 🧠 统一记忆检索（dsh-unified-memory）
+
+移植 [txjyt0599-cell/dsh-unified-memory](https://github.com/txjyt0599-cell/dsh-unified-memory)
+（MIT）的**选择**部分：记忆不是存了就行，每轮都要重新算值不值得想起来。
+
+- **四力打分**：相关（BM25）/ 重要 / 新鲜 / 强度（被用过几次）；
+- **半衰期由重要度决定**：档案（pinned）永不过期，重要度 ≥0.8 → 180 天，
+  ≥0.55 → 60 天，其余 21 天；
+- **分层**：pinned=档案层、fact/preference/relation=长期层、event=一次性层；
+- **超图传播**：两条记忆共享 ≥2 个关键词就算同话题邻居，命中一条时邻居沾光（默认权重 0，关着）；
+- **优雅降级**：向量没配就只用 BM25，不会因此什么都想不起来。
+
+没搬：dispatch receipt 状态机（那是 agent 之间派活用的，AstrBot 没这个场景）。
+开关与权重在「记忆 → 检索 → 四力打分」，关掉即旧公式、排序完全不变。
+
+新增 `tests/test_unified.py`（25 条）。
+
+---
+
 ## 🧹 去 AI 味
 
 她的回复从模型出来之后、发出去之前，会先过一道**阀门**：像不像机器写的？

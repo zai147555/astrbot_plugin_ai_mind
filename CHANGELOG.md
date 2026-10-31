@@ -8,6 +8,15 @@
 > 装一次 3.0.0，之后我改的东西仍然叫 3.0.0 —— 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0 持续新增
+- **统一记忆检索**（新模块 `mind/memory/unified.py`，移植 dsh-unified-memory，MIT）：
+  - 四力打分：BM25 相关 / 重要 / 新鲜（半衰期按重要度 180·60·21 天，档案永不过期）/ 强度（用过几次）；
+  - 分层：pinned=档案层，fact·preference·relation=长期层，其余=一次性层；
+  - 超图传播：共享 ≥2 关键词算邻居，命中一条邻居沾光（默认权重 0，关着）；
+  - 接进 `Retriever`：开关 `memory.retrieval.unified.enabled`，**关掉即旧公式、排序不变**；
+  - 记忆打分明细多了 layer / half_life / strength（面板能看出这条为什么被想起）；
+  - 不搬 dispatch receipt 状态机（AstrBot 没有多 agent 派活场景）。
+  - 新增 tests/test_unified.py（25 条）。
+
 - **再适配三个上游插件**（都不加 Python 依赖，只要 ffmpeg）：
   - **知识树**（`mind/knowledge.py`，移植 dsh-knowledge-canvas）：树/节点、按会话激活、
     模型改件待审（批准才生效）、注入口径是「既定事实」；命令 `#知识 ...`，面板「知识」页。

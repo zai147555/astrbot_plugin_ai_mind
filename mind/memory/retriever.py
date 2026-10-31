@@ -18,7 +18,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from .model import Memory, cosine_overlap, now_ts, score_memory, tokenize
+from . import unified as unified_engine
+from .model import (
+    Memory,
+    cosine_overlap,
+    cosine_vector,
+    keyword_hit_score,
+    now_ts,
+    score_memory,
+    tokenize,
+)
 from .privacy import allows, is_group_session
 
 
@@ -135,26 +144,60 @@ class Retriever:
             taken = {m.id for m in recent}
             taken.update(m.id for m in result.pinned)
             query_tokens = tokenize(query) if query else set()
+            pool = [memory for memory in rest if memory.id not in taken]
             scored: list[tuple[float, Memory]] = []
-            for memory in rest:
-                if memory.id in taken:
-                    continue
-                total, detail = score_memory(
-                    memory,
-                    query_tokens,
-                    weights=settings.weights,
-                    recency_half_life_days=settings.recency_half_life_days,
-                    query_vector=list(query_vector) if query_vector else None,
+            if getattr(settings, "unified_enabled", False) and pool:
+                # 四力打分：相关（BM25）/ 重要 / 新鲜（半衰期看重要度）/ 强度 + 可选超图
+                vector = list(query_vector) if query_vector else None
+                weights = {
+                    "relevance": float(getattr(settings, "unified_weight_relevance", 0.55)),
+                    "importance": float(getattr(settings, "unified_weight_importance", 0.20)),
+                    "recency": float(getattr(settings, "unified_weight_recency", 0.15)),
+                    "strength": float(getattr(settings, "unified_weight_strength", 0.10)),
+                    "graph": float(getattr(settings, "unified_weight_graph", 0.0)),
+                    "semantic": float(getattr(settings.weights, "semantic", 0.0) or 0.0),
+                }
+                ranked = unified_engine.rank(
+                    pool,
+                    query_tokens=query_tokens,
                     query_text=query,
                     now=now,
+                    weights=weights,
+                    k1=float(getattr(settings, "unified_bm25_k1", 1.5)),
+                    b=float(getattr(settings, "unified_bm25_b", 0.75)),
+                    lexical_of=lambda item: max(
+                        cosine_overlap(query_tokens, tokenize(item.searchable_text())),
+                        keyword_hit_score(item, query),
+                    ),
+                    semantic_of=(
+                        (lambda item: max(0.0, cosine_vector(vector, item.embedding)))
+                        if vector
+                        else None
+                    ),
                 )
-                # "可能和这轮有关"必须真的有关：
-                # 若词法与语义都没有任何命中，这条就只剩"新鲜 + 重要"在撑分，
-                # 那和前两栏重复，还会让过期的旧事一直阴魂不散。
-                if detail["relevance"] <= 0.0 and detail["semantic"] <= 0.0:
-                    continue
-                if total >= settings.min_relevant_score:
-                    scored.append((total, memory))
+                for memory, total, detail in ranked:
+                    if detail["relevance"] <= 0.0 and detail.get("semantic", 0.0) <= 0.0:
+                        continue
+                    if total >= settings.min_relevant_score:
+                        scored.append((total, memory))
+            else:
+                for memory in pool:
+                    total, detail = score_memory(
+                        memory,
+                        query_tokens,
+                        weights=settings.weights,
+                        recency_half_life_days=settings.recency_half_life_days,
+                        query_vector=list(query_vector) if query_vector else None,
+                        query_text=query,
+                        now=now,
+                    )
+                    # "可能和这轮有关"必须真的有关：
+                    # 若词法与语义都没有任何命中，这条就只剩"新鲜 + 重要"在撑分，
+                    # 那和前两栏重复，还会让过期的旧事一直阴魂不散。
+                    if detail["relevance"] <= 0.0 and detail["semantic"] <= 0.0:
+                        continue
+                    if total >= settings.min_relevant_score:
+                        scored.append((total, memory))
             scored.sort(key=lambda pair: (-pair[0], -pair[1].updated_at))
             chosen = scored[: settings.relevant_limit]
             result.relevant = [memory for _score, memory in chosen]

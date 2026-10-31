@@ -98,6 +98,18 @@ class Settings:
     weight_importance: float = 0.15
     max_inject_chars: int = 1400
 
+    # -- 四力打分（移植 dsh-unified-memory）--------------------------------
+    #: 关掉就退回「词法 + 新鲜 + 重要」的老公式，排序行为完全不变
+    unified_enabled: bool = True
+    unified_weight_relevance: float = 0.55
+    unified_weight_importance: float = 0.20
+    unified_weight_recency: float = 0.15
+    unified_weight_strength: float = 0.10
+    #: 超图传播（同话题邻居沾光），默认关 —— 开着会改变现有排序
+    unified_weight_graph: float = 0.0
+    unified_bm25_k1: float = 1.5
+    unified_bm25_b: float = 0.75
+
     # -- 向量检索 -----------------------------------------------------------
     use_embedding: bool = False
     embedding_provider_id: str = ""
@@ -148,6 +160,14 @@ class Settings:
             weight_recency=_f(cfg_get(config, "retrieval.weight_recency", 0.25), 0.25, 0.0, 1.0),
             weight_importance=_f(cfg_get(config, "retrieval.weight_importance", 0.15), 0.15, 0.0, 1.0),
             max_inject_chars=_i(cfg_get(config, "retrieval.max_inject_chars", 1400), 1400, 100, 8000),
+            unified_enabled=_b(cfg_get(config, "retrieval.unified.enabled", True), True),
+            unified_weight_relevance=_f(cfg_get(config, "retrieval.unified.weight_relevance", 0.55), 0.55, 0.0, 1.0),
+            unified_weight_importance=_f(cfg_get(config, "retrieval.unified.weight_importance", 0.20), 0.20, 0.0, 1.0),
+            unified_weight_recency=_f(cfg_get(config, "retrieval.unified.weight_recency", 0.15), 0.15, 0.0, 1.0),
+            unified_weight_strength=_f(cfg_get(config, "retrieval.unified.weight_strength", 0.10), 0.10, 0.0, 1.0),
+            unified_weight_graph=_f(cfg_get(config, "retrieval.unified.weight_graph", 0.0), 0.0, 0.0, 0.5),
+            unified_bm25_k1=_f(cfg_get(config, "retrieval.unified.bm25_k1", 1.5), 1.5, 0.1, 5.0),
+            unified_bm25_b=_f(cfg_get(config, "retrieval.unified.bm25_b", 0.75), 0.75, 0.0, 1.0),
             use_embedding=_b(cfg_get(config, "embedding.enabled", False), False),
             embedding_provider_id=_s(cfg_get(config, "embedding.provider_id", "")),
             scan_sensitive=_b(cfg_get(config, "privacy.scan_sensitive", True), True),

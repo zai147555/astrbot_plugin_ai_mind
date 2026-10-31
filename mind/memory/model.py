@@ -370,7 +370,20 @@ def score_memory(
         "activation": recency,
         "hits": float(memory.hit_count or 0),
         "importance": importance,
+        "strength": 0.0,
+        "layer": "",
+        "half_life": 0.0,
     }
+    # 分层与半衰期（面板要看「这条为什么该被想起来」）。放在函数里导入，避免循环依赖。
+    try:
+        from .unified import half_life_days, layer_of, strength as _strength
+
+        layer = layer_of(memory)
+        detail["layer"] = layer
+        detail["strength"] = _strength(memory.hit_count)
+        detail["half_life"] = float(half_life_days(importance, layer) or 0.0)
+    except Exception:  # noqa: BLE001 - 装饰性信息，算不出来不影响打分
+        pass
     return total, detail
 
 

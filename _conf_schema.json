@@ -473,6 +473,54 @@
             "type": "int",
             "default": 1400,
             "hint": "超过就按行截断，避免把提示词撑爆。"
+          },
+          "unified": {
+            "description": "四力打分（BM25 + 重要度分层 + 超图）",
+            "type": "object",
+            "items": {
+              "enabled": {
+                "description": "启用四力打分",
+                "type": "bool",
+                "default": true,
+                "hint": "关掉就退回「词法 + 新鲜 + 重要」的老公式，排序与旧版一致。"
+              },
+              "weight_relevance": {
+                "description": "相关权重",
+                "type": "float",
+                "default": 0.55
+              },
+              "weight_importance": {
+                "description": "重要权重",
+                "type": "float",
+                "default": 0.2
+              },
+              "weight_recency": {
+                "description": "新鲜权重",
+                "type": "float",
+                "default": 0.15
+              },
+              "weight_strength": {
+                "description": "强度权重（被用过几次）",
+                "type": "float",
+                "default": 0.1
+              },
+              "weight_graph": {
+                "description": "超图传播权重",
+                "type": "float",
+                "default": 0.0,
+                "hint": "同话题邻居沾光；开着会改变现有排序，默认关。"
+              },
+              "bm25_k1": {
+                "description": "BM25 k1",
+                "type": "float",
+                "default": 1.5
+              },
+              "bm25_b": {
+                "description": "BM25 b",
+                "type": "float",
+                "default": 0.75
+              }
+            }
           }
         }
       },
