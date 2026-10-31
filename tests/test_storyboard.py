@@ -2,6 +2,7 @@
 """分镜引擎：规划算术 + ffmpeg 命令形状 + 失败也要说人话。"""
 from __future__ import annotations
 
+import pathlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -211,7 +212,7 @@ class BuildOkTest(unittest.TestCase):
         info = {"path": "a.mp4", "name": "a.mp4", "duration": 660,
                 "width": 1280, "height": 720, "fps": 30.0}
 
-        def fake_extract(path, at, out, w, h, tools=None):
+        def fake_extract(path, at, out, w, h, tools=None, **kwargs):
             Path(out).write_bytes(b"png")
             return True
 
@@ -237,6 +238,230 @@ class BuildOkTest(unittest.TestCase):
             self.assertIn("张图", result["summary"])
 
 
+
+
+class AnnotateTest(unittest.TestCase):
+    def test_font_hint_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            font = Path(tmp) / "f.ttf"
+            font.write_bytes(b"x")
+            self.assertEqual(sb.find_font(str(font)), str(font))
+
+    def test_escapes_filter_specials(self) -> None:
+        self.assertIn(":", sb.filter_escape_path("C:/a/b.ttc"))
+        self.assertNotEqual(sb.filter_escape_path("C:/a/b.ttc"), "C:/a/b.ttc")
+        self.assertIn("%", sb.filter_escape_text("100%"))
+        self.assertNotEqual(sb.filter_escape_text("100%"), "100%")
+
+    def test_label_has_number_and_timecode(self) -> None:
+        spec = sb.label_filter(3, 65.5, 341, 192, "C:/f.ttc")
+        self.assertIn("drawtext=", spec)
+        self.assertIn("fontsize=", spec)
+        self.assertIn("box=1", spec)
+        self.assertIn("3", spec)
+        self.assertIn("01", spec)
+
+
+class CacheTest(unittest.TestCase):
+    def test_key_is_stable_and_need_sensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "a.mp4"
+            video.write_bytes(b"x")
+            first = sb.cache_key(video, "scene", sb.PIXEL_BUDGET)
+            self.assertEqual(first, sb.cache_key(video, "scene", sb.PIXEL_BUDGET))
+            self.assertNotEqual(first, sb.cache_key(video, "text", sb.PIXEL_BUDGET))
+
+    def test_cache_roundtrip_and_missing_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "w"
+            work.mkdir()
+            image = work / "s.png"
+            image.write_bytes(b"x")
+            result = {"info": {"path": "a"}, "plan": {}, "sheets": [{"image": str(image)}],
+                      "summary": "s", "cached": False}
+            self.assertTrue(sb.save_cache(work, "k1", result))
+            hit = sb.load_cache(work, "k1")
+            self.assertIsNotNone(hit)
+            self.assertTrue(hit["cached"])
+            image.unlink()
+            self.assertIsNone(sb.load_cache(work, "k1"))
+
+    def test_build_uses_cache_and_skips_probe(self) -> None:
+        info = {"path": "a.mp4", "name": "a.mp4", "duration": 90,
+                "width": 640, "height": 360, "fps": 30.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "a.mp4"
+            video.write_bytes(b"x")
+            work = Path(tmp) / "work"
+            cache = Path(tmp) / "cache"
+
+            def fake_extract(path, at, out, w, h, tools=None, **kwargs):
+                Path(out).write_bytes(b"png")
+                return True
+
+            def fake_tile(frames, cols, rows, out, w, h, tools=None):
+                Path(out).write_bytes(b"png")
+                return True
+
+            with mock.patch.object(sb, "find_tools", return_value={
+                "ffmpeg": "ffmpeg", "ffprobe": "ffprobe", "ok": True, "hint": "",
+            }), mock.patch.object(sb, "probe_video", return_value=info), \
+                    mock.patch.object(sb, "extract_frame", fake_extract), \
+                    mock.patch.object(sb, "tile", fake_tile), \
+                    mock.patch.object(sb, "audio_envelope", return_value=False):
+                first = sb.build(video, "scene", workdir=work, cache_dir=cache)
+                self.assertTrue(first["ok"], first.get("error"))
+                self.assertFalse(first["cached"])
+                with mock.patch.object(sb, "probe_video",
+                                       side_effect=AssertionError("不该再读元信息")):
+                    second = sb.build(video, "scene", workdir=work, cache_dir=cache)
+            self.assertTrue(second["ok"])
+            self.assertTrue(second["cached"])
+            self.assertIn("第 1 格", second["manifest"])
+
+
+class TranscriptTest(unittest.TestCase):
+    def test_parse_srt(self) -> None:
+        rows = sb.parse_srt("1" + chr(10) + "00:00:01,000 --> 00:00:03,500" + chr(10)
+                            + "第一句" + chr(10) + chr(10) + "2" + chr(10)
+                            + "00:01:04,000 --> 00:01:06,000" + chr(10) + "第二句" + chr(10))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["text"], "第一句")
+        self.assertAlmostEqual(rows[1]["from"], 64.0)
+
+    def test_parse_srt_garbage(self) -> None:
+        self.assertEqual(sb.parse_srt(""), [])
+        self.assertEqual(sb.parse_srt("没有时间轴的一段话"), [])
+
+    def test_attach_maps_lines_to_cells(self) -> None:
+        plan = sb.plan(90)
+        attached = sb.attach_transcript(plan, [
+            {"from": 0, "to": 9.5, "text": "开头"},        # 落在第 1 格（0–10）
+            {"from": 10.5, "to": 19.5, "text": "第二段"},  # 落在第 2 格（10–20）
+        ])
+        self.assertEqual(attached, 2)
+        texts = [cell.get("text") for cell in plan["sheets"][0]["cells"]]
+        self.assertEqual(texts[0], "开头")
+        self.assertEqual(texts[1], "第二段")
+        self.assertIsNone(texts[2])
+
+    def test_manifest_shows_transcript(self) -> None:
+        plan = sb.plan(90)
+        sb.attach_transcript(plan, [{"from": 0, "to": 11, "text": "他说了这句"}])
+        result = {"info": {"name": "a.mp4", "duration": 90},
+                  "plan": plan,
+                  "sheets": [{"i": 1, "from": 0, "to": 90, "cells": plan["sheets"][0]["cells"]}]}
+        self.assertIn("他说：他说了这句", sb.build_manifest(result))
+
+
+class EvidenceTest(unittest.TestCase):
+    def test_evidence_shape(self) -> None:
+        plan = sb.plan(90)
+        sheet = {
+            "i": 1, "from": 0, "to": 90,
+            "cells": [dict(cell, text="台词") for cell in plan["sheets"][0]["cells"]],
+        }
+        evidence = sb.build_evidence({
+            "info": {"path": "a.mp4", "duration": 90, "width": 640, "height": 360},
+            "sheets": [sheet],
+        })
+        self.assertEqual(evidence["version"], 1)
+        self.assertEqual(evidence["cells_total"], len(sheet["cells"]))
+        first = evidence["cells"][0]
+        self.assertEqual(first["cell"], 1)
+        self.assertEqual(first["chars"], 2)
+        self.assertIn("frame_at", first)
+
+
+class ZoomTest(unittest.TestCase):
+    def test_unknown_cell(self) -> None:
+        with mock.patch.object(sb, "find_tools", return_value={"ffmpeg": "f", "ok": True}):
+            result = sb.zoom("a.mp4", sb.plan(90), 999)
+        self.assertFalse(result["ok"])
+        self.assertIn("没有第", result["error"])
+
+    def test_zoom_builds_a_strip(self) -> None:
+        def fake_extract(path, at, out, w, h, tools=None, **kwargs):
+            Path(out).write_bytes(b"png")
+            return True
+
+        def fake_tile(frames, cols, rows, out, w, h, tools=None):
+            Path(out).write_bytes(b"png")
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(sb, "find_tools", return_value={"ffmpeg": "f", "ok": True}), \
+                    mock.patch.object(sb, "extract_frame", fake_extract), \
+                    mock.patch.object(sb, "tile", fake_tile):
+                result = sb.zoom("a.mp4", sb.plan(90), 1, workdir=Path(tmp))
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["cell"], 1)
+            self.assertTrue(Path(result["image"]).exists())
+            self.assertIn("第 1 格放大", result["lines"][0])
+
+    def test_no_frames_is_an_error(self) -> None:
+        with mock.patch.object(sb, "find_tools", return_value={"ffmpeg": "f", "ok": True}), \
+                mock.patch.object(sb, "extract_frame", lambda *a, **k: False):
+            result = sb.zoom("a.mp4", sb.plan(90), 1)
+        self.assertFalse(result["ok"])
+
+
+class AudioBarTest(unittest.TestCase):
+    def test_envelope_and_compose_run_ffmpeg(self) -> None:
+        seen: list[list[str]] = []
+
+        def fake_run(cmd, timeout=0):
+            seen.append(list(cmd))
+            Path(cmd[-1]).write_bytes(b"png")
+            return 0, ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "w.png"
+            with mock.patch.object(sb, "_run", fake_run):
+                self.assertTrue(sb.audio_envelope("a.mp4", out, 320, 48,
+                                                 {"ffmpeg": "ffmpeg", "ok": True}))
+                self.assertIn("showwavespic", " ".join(seen[-1]))
+                top = Path(tmp) / "t.png"
+                top.write_bytes(b"x")
+                self.assertTrue(sb.compose_vertical(top, out, Path(tmp) / "m.png",
+                                                   {"ffmpeg": "ffmpeg", "ok": True}))
+                self.assertIn("vstack=inputs=2", " ".join(seen[-1]))
+
+
+
+
+class AsrTest(unittest.TestCase):
+    def test_no_command(self) -> None:
+        self.assertEqual(sb.transcribe("a.mp4", ""), [])
+
+    def test_runs_command_and_parses_srt(self) -> None:
+        captured: list[str] = []
+
+        def fake_run(command, timeout=0):
+            captured.append(command)
+            out = command.split()[-1].strip(chr(34))
+            path = pathlib.Path(out)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.suffix != ".srt":
+                path = path.with_suffix(".srt")
+            path.write_text(
+                "1" + chr(10) + "00:00:01,000 --> 00:00:03,000" + chr(10) + "第一句" + chr(10),
+                encoding="utf-8",
+            )
+            return 0, ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(sb, "_run_command", fake_run):
+                rows = sb.transcribe(
+                    "a.mp4", "echo {input} > {output}", workdir=Path(tmp)
+                )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "第一句")
+        self.assertIn("a.mp4", captured[0])
+
+    def test_command_failure_is_empty(self) -> None:
+        with mock.patch.object(sb, "_run_command", lambda command, timeout=0: (1, "boom")):
+            self.assertEqual(sb.transcribe("a.mp4", "x {input} {output}"), [])
+
 if __name__ == "__main__":
     unittest.main()
-

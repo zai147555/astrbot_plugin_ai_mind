@@ -58,6 +58,12 @@ class BiliSettings:
     max_seconds: int = DEFAULT_MAX_SECONDS
     max_download_mb: int = 60
     rids: list[int] = field(default_factory=lambda: list(DEFAULT_RIDS))
+    #: 有就用关键词搜索（WBI 签名），没有就逛分区最新
+    use_search: bool = True
+    #: 每天几点自己刷一轮（-1 = 不定时）
+    daily_hour: int = -1
+    #: 让模型给每条写「一句话」（上游的「它自己的一句话」）
+    one_liner: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +75,9 @@ class BiliSettings:
             "max_seconds": int(self.max_seconds),
             "max_download_mb": int(self.max_download_mb),
             "rids": list(self.rids),
+            "use_search": bool(self.use_search),
+            "daily_hour": int(self.daily_hour),
+            "one_liner": bool(self.one_liner),
         }
 
     @staticmethod
@@ -98,6 +107,9 @@ class BiliSettings:
             max_seconds=num(raw.get("max_seconds"), DEFAULT_MAX_SECONDS, 30, 21600),
             max_download_mb=num(raw.get("max_download_mb"), 60, 4, 2048),
             rids=rids or list(DEFAULT_RIDS),
+            use_search=bool(raw.get("use_search", True)),
+            daily_hour=num(raw.get("daily_hour"), -1, -1, 23),
+            one_liner=bool(raw.get("one_liner", True)),
         )
 
 
@@ -348,6 +360,244 @@ def download(url: str, out: Path | str, max_bytes: int = 60 * 1024 * 1024,
         return False, "下载失败：%s: %s" % (type(exc).__name__, exc)
 
 
+#: WBI 混淆表（B 站前端公开算法，anonymous 也能用）
+_WBI_MIXIN = (
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62,
+    11, 36, 20, 34, 44, 52,
+)
+
+
+def _clean_wbi_value(value: Any) -> str:
+    text = str(value)
+    for char in "!'()*":
+        text = text.replace(char, "")
+    return text
+
+
+def sign_wbi(params: dict[str, Any], mixin_key: str, wts: int | None = None) -> str:
+    """给一组参数算出带 w_rid 的查询串（纯函数，能单测）。"""
+    import hashlib
+
+    payload = dict(params)
+    payload["wts"] = int(wts if wts is not None else time.time())
+    clean = {key: _clean_wbi_value(value) for key, value in payload.items()}
+    query = urlencode(sorted(clean.items()))
+    w_rid = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
+    return query + "&w_rid=" + w_rid
+
+
+def _fetch_buvid() -> str:
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            API + "/x/frontend/finger/spi",
+            headers={"User-Agent": UA, "Referer": REFERER},
+        )
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        return str(((payload.get("data") or {}).get("b_3")) or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _fetch_mixin_key() -> str:
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            API + "/x/web-interface/nav",
+            headers={"User-Agent": UA, "Referer": REFERER},
+        )
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        wbi = ((payload.get("data") or {}).get("wbi_img")) or {}
+        img = str(wbi.get("img_url") or "").rsplit("/", 1)[-1].split(".")[0]
+        sub = str(wbi.get("sub_url") or "").rsplit("/", 1)[-1].split(".")[0]
+        raw = img + sub
+        if len(raw) < 64:
+            return ""
+        return "".join(raw[index] for index in _WBI_MIXIN)[:32]
+    except (OSError, ValueError, IndexError):
+        return ""
+
+
+def _clean_title(raw: str) -> str:
+    """搜索结果标题里带 <em class="keyword">，要剥掉。"""
+    import re
+
+    return re.sub(r"<[^>]+>", "", str(raw or "")).replace("&quot;", '"').strip()
+
+
+def _duration_to_seconds(raw: Any) -> int:
+    """搜索结果给的是 '6:11' / '96:19'，转成秒。"""
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    parts = text.split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        return int(float(text))
+    except (TypeError, ValueError):
+        return 0
+
+
+def search_videos(keyword: str, limit: int = 6) -> tuple[list[dict[str, Any]], str]:
+    """关键词搜索（WBI 签名 + 匿名 buvid3）。失败返回 (空, 原因)。"""
+    import urllib.request
+
+    word = str(keyword or "").strip()
+    if not word:
+        return [], "没有关键词"
+    mixin = _fetch_mixin_key()
+    if not mixin:
+        return [], "拿不到 WBI 签名用的密钥"
+    query = sign_wbi({
+        "keyword": word, "search_type": "video",
+        "page": 1, "page_size": max(1, min(20, int(limit))), "order": "pubdate",
+    }, mixin)
+    headers = {"User-Agent": UA, "Referer": REFERER, "Accept": "application/json"}
+    buvid = _fetch_buvid()
+    if buvid:
+        headers["Cookie"] = "buvid3=" + buvid
+    try:
+        request = urllib.request.Request(
+            API + "/x/web-interface/wbi/search/type?" + query, headers=headers
+        )
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (OSError, ValueError) as exc:
+        return [], "搜索请求失败：%s: %s" % (type(exc).__name__, exc)
+    code = payload.get("code")
+    if code not in (0, None):
+        return [], "搜索接口返回 %s（%s）" % (code, payload.get("message") or "")
+    rows = ((payload.get("data") or {}).get("result")) or []
+    if not isinstance(rows, list):
+        return [], "搜索结果格式变了"
+    out: list[dict[str, Any]] = []
+    for item in rows:
+        bvid = str(item.get("bvid") or "")
+        if not bvid:
+            continue
+        out.append({
+            "bvid": bvid,
+            "title": _clean_title(item.get("title")),
+            "desc": _clean_title(item.get("description")),
+            "up": str(item.get("author") or ""),
+            "duration": _duration_to_seconds(item.get("duration")),
+            "view": int(_num(item.get("play"))),
+            "pubdate": int(_num(item.get("pubdate"))),
+            "cid": 0,
+            "url": "https://www.bilibili.com/video/" + bvid,
+        })
+    return out, ""
+
+
+def fetch_subtitle_lines(bvid: str, cid: int) -> list[dict[str, Any]]:
+    """带时间码的字幕行（挂到分镜每一格用）。取不到就是空列表。"""
+    if not cid:
+        return []
+    payload, err = _get_json("/x/player/v2", {"bvid": str(bvid), "cid": int(cid)})
+    if err:
+        return []
+    subtitles = (((payload or {}).get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+    if not isinstance(subtitles, list) or not subtitles:
+        return []
+    pick = next((item for item in subtitles if str(item.get("lan", "")).startswith("zh")),
+                subtitles[0])
+    url = str(pick.get("subtitle_url") or "")
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url:
+        return []
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": REFERER})
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            raw = json.loads(response.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return []
+    body = raw.get("body") if isinstance(raw, dict) else None
+    if not isinstance(body, list):
+        return []
+    lines: list[dict[str, Any]] = []
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text:
+            continue
+        lines.append({"from": _num(item.get("from")), "to": _num(item.get("to")), "text": text})
+    return lines
+
+
+def ytdlp_path() -> str:
+    """有 yt-dlp 就用它取流（它认得 B 站/YouTube 的绝大多数页面）。"""
+    import shutil
+
+    for name in ("yt-dlp", "yt-dlp.exe", "youtube-dl", "youtube-dl.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def download_with_ytdlp(url: str, out: Path | str, max_bytes: int = 60 * 1024 * 1024,
+                        bin_path: str = "", timeout: int = 180) -> tuple[bool, str]:
+    """用 yt-dlp 取流（限 480P、单文件），失败就把话说清楚。"""
+    import subprocess
+
+    tool = bin_path or ytdlp_path()
+    if not tool:
+        return False, "没装 yt-dlp"
+    target = Path(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        tool, "--no-warnings", "--no-playlist",
+        "-f", "bv*[height<=480]+ba/b[height<=480]/b",
+        "--merge-output-format", "mp4",
+        "-o", str(target), str(url),
+    ]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                              check=False, errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, "yt-dlp 跑不起来：%s" % exc
+    if int(done.returncode or 0) != 0:
+        tail = (done.stderr or b"").decode("utf-8", "replace")[-300:].strip()
+        return False, "yt-dlp 失败：" + (tail or "未知原因")
+    if not target.exists():
+        return False, "yt-dlp 说成功了但文件不在"
+    try:
+        if target.stat().st_size > max(1024 * 1024, int(max_bytes)):
+            target.unlink()
+            return False, "视频超过上限"
+    except OSError:
+        pass
+    return True, ""
+
+
+def due_today(daily_hour: int, now: float | None = None,
+              last_run: float = 0.0) -> bool:
+    """今天这个点该不该自己刷一轮（同一天只跑一次）。"""
+    if int(daily_hour) < 0:
+        return False
+    stamp = time.time() if now is None else float(now)
+    local = time.localtime(stamp)
+    if local.tm_hour != int(daily_hour):
+        return False
+    today = time.strftime("%Y-%m-%d", local)
+    if last_run > 0 and time.strftime("%Y-%m-%d", time.localtime(last_run)) == today:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 挑：先看字
 # ---------------------------------------------------------------------------
@@ -456,9 +706,13 @@ def build_report(day: str, items: list[dict[str, Any]]) -> str:
         reasons = item.get("reasons") or []
         if reasons:
             lines.append("为什么值得：" + "；".join(str(reason) for reason in reasons))
+        ones = str(item.get("oneself") or "").strip()
+        if ones:
+            lines.append("它说：" + ones[:120])
         quote = str(item.get("subtitle") or item.get("desc") or "").strip()
         if quote:
-            lines.append("它说：" + (quote[:120] + ("…" if len(quote) > 120 else "")))
+            label = "字幕摘录" if ones else "它说"
+            lines.append(label + "：" + (quote[:120] + ("…" if len(quote) > 120 else "")))
         if item.get("storyboard"):
             lines.append("分镜：" + str(item["storyboard"]))
         lines.append("")
@@ -470,5 +724,7 @@ __all__ = [
     "load_settings", "save_settings",
     "fetch_region", "fetch_view", "fetch_subtitle", "pick_stream", "download",
     "normalize", "score_item", "pick", "format_duration", "format_count", "build_report",
+    "sign_wbi", "search_videos", "fetch_subtitle_lines", "ytdlp_path",
+    "download_with_ytdlp", "due_today",
 ]
 

@@ -463,6 +463,7 @@ DEBUG_HELP = "\n".join([
     "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
     "#邮件　她的邮箱：状态 / 看 [N] / 发 <正文> / 测试",
     "#分镜 [文件或链接]　把视频切成宫格图 + 时间码清单",
+    "#分镜放大 <格号>　把某一格再放大看（用上一次的分镜）",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -841,6 +842,10 @@ class AIMindPlugin(Star):
         self.bili_seen = bili_engine.SeenStore(
             Path(self.data_dir) / "bili_seen.json"
         )
+        #: 上一次分镜（#分镜放大 要用）
+        self._last_storyboard: dict[str, Any] = {}
+        #: 每天那轮报告发回哪儿（主人在私聊里说过话就记下来）
+        self._bili_target: str = ""
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -987,6 +992,7 @@ class AIMindPlugin(Star):
                 self._heartbeat(now)
                 self._style_maintenance()
                 self._debounce_gc()
+                await self._bili_daily_tick()
                 if self.engine.dirty:
                     await asyncio.to_thread(self.engine.flush, now)
                 await self.flush_memories()
@@ -1556,6 +1562,8 @@ class AIMindPlugin(Star):
                     logger.info(f"[ai_mind] {sender_id} 在拒绝名单里，这一轮什么都不做")
                 return
             self._last_sender[session_key] = sender_id
+            if sender_id == DEBUG_UID and "FriendMessage" in str(session_key):
+                self._bili_target = str(session_key)
             self._mark_llm(event)
 
             # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
@@ -4699,6 +4707,8 @@ class AIMindPlugin(Star):
                 return self._debug_imitate(text)
             if word.split()[0] in ("邮件", "mail", "邮箱"):
                 return await self._debug_mail(text)
+            if word.split()[0] in ("分镜放大", "zoom"):
+                return await self._debug_zoom(event, text)
             if word.split()[0] in ("分镜", "storyboard", "sb"):
                 return await self._debug_storyboard(event, text)
             if word.split()[0] in ("刷b站", "刷b", "bili"):
@@ -4779,6 +4789,83 @@ class AIMindPlugin(Star):
             row["subtitle_lang"] = lang
         return row
 
+    async def _bili_daily_tick(self) -> None:
+        """到点自己刷一轮（同一天只跑一次），报告发给主人私聊。"""
+        conf = self.bili_settings
+        if not conf.enabled or int(conf.daily_hour) < 0:
+            return
+        state = Path(self.data_dir) / "bili" / "last_run.json"
+        last_run = 0.0
+        try:
+            last_run = float(json.loads(state.read_text(encoding="utf-8")).get("at") or 0)
+        except (OSError, ValueError):
+            last_run = 0.0
+        if not bili_engine.due_today(conf.daily_hour, time.time(), last_run):
+            return
+        try:
+            result = await asyncio.to_thread(self._bili_scroll, 0)
+            result = await self._bili_comments(result)
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text(
+                json.dumps({"at": time.time(), "ok": bool(result.get("ok"))},
+                           ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - 定时任务出错不能拖垮维护循环
+            logger.warning(f"[ai_mind] 每天那轮刷B站失败：{exc}")
+            return
+        target = str(getattr(self, "_bili_target", "") or "")
+        if not result.get("ok") or not target or Comp is None:
+            return
+        try:
+            await self.context.send_message(target, [
+                Comp.Plain("今天替你刷的 B 站：\n\n" + str(result.get("report") or ""))
+            ])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 每日报告发送失败：{exc}")
+
+    async def _bili_comments(self, result: dict[str, Any], limit: int = 3) -> dict[str, Any]:
+        """让模型给挑出来的每条写一句「它说了什么」（失败就保留字幕摘录）。"""
+        if not result.get("ok") or not self.bili_settings.one_liner:
+            return result
+        provider = await self._resolve_provider(str(getattr(self, "_bili_target", "") or ""))
+        if provider is None:
+            return result
+        changed = False
+        for item in (result.get("items") or [])[: max(1, int(limit))]:
+            prompt = (
+                "用一句话说这条 B 站视频讲了什么，25 字以内，不要夸张、不要加引号、不要复述标题。\n"
+                "标题：" + str(item.get("title") or "") + "\n"
+                "简介：" + str(item.get("desc") or "")[:200] + "\n"
+                "字幕摘录：" + str(item.get("subtitle") or "")[:300]
+            ).strip()
+            try:
+                response = await asyncio.wait_for(
+                    provider.text_chat(
+                        prompt=prompt,
+                        system_prompt="你帮人快速判断一个视频值不值得看，只说一句实话。",
+                    ),
+                    timeout=20,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 写一句话失败：{exc}")
+                break
+            text = str(getattr(response, "completion_text", "") or "").strip()
+            if text:
+                item["oneself"] = text.splitlines()[0][:60]
+                changed = True
+        if changed:
+            result["report"] = bili_engine.build_report(
+                str(result.get("day") or time.strftime("%Y-%m-%d")), result.get("items") or []
+            )
+            try:
+                Path(str(result.get("report_path") or "")).write_text(
+                    result["report"], encoding="utf-8"
+                )
+            except (OSError, ValueError):
+                pass
+        return result
+
     def _bili_scroll(self, limit: int = 0) -> dict[str, Any]:
         """刷一轮：发现 → 看字 → 挑 → 值得的做分镜 → 日报。永不抛异常。"""
         conf = self.bili_settings
@@ -4787,15 +4874,29 @@ class AIMindPlugin(Star):
         want = max(1, min(20, int(limit or conf.candidates)))
         errors: list[str] = []
         candidates: list[dict[str, Any]] = []
-        per_region = max(2, min(8, (want + len(conf.rids) - 1) // max(1, len(conf.rids)) + 1))
-        for rid in conf.rids:
-            rows, err = bili_engine.fetch_region(rid, per_region)
-            if err:
-                errors.append("分区 %s：%s" % (rid, err))
-                continue
-            candidates.extend(rows)
-            if len(candidates) >= want * 3:
-                break
+        words = [word for word in str(conf.keywords or "").replace("，", " ")
+                 .replace(",", " ").split() if word]
+        if conf.use_search and words:
+            for word in words[:3]:
+                rows, err = bili_engine.search_videos(word, max(3, want))
+                if err:
+                    errors.append("搜索「%s」：%s" % (word, err))
+                    continue
+                candidates.extend(rows)
+                if len(candidates) >= want * 3:
+                    break
+            if not candidates:
+                errors.append("关键词没搜到，改逛分区最新")
+        if not candidates:
+            per_region = max(2, min(8, (want + len(conf.rids) - 1) // max(1, len(conf.rids)) + 1))
+            for rid in conf.rids:
+                rows, err = bili_engine.fetch_region(rid, per_region)
+                if err:
+                    errors.append("分区 %s：%s" % (rid, err))
+                    continue
+                candidates.extend(rows)
+                if len(candidates) >= want * 3:
+                    break
         # 同一条可能挂在好几个分区下：按 BV 号去重，否则会重复打分、重复下载
         unique: list[dict[str, Any]] = []
         seen_bv: set[str] = set()
@@ -4830,18 +4931,25 @@ class AIMindPlugin(Star):
                 break
             bvid = str(item.get("bvid") or "")
             cid = int(item.get("cid") or 0)
-            url, size, err = bili_engine.pick_stream(bvid, cid)
-            if err or not url:
-                errors.append("%s 取直链失败：%s" % (bvid, err or "空地址"))
-                continue
             local = workdir / (bvid + ".mp4")
-            ok, err = bili_engine.download(
-                url, local, conf.max_download_mb * 1024 * 1024
-            )
+            cap = conf.max_download_mb * 1024 * 1024
+            ok, err = False, ""
+            tool = bili_engine.ytdlp_path()
+            if tool:
+                ok, err = bili_engine.download_with_ytdlp(
+                    "https://www.bilibili.com/video/" + bvid, local, cap, tool
+                )
+            if not ok:
+                url, _size, stream_err = bili_engine.pick_stream(bvid, cid)
+                if url:
+                    ok, err = bili_engine.download(url, local, cap)
+                else:
+                    err = stream_err or err
             if not ok:
                 errors.append("%s 下载失败：%s" % (bvid, err))
                 continue
-            result = self._storyboard_build(str(local))
+            lines = bili_engine.fetch_subtitle_lines(bvid, cid)
+            result = self._storyboard_build(str(local), transcript=lines)
             if not result.get("ok"):
                 errors.append("%s 分镜失败：%s" % (bvid, result.get("error")))
                 continue
@@ -4882,6 +4990,7 @@ class AIMindPlugin(Star):
         if arg.isdigit():
             limit = int(arg)
         result = await asyncio.to_thread(self._bili_scroll, limit)
+        result = await self._bili_comments(result)
         if not result.get("ok"):
             return "刷B站失败：" + str(result.get("error") or "未知原因")
         for sheet in result.get("sheets") or []:
@@ -4910,7 +5019,8 @@ class AIMindPlugin(Star):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _storyboard_build(self, source: str) -> dict[str, Any]:
+    def _storyboard_build(self, source: str,
+                          transcript: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """拿路径或链接跑一次分镜。永不抛异常。"""
         conf = self.storyboard_settings
         if not conf.enabled:
@@ -4930,8 +5040,21 @@ class AIMindPlugin(Star):
         result = storyboard_engine.build(
             target, need=conf.need, workdir=workdir,
             ffmpeg_hint=conf.ffmpeg_path, ffprobe_hint=conf.ffprobe_path,
+            cache_dir=(Path(self.data_dir) / "storyboard" / "cache") if conf.cache else None,
+            annotate=conf.annotate, audio_bar=conf.audio_bar,
+            asr_command=("" if transcript is not None else conf.asr_command),
+            transcript=transcript, font_hint=conf.font_path,
         )
         result["workdir"] = str(workdir)
+        result["source"] = str(target)
+        if result.get("ok"):
+            # 记住这一次，#分镜放大 要回来取它
+            self._last_storyboard = {
+                "source": str(target),
+                "plan": result.get("plan") or {},
+                "workdir": str(workdir),
+                "at": time.time(),
+            }
         return result
 
     @staticmethod
@@ -4973,6 +5096,43 @@ class AIMindPlugin(Star):
                 logger.warning(f"[ai_mind] 发送分镜图失败：{exc}")
                 break
         return sent
+
+    async def _debug_zoom(self, event: AstrMessageEvent, text: str) -> str:
+        """把上一次分镜里的某一格再放大：在那几秒里多取几帧。"""
+        parts = text.lstrip("#").strip().split()
+        cell = 0
+        for part in parts[1:]:
+            if part.isdigit():
+                cell = int(part)
+                break
+        if cell <= 0:
+            return "用法：#分镜放大 <格号>（先 #分镜 跑一次）"
+        last = getattr(self, "_last_storyboard", None)
+        if not last:
+            return "还没有分镜可放大：先 #分镜 <文件或链接> 跑一次。"
+        conf = self.storyboard_settings
+        workdir = Path(str(last.get("workdir") or (Path(self.data_dir) / "storyboard"))) / "zoom"
+        result = await asyncio.to_thread(
+            storyboard_engine.zoom,
+            last.get("source", ""), last.get("plan") or {}, cell, 3, workdir,
+            None, conf.font_path,
+        )
+        if not result.get("ok"):
+            return "放大失败：" + str(result.get("error") or "未知原因")
+        image = Path(str(result.get("image") or ""))
+        if image.is_file() and Comp is not None:
+            try:
+                await self.context.send_message(event.unified_msg_origin, [
+                    Comp.Plain("第 %d 格放大（%d 帧）" % (int(result.get("cell") or 0),
+                                                        int(result.get("frames") or 0))),
+                    Comp.Image.fromFileSystem(str(image)),
+                ])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 发送放大图失败：{exc}")
+        lines = list(result.get("lines") or [])
+        if result.get("text"):
+            lines.append("这一格的台词：" + str(result["text"])[:200])
+        return "\n".join(lines) or "放大完成。"
 
     async def _debug_storyboard(self, event: AstrMessageEvent, text: str) -> str:
         conf = self.storyboard_settings
@@ -5871,6 +6031,7 @@ class AIMindPlugin(Star):
         except (TypeError, ValueError):
             limit = 0
         result = await self._mail_call(self._bili_scroll, limit)
+        result = await self._bili_comments(result)
         images: list[dict[str, Any]] = []
         for sheet in result.get("sheets") or []:
             for row in self._images_payload(sheet.get("images") or []):

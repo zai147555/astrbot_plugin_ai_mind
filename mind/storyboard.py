@@ -60,6 +60,15 @@ MIN_STEP = 0.5
 
 FFMPEG_TIMEOUT = 180
 
+#: 常见字体（烧编号和时间码要用；找不到就不烧，图照样出）
+FONT_CANDIDATES = (
+    "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simsun.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+)
+
 
 # ---------------------------------------------------------------------------
 # 纯算术：格数 / 尺寸 / 时间码
@@ -203,16 +212,331 @@ def build_manifest(result: dict[str, Any]) -> str:
                         format_tc(float(sheet.get("from") or 0)),
                         format_tc(float(sheet.get("to") or 0))))
         for cell in sheet.get("cells") or []:
-            lines.append("  第 %d 格 %s（%s–%s）"
-                         % (int(cell.get("i") or 0), format_tc(float(cell.get("t") or 0)),
-                            format_tc(float(cell.get("from") or 0)),
-                            format_tc(float(cell.get("to") or 0))))
+            line = ("  第 %d 格 %s（%s–%s）"
+                    % (int(cell.get("i") or 0), format_tc(float(cell.get("t") or 0)),
+                       format_tc(float(cell.get("from") or 0)),
+                       format_tc(float(cell.get("to") or 0))))
+            text = str(cell.get("text") or "").strip()
+            if text:
+                line += "｜他说：" + (text[:80] + ("…" if len(text) > 80 else ""))
+            lines.append(line)
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # 媒体层（ffmpeg / ffprobe）
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 烧字 / 音频包络 / 缓存 / 台词 / 放大
+# ---------------------------------------------------------------------------
+
+
+def find_font(hint: str = "") -> str:
+    """找一个能用的字体文件。找不到返回空串（那就不烧编号）。"""
+    candidates = []
+    if hint:
+        candidates.append(str(hint))
+    candidates.extend(FONT_CANDIDATES)
+    try:
+        import glob
+
+        candidates.extend(sorted(glob.glob("/usr/share/fonts/**/*.tt[fc]", recursive=True))[:5])
+    except Exception:  # noqa: BLE001
+        pass
+    for item in candidates:
+        try:
+            if item and Path(item).exists():
+                return item
+        except OSError:
+            continue
+    return ""
+
+
+def filter_escape_path(path: str) -> str:
+    """filtergraph 里的路径转义：Windows 盘符里的冒号要躲开。"""
+    text = str(path).replace(chr(92), "/")
+    return text.replace(":", chr(92) + ":")
+
+
+def filter_escape_text(text: str) -> str:
+    """drawtext 的文字转义：冒号、单引号、逗号、百分号都要躲开。"""
+    out = str(text)
+    for char in (chr(92), ":", "'", ",", "%"):
+        out = out.replace(char, chr(92) + char)
+    return out
+
+
+def label_filter(index: int, at: float, cell_w: int, cell_h: int, font: str = "") -> str:
+    """在格子左上角烧「序号 + 时间码」—— 这样模型说"第 5 格"就真的对得上。"""
+    size = max(12, int(cell_h * 0.16))
+    label = filter_escape_text("%d  %s" % (index, format_tc(at)))
+    parts = []
+    if font:
+        parts.append("fontfile=" + filter_escape_path(font))
+    parts.extend([
+        "text=" + label,
+        "x=6", "y=6",
+        "fontsize=%d" % size,
+        "fontcolor=white",
+        "box=1", "boxcolor=black@0.55", "boxborderw=4",
+    ])
+    return "drawtext=" + ":".join(parts)
+
+
+def audio_envelope(path: str | Path, out: str | Path, width: int, height: int = 48,
+                   tools: dict[str, Any] | None = None) -> bool:
+    """把整段音频压成一条波形带（与画面同时间轴）。"""
+    tools = tools or find_tools()
+    if not tools.get("ok"):
+        return False
+    code, _err = _run([
+        str(tools["ffmpeg"]), "-v", "error", "-y", "-i", str(path),
+        "-filter_complex",
+        "showwavespic=s=%dx%d:colors=white|white:split_channels=0" % (max(64, int(width)),
+                                                                     max(16, int(height))),
+        "-frames:v", "1", str(out),
+    ])
+    return code == 0 and Path(out).exists()
+
+
+def compose_vertical(top: str | Path, bottom: str | Path, out: str | Path,
+                     tools: dict[str, Any] | None = None) -> bool:
+    """把宫格图和波形带竖着拼起来。"""
+    tools = tools or find_tools()
+    if not tools.get("ok"):
+        return False
+    code, _err = _run([
+        str(tools["ffmpeg"]), "-v", "error", "-y",
+        "-i", str(top), "-i", str(bottom),
+        "-filter_complex", "vstack=inputs=2",
+        "-frames:v", "1", str(out),
+    ])
+    return code == 0 and Path(out).exists()
+
+
+def cache_key(path: str | Path, need: str, budget: int) -> str:
+    """同一文件 + 同一档位 = 同一个缓存键（原项目：第二次调用 3.6 秒）。"""
+    import hashlib
+
+    try:
+        stat = Path(path).stat()
+        stamp = "%s|%s|%s" % (Path(path).resolve(), int(stat.st_size), int(stat.st_mtime))
+    except OSError:
+        stamp = str(path)
+    raw = "%s|%s|%s" % (stamp, need, int(budget))
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def load_cache(cache_dir: str | Path, key: str) -> dict[str, Any] | None:
+    """命中缓存就整份返回（图还在才算命中）。"""
+    if not cache_dir:
+        return None
+    index = Path(cache_dir) / (key + ".json")
+    try:
+        payload = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for sheet in payload.get("sheets") or []:
+        if not Path(str(sheet.get("image") or "")).is_file():
+            return None
+    payload["cached"] = True
+    return payload
+
+
+def save_cache(cache_dir: str | Path, key: str, result: dict[str, Any]) -> bool:
+    if not cache_dir:
+        return False
+    try:
+        target = Path(cache_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        payload = {key_: value for key_, value in result.items() if key_ != "manifest"}
+        (target / (key + ".json")).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def parse_srt(content: str) -> list[dict[str, Any]]:
+    """解析 srt（给外部 ASR 用）。失败就返回空列表。"""
+    lines: list[dict[str, Any]] = []
+    current: list[str] = []
+    start = end = 0.0
+    timed = False
+
+    def stamp(text: str) -> float:
+        piece = text.strip().replace(",", ".")
+        try:
+            hh, mm, ss = piece.split(":")
+            return int(hh) * 3600 + int(mm) * 60 + float(ss)
+        except (ValueError, TypeError):
+            return 0.0
+
+    for raw in str(content or "").replace("\r", "").split("\n"):
+        row = raw.strip()
+        if "-->" in row:
+            left, right = row.split("-->", 1)
+            start = stamp(left)
+            end = stamp(right.split()[0] if right.split() else "0")
+            current = []
+            timed = True
+            continue
+        if not row:
+            if current and timed:
+                lines.append({"from": start, "to": end, "text": " ".join(current)})
+            current = []
+            continue
+        if row.isdigit() and not current:
+            continue
+        current.append(row)
+    if current and timed:
+        lines.append({"from": start, "to": end, "text": " ".join(current)})
+    return lines
+
+
+def transcribe(path: str | Path, command: str,
+               workdir: str | Path | None = None,
+               timeout: int = 1800) -> list[dict[str, Any]]:
+    """跑用户自己装的转写器（Whisper 之类），把 srt 变成台词行。
+
+    命令里用 {input} 和 {output} 两个占位符，例如：
+        whisper "{input}" --model small --output_format srt --output_dir "{output}"
+    或者：
+        faster-whisper "{input}" --output-srt --output "{output}"
+    我们不打包模型（那是 GB 级依赖），只负责把结果挂到分格上。
+    """
+    template = str(command or "").strip()
+    if not template:
+        return []
+    root = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="asr_"))
+    root.mkdir(parents=True, exist_ok=True)
+    out = root / "subtitle"
+    cmd = (template.replace("{input}", str(path))
+                   .replace("{output}", str(out)))
+    code, err = _run_command(cmd, timeout)
+    if code != 0:
+        return []
+    # 转写器可能把文件叫 subtitle.srt，也可能放在目录里
+    candidates = [out, out.with_suffix(".srt")]
+    candidates.extend(sorted(root.glob("*.srt")))
+    for item in candidates:
+        try:
+            if item.is_file():
+                return parse_srt(item.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return []
+
+
+def _run_command(command: str, timeout: int) -> tuple[int, str]:
+    """跑一条带空格的命令行（转写器的参数经常带引号，所以走 shell）。"""
+    try:
+        done = subprocess.run(
+            command, shell=True, capture_output=True, timeout=timeout,
+            check=False, errors="replace",
+        )
+        return int(done.returncode or 0), (done.stderr or b"").decode("utf-8", "replace")[-400:]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+
+
+def attach_transcript(plan_result: dict[str, Any],
+                      lines: Iterable[dict[str, Any]]) -> int:
+    """把台词按时间码挂到每一格上（就地改 plan_result），返回挂上的格数。"""
+    rows = [row for row in lines if str(row.get("text") or "").strip()]
+    if not rows:
+        return 0
+    attached = 0
+    for sheet in plan_result.get("sheets") or []:
+        for cell in sheet.get("cells") or []:
+            start = float(cell.get("from") or 0)
+            end = float(cell.get("to") or 0)
+            hit = [
+                str(row.get("text")).strip()
+                for row in rows
+                if float(row.get("to") or 0) > start and float(row.get("from") or 0) < end
+            ]
+            text = " ".join(dict.fromkeys(hit))
+            if text:
+                cell["text"] = text[:400]
+                attached += 1
+    return attached
+
+
+def zoom(path: str | Path, plan_result: dict[str, Any], cell_index: int,
+         frames: int = 3, workdir: str | Path | None = None,
+         tools: dict[str, Any] | None = None, font: str = "") -> dict[str, Any]:
+    """把某一格再放大：在它那段时间里多取几帧，按 text 档位拼一张。"""
+    tools = tools or find_tools()
+    if not tools.get("ok"):
+        return {"ok": False, "error": "没找到 ffmpeg"}
+    cell = None
+    for sheet in plan_result.get("sheets") or []:
+        for item in sheet.get("cells") or []:
+            if int(item.get("i") or 0) == int(cell_index):
+                cell = item
+                break
+    if cell is None:
+        return {"ok": False, "error": "没有第 %d 格" % int(cell_index)}
+    start = float(cell.get("from") or 0)
+    end = max(start + MIN_STEP, float(cell.get("to") or 0))
+    count = max(1, min(6, int(frames)))
+    step = (end - start) / count
+    per_sheet = max_cells_for_need("text")
+    width, height = cell_pixels(per_sheet)
+    root = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="zoom_"))
+    root.mkdir(parents=True, exist_ok=True)
+    made: list[str] = []
+    for index in range(count):
+        at = start + (index + 0.5) * step
+        out = root / ("z%02d.png" % index)
+        if extract_frame(path, at, out, width, height, tools, font=font,
+                         label="%d-%d  %s" % (cell_index, index + 1, format_tc(at))):
+            made.append(str(out))
+    if not made:
+        return {"ok": False, "error": "这一格取不到帧"}
+    image = root / ("zoom%d.png" % int(cell_index))
+    if not tile(made, len(made), 1, image, width, height, tools):
+        return {"ok": False, "error": "拼图失败"}
+    return {
+        "ok": True,
+        "cell": int(cell_index),
+        "from": start,
+        "to": end,
+        "image": str(image),
+        "frames": len(made),
+        "text": str(cell.get("text") or ""),
+        "lines": ["第 %d 格放大：%s–%s（%d 帧）"
+                  % (int(cell_index), format_tc(start), format_tc(end), len(made))],
+    }
+
+
+def build_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    """机器可读的证据清单（复核「第 5 格真的是 3:29 吗」用）。"""
+    cells: list[dict[str, Any]] = []
+    for sheet in result.get("sheets") or []:
+        for cell in sheet.get("cells") or []:
+            cells.append({
+                "cell": int(cell.get("i") or 0),
+                "sheet": int(sheet.get("i") or 0),
+                "from": float(cell.get("from") or 0),
+                "to": float(cell.get("to") or 0),
+                "frame_at": float(cell.get("t") or 0),
+                "chars": len(str(cell.get("text") or "")),
+                "text": str(cell.get("text") or ""),
+            })
+    info = result.get("info") or {}
+    return {
+        "version": 1,
+        "input": info.get("path"),
+        "duration": info.get("duration"),
+        "size": "%sx%s" % (info.get("width"), info.get("height")),
+        "cells_total": len(cells),
+        "cells": cells,
+    }
 
 
 def find_tools(ffmpeg_hint: str = "", ffprobe_hint: str = "") -> dict[str, Any]:
@@ -310,8 +634,9 @@ def probe_video(path: str | Path, tools: dict[str, Any] | None = None) -> dict[s
 
 
 def extract_frame(path: str | Path, at: float, out: str | Path,
-                  width: int, height: int, tools: dict[str, Any] | None = None) -> bool:
-    """取某一秒的一帧，缩放到格子里（保持比例，补黑边）。"""
+                  width: int, height: int, tools: dict[str, Any] | None = None,
+                  font: str = "", label: str = "") -> bool:
+    """取某一秒的一帧，缩放到格子里（保持比例，补黑边），可顺便烧上编号。"""
     tools = tools or find_tools()
     if not tools.get("ok"):
         return False
@@ -320,13 +645,25 @@ def extract_frame(path: str | Path, at: float, out: str | Path,
         "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
         % (width, height, width, height)
     )
-    code, _err = _run([
+    base = [
         str(tools["ffmpeg"]), "-v", "error", "-y",
         "-ss", "%.3f" % max(0.0, float(at)),
         "-i", str(path),
-        "-frames:v", "1", "-vf", scale, str(out),
-    ])
-    return code == 0 and Path(out).exists()
+        "-frames:v", "1",
+    ]
+    attempts: list[str] = []
+    if font and label:
+        attempts.append(scale + "," + label_filter(0, 0, width, height, font).replace(
+            "text=" + filter_escape_text("0  " + format_tc(0)),
+            "text=" + filter_escape_text(label),
+            1,
+        ))
+    attempts.append(scale)
+    for vf in attempts:
+        code, _err = _run(base + ["-vf", vf, str(out)])
+        if code == 0 and Path(out).exists():
+            return True
+    return False
 
 
 def tile(frames: Iterable[str | Path], columns: int, rows: int, out: str | Path,
@@ -358,10 +695,13 @@ def tile(frames: Iterable[str | Path], columns: int, rows: int, out: str | Path,
 
 def build(path: str | Path, need: str = DEFAULT_NEED, workdir: str | Path | None = None,
           ffmpeg_hint: str = "", ffprobe_hint: str = "",
-          budget: int = PIXEL_BUDGET) -> dict[str, Any]:
-    """完整跑一次：读元信息 → 规划 → 取帧 → 拼图。
+          budget: int = PIXEL_BUDGET, cache_dir: str | Path | None = None,
+          annotate: bool = True, audio_bar: bool = True,
+          transcript: Iterable[dict[str, Any]] | None = None,
+          font_hint: str = "", asr_command: str = "") -> dict[str, Any]:
+    """完整跑一次：读元信息 → 规划 → 取帧（烧编号）→ 拼图 → 波形带 → 台词 → 证据。
 
-    返回 dict：ok / error / hint / info / plan / sheets / manifest / summary。
+    返回 dict：ok / error / hint / info / plan / sheets / manifest / summary / cached。
     永远不抛异常（出错就是 ok=False + 一句人话）。
     """
     target = Path(str(path))
@@ -370,35 +710,52 @@ def build(path: str | Path, need: str = DEFAULT_NEED, workdir: str | Path | None
     tools = find_tools(ffmpeg_hint, ffprobe_hint)
     if not tools.get("ok"):
         return {"ok": False, "error": "没找到 ffmpeg/ffprobe", "hint": tools.get("hint", "")}
+
+    key = cache_key(target, need, budget)
+    if cache_dir:
+        cached = load_cache(cache_dir, key)
+        if cached:
+            cached["ok"] = True
+            cached["manifest"] = build_manifest(cached)
+            if transcript:
+                attach_transcript(cached, transcript)
+                cached["manifest"] = build_manifest(cached)
+            return cached
+
     try:
         info = probe_video(target, tools)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "hint": ""}
 
     plan_result = plan(info["duration"], need, DEFAULT_ASPECT, budget)
+    if transcript is None and asr_command:
+        transcript = transcribe(
+            target, asr_command, str(workdir) if workdir else None
+        )
+    if transcript:
+        plan_result["transcript_cells"] = attach_transcript(plan_result, transcript)
     cell_w, cell_h = plan_result["cell_size"]
     root = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="storyboard_"))
     root.mkdir(parents=True, exist_ok=True)
+    font = find_font(font_hint) if annotate else ""
 
     sheets: list[dict[str, Any]] = []
     for sheet in plan_result["sheets"]:
         cells_dir = root / ("sheet%d" % int(sheet["i"]))
         cells_dir.mkdir(parents=True, exist_ok=True)
-        made: list[str] = []
+        usable: list[str] = []
         for cell in sheet["cells"]:
             frame = cells_dir / ("f%03d.png" % int(cell["i"]))
-            if extract_frame(target, cell["t"], frame, cell_w, cell_h, tools):
-                made.append(str(frame))
-            else:
-                made.append("")            # 取不到就留空位，拼图时跳过
-        usable = [item for item in made if item]
+            label = "%d  %s" % (int(cell["i"]), format_tc(float(cell["t"])))
+            if extract_frame(target, cell["t"], frame, cell_w, cell_h, tools,
+                             font=font, label=label):
+                usable.append(str(frame))
         if not usable:
             return {"ok": False, "error": "一帧都没取到（时间码落在片尾之后？）", "hint": ""}
-        image = root / ("sheet%d.png" % int(sheet["i"]))
         columns = int(plan_result["columns"])
         rows = int(math.ceil(len(usable) / columns))
-        # 最后一排不够就补黑，避免 hstack 数量对不上
-        while len(usable) < columns * rows and usable:
+        # 最后一排不够就补黑，避免 xstack 数量对不上
+        while len(usable) < columns * rows:
             blank = cells_dir / ("blank%03d.png" % len(usable))
             blank_cmd = [
                 str(tools["ffmpeg"]), "-v", "error", "-y",
@@ -409,9 +766,17 @@ def build(path: str | Path, need: str = DEFAULT_NEED, workdir: str | Path | None
                 usable.append(str(blank))
             else:
                 break
+        grid = root / ("sheet%d-grid.png" % int(sheet["i"]))
         rows = int(math.ceil(len(usable) / columns))
-        if not tile(usable, columns, rows, image, cell_w, cell_h, tools):
-            return {"ok": False, "error": "拼图失败（ffmpeg tile 出错）", "hint": ""}
+        if not tile(usable, columns, rows, grid, cell_w, cell_h, tools):
+            return {"ok": False, "error": "拼图失败（ffmpeg xstack 出错）", "hint": ""}
+        image = grid
+        if audio_bar:
+            strip = root / ("sheet%d-wave.png" % int(sheet["i"]))
+            if audio_envelope(target, strip, columns * cell_w, 48, tools):
+                merged = root / ("sheet%d.png" % int(sheet["i"]))
+                if compose_vertical(grid, strip, merged, tools):
+                    image = merged
         sheets.append({
             "i": int(sheet["i"]),
             "from": float(sheet["from"]),
@@ -428,8 +793,19 @@ def build(path: str | Path, need: str = DEFAULT_NEED, workdir: str | Path | None
         "summary": summarize(plan_result, info["duration"]),
         "error": "",
         "hint": "",
+        "annotated": bool(font),
+        "cache_key": key,
+        "cached": False,
     }
     result["manifest"] = build_manifest(result)
+    result["evidence"] = build_evidence(result)
+    try:
+        (root / "evidence.json").write_text(
+            json.dumps(result["evidence"], ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError:
+        pass
+    save_cache(cache_dir, key, result) if cache_dir else None
     return result
 
 
@@ -470,7 +846,16 @@ class StoryboardSettings:
     need: str = DEFAULT_NEED
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
+    font_path: str = ""
     max_download_mb: int = 200
+    #: 把编号+时间码烧进格子（原项目靠这个让模型"引用第 5 格"）
+    annotate: bool = True
+    #: 宫格图下面贴一条音频波形（与画面同时间轴）
+    audio_bar: bool = True
+    #: 同一文件第二次直接命中缓存
+    cache: bool = True
+    #: 外挂转写命令：{input} {output} 两个占位符，输出 srt
+    asr_command: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -478,7 +863,12 @@ class StoryboardSettings:
             "need": self.need if self.need in NEED_TIERS else DEFAULT_NEED,
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
+            "font_path": self.font_path,
             "max_download_mb": int(self.max_download_mb),
+            "annotate": bool(self.annotate),
+            "audio_bar": bool(self.audio_bar),
+            "cache": bool(self.cache),
+            "asr_command": self.asr_command,
         }
 
     @staticmethod
@@ -494,7 +884,12 @@ class StoryboardSettings:
             need=need if need in NEED_TIERS else DEFAULT_NEED,
             ffmpeg_path=str(raw.get("ffmpeg_path") or "").strip(),
             ffprobe_path=str(raw.get("ffprobe_path") or "").strip(),
+            font_path=str(raw.get("font_path") or "").strip(),
             max_download_mb=max(1, min(2048, cap)),
+            annotate=bool(raw.get("annotate", True)),
+            audio_bar=bool(raw.get("audio_bar", True)),
+            cache=bool(raw.get("cache", True)),
+            asr_command=str(raw.get("asr_command") or "").strip(),
         )
 
 
@@ -568,5 +963,9 @@ __all__ = [
     "format_tc", "plan", "summarize", "build_manifest",
     "find_tools", "probe_video", "extract_frame", "tile", "build", "selfcheck",
     "StoryboardSettings", "load_settings", "save_settings", "is_url", "download",
+    "find_font", "filter_escape_path", "filter_escape_text", "label_filter",
+    "audio_envelope", "compose_vertical", "cache_key", "load_cache", "save_cache",
+    "parse_srt", "attach_transcript", "zoom", "build_evidence",
+    "transcribe",
 ]
 
