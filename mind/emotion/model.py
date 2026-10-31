@@ -253,6 +253,18 @@ PROTOTYPES: tuple[Prototype, ...] = (
     Prototype("sleepy", "困倦", "😪", (0.05, -0.70, -0.25), "句子变短，开始敷衍", ("困", "睡了", "明天"), family="sadness"),
     Prototype("guilty", "心虚", "😳", (-0.20, 0.45, -0.40), "绕开话题，答非所问", ("没", "不是", "谁说的"), family="fear"),
     Prototype("down", "失落", "😞", (-0.60, -0.30, -0.45), "回得少，不再追问", ("哦", "知道了", "没事"), family="sadness"),
+    Prototype("guilty", "愧疚", "😖", (-0.50, 0.20, -0.60), "声音变小，主动认错", ("对不起", "我错了", "别生气"), family="sadness"),
+    Prototype("relieved", "释然", "😌", (0.45, -0.20, 0.35), "松一口气，语气软下来", ("那就好", "吓死我", "还行"), family="joy"),
+    Prototype("wary", "警惕", "👀", (-0.15, 0.70, 0.10), "试探着问，话说一半", ("真的吗", "你先说", "谁告诉你的"), family="fear"),
+    Prototype("admiring", "敬佩", "👏", (0.55, 0.30, -0.20), "少见地夸一句，嘴硬着夸", ("还行吧", "挺厉害的", "哼"), family="trust"),
+    Prototype("sick_of", "腻烦", "🙄", (-0.40, -0.25, 0.10), "敷衍，一个字一个字往外蹦", ("哦", "行了", "知道了"), family="disgust"),
+    Prototype("elated", "雀跃", "🤗", (0.80, 0.75, 0.30), "话变多，会连着发好几条", ("真的吗", "太好了", "快快快"), family="joy"),
+    Prototype("bitter", "心酸", "😢", (-0.55, 0.10, -0.50), "话说一半停住，装作没事", ("没事", "算了", "本来就这样"), family="sadness"),
+    Prototype("at_ease", "自在", "🍃", (0.50, -0.35, 0.25), "话多、随便聊、不设防", ("哈哈", "跟你讲", "然后呢"), family="joy"),
+    Prototype("vexed", "懊恼", "😩", (-0.45, 0.45, -0.35), "后悔又想发火，气自己", ("我怎么就", "早知道", "烦"), family="anger"),
+    Prototype("dazed", "恍惚", "💫", (-0.10, -0.45, -0.30), "答非所问，反应慢半拍", ("啊", "你说什么", "哦"), family="surprise"),
+    Prototype("assured", "笃定", "💪", (0.40, 0.10, 0.65), "语气很稳，不退让", ("我说了", "肯定", "就这么办"), family="trust"),
+    Prototype("dread", "发怵", "😨", (-0.40, 0.60, -0.70), "真的怕了，会想躲", ("别", "我不敢", "快走"), family="fear"),
 )
 
 PROTOTYPE_BY_KEY: dict[str, Prototype] = {p.key: p for p in PROTOTYPES}

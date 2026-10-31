@@ -255,6 +255,39 @@ def recency_score(age_days: float, half_life_days: float) -> float:
     return 0.5 ** (max(0.0, age_days) / half_life_days)
 
 
+def activation(
+    memory: Memory,
+    *,
+    now: float | None = None,
+    half_life_days: float = 30.0,
+    spacing_gain: float = 0.6,
+    max_hits: int = 8,
+) -> float:
+    """唤醒强度（0~1）：这条记忆现在「有多容易想起来」。
+
+    这是仿人脑的那一环，两个机制：
+
+    1. **遗忘曲线**：从"上次想起"算起，而不是从创建时间算。
+       一条旧事如果昨天刚被提起过，它其实还很「热」；
+       而 recency_score 只看创建/更新时间，会把刚想起来的旧事又压回去。
+    2. **间隔效应**：每次回想都让这条更牢固 —— 命中次数越多，半衰期越长。
+       这正是人脑的样子：反复被想起的事，忘得慢。
+
+    没被想起过的记忆（hit_count=0、last_hit=0）行为与以前完全一致，
+    所以老数据不会因为这条改动而突然掉分。
+    """
+    now = now_ts() if now is None else now
+    hits = max(0, int(memory.hit_count or 0))
+    base_time = float(memory.last_hit or memory.created_at or memory.updated_at or now)
+    # 间隔效应：想过几次，半衰期就长几成（封顶，别让它永不遗忘）
+    effective = max(0.5, float(half_life_days)) * (1.0 + min(hits, max_hits) * spacing_gain)
+    age_days = max(0.0, (now - base_time) / 86400.0)
+    decay = 0.5 ** (age_days / effective)
+    # 同样新旧，常想起来的那条更强一点点
+    boost = 1.0 + min(hits, max_hits) * 0.05
+    return max(0.0, min(1.0, decay * boost))
+
+
 def keyword_hit_score(memory: Memory, query_text: str) -> float:
     """关键词命中度。
 
@@ -312,7 +345,9 @@ def score_memory(
     keyword = keyword_hit_score(memory, query_text)
     # 词法与关键词取较强者：关键词是"换个说法也能想起来"的兜底
     relevance = max(lexical, keyword)
-    recency = recency_score(memory.age_days(now), recency_half_life_days)
+    # 用「唤醒强度」替代单纯的「新鲜度」：从上次想起算遗忘曲线，
+    # 并叠加间隔效应（想过越多次越牢固）。没被想起过的记忆行为不变。
+    recency = activation(memory, now=now, half_life_days=recency_half_life_days)
     importance = max(0.0, min(1.0, memory.importance))
 
     semantic = 0.0
@@ -332,6 +367,8 @@ def score_memory(
         "relevance": relevance,
         "semantic": semantic,
         "recency": recency,
+        "activation": recency,
+        "hits": float(memory.hit_count or 0),
         "importance": importance,
     }
     return total, detail
