@@ -377,6 +377,8 @@
     <button id="tab-graph" data-adv="1">记忆图谱</button>
     <button id="tab-images" data-adv="1">关键词配图</button>
     <button id="tab-persona">人格定制</button>
+    <button id="tab-imitate">模仿</button>
+    <button id="tab-mail">邮箱</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -439,6 +441,14 @@
 
   <!-- ================= 情绪 ================= -->
   <div id="view-emotion">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>今天</h3>
+        <span class="small muted" id="daily-note"></span>
+      </div>
+      <div class="small" style="margin-top:8px" id="daily-body"></div>
+      <div class="small muted" style="margin-top:8px" id="daily-spans"></div>
+    </div>
     <!-- 数据库坏了要说大声一点：这不是「曲线不好看」，是记忆/曲线/词表/配图全废 -->
     <div class="card" id="db-alert" style="display:none;border-color:#e5484d;background:rgba(229,72,77,.10)"></div>
     <div class="grid2">
@@ -1260,6 +1270,92 @@
 
 
   <!-- ================= 理论 ================= -->
+  <div id="view-imitate" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>模仿指定 QQ 的说话习惯</h3>
+        <span class="small muted">学他的节奏和用词，不照抄内容</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        默认关。只记名单里这几个 QQ 说过的话；凑够门槛，才会在她的提示词里加一段「借他的说话习惯」。
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="im-enabled"> 开启采集</label>
+        <label class="small"><input type="checkbox" id="im-inject"> 注入参考</label>
+        <label class="small muted">门槛 <input id="im-min" type="number" min="3" max="500" style="width:70px"> 条</label>
+      </div>
+      <div style="margin-top:12px">
+        <div class="small muted">要学谁（QQ 号，空格或逗号隔开）</div>
+        <input id="im-targets" style="width:100%;margin-top:6px" placeholder="2020689845">
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="im-save">保存</button>
+        <button class="ghost small" id="im-reload">刷新</button>
+        <button class="ghost small" id="im-clear">清空全部样本</button>
+        <span class="grow"></span>
+        <span class="small muted" id="im-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>学到的样子</h3>
+        <span class="small muted" id="im-total"></span>
+      </div>
+      <div class="small muted">样本越多越准 —— 下面是按每个人说过的话算出来的话风。</div>
+      <div id="im-list" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="view-mail" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>她的邮箱</h3>
+        <span class="small muted">授权码只存在本机，面板上不显示</span>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="ml-enabled"> 启用</label>
+        <label class="small muted">地址 <input id="ml-address" placeholder="你的地址@qq.com" style="width:190px"></label>
+        <label class="small muted">收件人 <input id="ml-owner" placeholder="留空就发给自己" style="width:190px"></label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small muted">授权码 <input id="ml-password" type="password" placeholder="留空 = 不改" style="width:190px"></label>
+        <label class="small muted">SMTP <input id="ml-smtp" placeholder="留空自动猜" style="width:150px"></label>
+        <label class="small muted">IMAP <input id="ml-imap" placeholder="留空自动猜" style="width:150px"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="ml-save">保存</button>
+        <button class="ghost small" id="ml-test">发测试邮件</button>
+        <button class="ghost small" id="ml-reload">刷新状态</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ml-status"></span>
+      </div>
+      <div class="small muted" style="margin-top:8px" id="ml-hint"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">收件箱</h3>
+        <input id="ml-limit" type="number" value="5" min="1" max="20" style="width:70px">
+        <button class="ghost small" id="ml-inbox">读最近几封</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ml-inbox-status"></span>
+      </div>
+      <div id="ml-inbox-list" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">用她的邮箱发一封</h3>
+      <input id="ml-subject" placeholder="主题（留空取正文第一行）" style="width:100%">
+      <textarea id="ml-body" placeholder="正文" style="width:100%;min-height:90px;margin-top:8px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="ml-send">发送</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ml-send-status"></span>
+      </div>
+    </div>
+  </div>
+
   <div id="view-theory" style="display:none">
     <div class="card">
       <div class="row" style="justify-content:space-between">
@@ -2059,7 +2155,10 @@
     };
     $("refresh").onclick = function () { refreshAll(); };
 
-    $("tab-emotion").onclick = function () { setView("emotion"); };
+    $("tab-emotion").onclick = function () {
+      setView("emotion");
+      loadDaily().catch(function () {});
+    };
     $("tab-memory").onclick = function () {
       setView("memory");
       state.memOffset = 0;
@@ -2581,6 +2680,78 @@
       var tab = $("tab-" + key);
       if (tab && tab.onclick) tab.onclick();
     });
+    $("tab-imitate").onclick = function () {
+      setView("imitate");
+      loadImitate().catch(function (e) { toast("加载模仿设置失败：" + e.message); });
+    };
+    $("tab-mail").onclick = function () {
+      setView("mail");
+      loadMail().catch(function (e) { toast("加载邮箱失败：" + e.message); });
+    };
+    $("im-save").onclick = function () {
+      request("imitate/save", "POST", {
+        enabled: $("im-enabled").checked,
+        inject: $("im-inject").checked,
+        min_samples: Number($("im-min").value) || 20,
+        targets: $("im-targets").value
+      }).then(function (data) { renderImitate(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("im-reload").onclick = function () {
+      loadImitate().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("im-clear").onclick = function () {
+      request("imitate/clear", "POST", {}).then(renderImitate)
+        .then(function () { toast("已清空全部样本"); })
+        .catch(function (e) { toast("清空失败：" + e.message); });
+    };
+    $("ml-save").onclick = function () {
+      request("mail/save", "POST", {
+        enabled: $("ml-enabled").checked,
+        address: $("ml-address").value,
+        owner: $("ml-owner").value,
+        password: $("ml-password").value,
+        smtp_host: $("ml-smtp").value,
+        imap_host: $("ml-imap").value
+      }).then(function (data) {
+        $("ml-password").value = "";
+        renderMail(data);
+        toast("已保存");
+      }).catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("ml-reload").onclick = function () {
+      loadMail().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("ml-test").onclick = function () {
+      $("ml-send-status").textContent = "正在发…";
+      request("mail/test", "POST", {}).then(function (data) {
+        $("ml-send-status").textContent = (data.ok ? "✅ " : "❌ ") + data.message;
+      }).catch(function (e) {
+        $("ml-send-status").textContent = "失败：" + e.message;
+      });
+    };
+    $("ml-inbox").onclick = function () {
+      $("ml-inbox-status").textContent = "正在读…";
+      request("mail/inbox", "POST", { limit: Number($("ml-limit").value) || 5 })
+        .then(renderInbox)
+        .catch(function (e) {
+          $("ml-inbox-status").textContent = "读取失败：" + e.message;
+        });
+    };
+    $("ml-send").onclick = function () {
+      $("ml-send-status").textContent = "正在发…";
+      request("mail/send", "POST", {
+        subject: $("ml-subject").value,
+        body: $("ml-body").value
+      }).then(function (data) {
+        $("ml-send-status").textContent = (data.ok ? "✅ " : "❌ ") + data.message;
+        if (data.ok) { $("ml-body").value = ""; $("ml-subject").value = ""; }
+      }).catch(function (e) {
+        $("ml-send-status").textContent = "失败：" + e.message;
+      });
+    };
     $("tab-style").onclick = function () {
       setView("style");
       loadStyle().catch(function (e) { toast("加载表达示例失败：" + e.message); });
@@ -5058,6 +5229,121 @@
       });
   }
 
+  // ---- 今天 / 模仿 / 邮箱 -------------------------------------------------
+  function renderDaily(data) {
+    data = data || {};
+    var day = data.day || {};
+    var slot = data.slot || {};
+    $("daily-note").textContent = day.note || "";
+    var busy = slot.state === "sleeping" ? "她这个点本该睡着"
+      : (slot.state === "busy" ? "她在忙" : "她有闲");
+    $("daily-body").textContent = (slot.date ? slot.date + " · " : "") +
+      (slot.now ? slot.now + " " : "") + "她在：" + (slot.activity || "？") +
+      "（" + busy + "）";
+    var spans = (data.spans || []).map(function (span) {
+      return "<span class='small muted' style='display:inline-block;margin:2px 10px 2px 0'>" +
+        esc(span.name) + " " + span.start.slice(5) + "~" + span.end.slice(5) +
+        " · " + span.days + " 天</span>";
+    }).join("");
+    $("daily-spans").innerHTML = spans ? "今年的假期：" + spans : "";
+  }
+
+  function loadDaily() {
+    return request("daily", "GET").then(renderDaily);
+  }
+
+  function renderImitate(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    $("im-enabled").checked = !!settings.enabled;
+    $("im-inject").checked = !!settings.inject;
+    $("im-min").value = settings.min_samples || 20;
+    $("im-targets").value = (settings.targets || []).join(" ");
+    var stats = data.stats || {};
+    $("im-status").textContent = (settings.enabled ? "采集开着" : "采集关着") +
+      "｜" + (settings.inject ? "会注入" : "不注入") +
+      "｜共 " + (stats.samples || 0) + " 条样本";
+    var rows = data.profiles || [];
+    if (!rows.length) {
+      $("im-total").textContent = "";
+      $("im-list").innerHTML =
+        "<div class='small muted'>还没有样本。填上 QQ、打开采集，让他说几句话就行。</div>";
+      return;
+    }
+    $("im-total").textContent = rows.length + " 个人";
+    $("im-list").innerHTML = rows.map(function (row) {
+      var lines = (row.lines || []).map(function (line) {
+        return "<div class='small muted' style='margin-left:12px'>· " + esc(line) + "</div>";
+      }).join("");
+      return "<div style='margin-bottom:14px'>" +
+        "<div class='row'><b>" + esc(row.uid) + "</b>" +
+        "<span class='small muted'>" + (row.samples || 0) + " 条" +
+        (row.target ? "｜在名单里" : "｜不在名单里") + "</span>" +
+        "<span class='grow'></span>" +
+        "<button class='ghost small' data-im-clear='" + esc(row.uid) + "'>清空他这个</button></div>" +
+        (lines || "<div class='small muted' style='margin-left:12px'>样本还不够，算不出话风</div>") +
+        "</div>";
+    }).join("");
+    Array.prototype.forEach.call($("im-list").querySelectorAll("[data-im-clear]"), function (btn) {
+      btn.onclick = function () {
+        request("imitate/clear", "POST", { uid: btn.getAttribute("data-im-clear") })
+          .then(function (data) { renderImitate(data); toast("已清空"); })
+          .catch(function (e) { toast("清空失败：" + e.message); });
+      };
+    });
+  }
+
+  function loadImitate() {
+    return request("imitate", "GET").then(renderImitate);
+  }
+
+  function renderMail(data) {
+    data = data || {};
+    $("ml-enabled").checked = !!data.enabled;
+    $("ml-address").value = data.address || "";
+    $("ml-owner").value = data.owner || "";
+    $("ml-smtp").value = data.smtp || "";
+    $("ml-imap").value = data.imap || "";
+    var ready = data.send_ready && data.read_ready;
+    $("ml-status").textContent = !data.enabled ? "没启用"
+      : (data.address ? data.address : "缺地址")
+        + (data.has_password ? "" : "｜缺授权码")
+        + (ready ? "｜收发都通" : "｜还没配全");
+    $("ml-hint").textContent = data.address
+      ? "授权码不在这里显示；要改就填新的，留空表示不动。"
+      : "QQ 邮箱：网页版 → 设置 → 账号 → 开启 IMAP/SMTP → 生成授权码，把那串填到「授权码」。";
+  }
+
+  function loadMail() {
+    return request("mail", "GET").then(renderMail);
+  }
+
+  function renderInbox(data) {
+    data = data || {};
+    if (data.status) renderMail(data.status);
+    var items = data.items || [];
+    if (data.error) {
+      $("ml-inbox-status").textContent = "读取失败";
+      $("ml-inbox-list").innerHTML =
+        "<div class='small muted'>" + esc(data.error) + "</div>";
+      return;
+    }
+    $("ml-inbox-status").textContent = items.length ? items.length + " 封" : "空的";
+    if (!items.length) {
+      $("ml-inbox-list").innerHTML = "<div class='small muted'>收件箱里没有信。</div>";
+      return;
+    }
+    $("ml-inbox-list").innerHTML = items.map(function (item, index) {
+      return "<div style='margin-bottom:12px'>" +
+        "<div class='row'><b>" + esc(item.subject || "（无主题）") + "</b>" +
+        "<span class='grow'></span>" +
+        "<span class='small muted'>" + esc(String(item.date || "").slice(0, 25)) + "</span></div>" +
+        "<div class='small muted'>" + esc(item.sender || "") + "</div>" +
+        (item.snippet ? "<div class='small'>" + esc(item.snippet) + "</div>" : "") +
+        "</div>";
+    }).join("");
+  }
+
   // 五个页签的显隐/高亮只有这一处，免得以后再加页签时漏掉某个视图。
   function setView(name) {
     var views = {
@@ -5065,7 +5351,8 @@
       memory: "view-memory", graph: "view-graph",
       images: "view-images", persona: "view-persona", split: "view-split",
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
-      style: "view-style", wizard: "view-wizard", debounce: "view-debounce"
+      style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
+      imitate: "view-imitate", mail: "view-mail"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);
@@ -5133,6 +5420,7 @@
       return;
     }
   }).catch(function () { applyPanelMode("simple"); });
+  loadDaily().catch(function () {});
   if (state.view !== "wizard") setView("emotion");
   refreshAll();
 })();

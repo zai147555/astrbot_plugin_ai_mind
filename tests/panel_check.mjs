@@ -177,6 +177,9 @@ const KNOWN_ROUTES = [
   PLUGIN + "/style/clear", PLUGIN + "/style/review", PLUGIN + "/style/save",
   PLUGIN + "/theory", PLUGIN + "/theory/clear", PLUGIN + "/wizard",
   PLUGIN + "/wizard/apply", PLUGIN + "/wizard/mode", PLUGIN + "/_echo",
+  PLUGIN + "/daily", PLUGIN + "/imitate", PLUGIN + "/imitate/save",
+  PLUGIN + "/imitate/clear", PLUGIN + "/mail", PLUGIN + "/mail/save",
+  PLUGIN + "/mail/inbox", PLUGIN + "/mail/send", PLUGIN + "/mail/test",
 ];
 const SESSIONS_OK = { sessions: [{ key: "s1", label: "私聊 · 1", group: false, samples: 3 }], stats: {} };
 

@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 中国日历（今天是什么日子：法定假 / 寒暑假 / 调休）
+    from .mind import calendar_cn as calendar_engine
+except ImportError:  # pragma: no cover
+    from mind import calendar_cn as calendar_engine  # type: ignore[no-redef]
+
 try:  # 她的邮箱（smtplib / imaplib，授权码只从 data/mail.json 读）
     from .mind import mailbox as mail_engine
 except ImportError:  # pragma: no cover
@@ -2672,6 +2677,15 @@ class AIMindPlugin(Star):
             ("presets/delete", self._api_preset_delete, "删除自定义预设"),
             ("presets/activate", self._api_preset_activate, "启用某个预设"),
             ("presets/import", self._api_preset_import, "导入预设 JSON"),
+            ("imitate", self._api_imitate, "模仿指定 QQ"),
+            ("imitate/save", self._api_imitate_save, "保存模仿设置"),
+            ("imitate/clear", self._api_imitate_clear, "清空模仿样本"),
+            ("mail", self._api_mail, "她的邮箱状态"),
+            ("mail/save", self._api_mail_save, "保存邮箱配置"),
+            ("mail/inbox", self._api_mail_inbox, "读收件箱"),
+            ("mail/send", self._api_mail_send, "发一封邮件"),
+            ("mail/test", self._api_mail_test, "发测试邮件"),
+            ("daily", self._api_daily, "今天是什么日子"),
         ]
 
     def _register_web_apis(self) -> None:
@@ -5272,6 +5286,179 @@ class AIMindPlugin(Star):
         used = [item for item in rows if item.hit_count]
         used.sort(key=lambda item: -item.hit_count)
         return [item.to_dict() for item in used[:10]]
+
+    # -- 面板：模仿 / 邮箱 / 今天 ------------------------------------------
+    def _imitate_payload(self) -> dict[str, Any]:
+        conf = self.imitate_settings
+        rows = self.imitate.users()
+        known = {uid for uid, _ in rows}
+        profiles: list[dict[str, Any]] = []
+        for uid, count in rows:
+            profile = self.imitate.profile(uid)
+            profiles.append({
+                "uid": uid,
+                "samples": count,
+                "target": uid in conf.targets,
+                "lines": imitate_engine.describe(profile),
+                "profile": profile.to_dict(),
+            })
+        for uid in conf.targets:
+            if uid not in known:
+                profiles.append({"uid": uid, "samples": 0, "target": True,
+                                 "lines": [], "profile": None})
+        return {
+            "settings": conf.to_dict(),
+            "profiles": profiles,
+            "stats": self.imitate.stats(),
+        }
+
+    async def _api_imitate(self) -> Any:
+        return json_response(self._imitate_payload())
+
+    async def _api_imitate_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.imitate_settings
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        if "inject" in payload:
+            conf.inject = bool(payload.get("inject"))
+        if payload.get("min_samples") is not None:
+            try:
+                conf.min_samples = max(3, min(500, int(payload["min_samples"])))
+            except (TypeError, ValueError):
+                pass
+        raw = payload.get("targets")
+        if isinstance(raw, list):
+            conf.targets = []
+            for item in raw:
+                text = str(item).strip()
+                if text and text not in conf.targets:
+                    conf.targets.append(text)
+        elif isinstance(raw, str):
+            conf.targets = []
+            for item in raw.replace(",", " ").replace("，", " ").split():
+                if item.strip() and item.strip() not in conf.targets:
+                    conf.targets.append(item.strip())
+        ok = imitate_engine.save_settings(Path(self.data_dir) / "imitate.json", conf)
+        data = self._imitate_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入模仿设置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_imitate_clear(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        uid = str(payload.get("uid") or "").strip()
+        removed = self.imitate.clear(uid)
+        data = self._imitate_payload()
+        data["removed"] = removed
+        return json_response(data)
+
+    async def _api_mail(self) -> Any:
+        return json_response(self.mail.status())
+
+    async def _api_mail_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.mail.config
+        if payload.get("address") is not None:
+            conf.address = str(payload.get("address") or "").strip()
+        # 留空 = 不改授权码（面板上本来就看不到它）
+        if str(payload.get("password") or "").strip():
+            conf.password = str(payload.get("password")).strip()
+        if payload.get("clear_password"):
+            conf.password = ""
+        if payload.get("owner") is not None:
+            conf.owner = str(payload.get("owner") or "").strip()
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        if payload.get("smtp_host") is not None:
+            conf.smtp_host = str(payload.get("smtp_host") or "").strip()
+        if payload.get("imap_host") is not None:
+            conf.imap_host = str(payload.get("imap_host") or "").strip()
+        for key in ("smtp_port", "imap_port"):
+            if payload.get(key) is not None:
+                try:
+                    setattr(conf, key, max(1, min(65535, int(payload.get(key)))))
+                except (TypeError, ValueError):
+                    pass
+        for key in ("smtp_ssl", "imap_ssl"):
+            if key in payload:
+                setattr(conf, key, bool(payload.get(key)))
+        conf = conf.filled()
+        ok = mail_engine.save_config(Path(self.data_dir) / "mail.json", conf)
+        self.mail = mail_engine.Mailbox(conf, logger)
+        data = self.mail.status()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入邮箱配置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_mail_inbox(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        try:
+            limit = int(payload.get("limit") or 5)
+        except (TypeError, ValueError):
+            limit = 5
+        items, err = await self._mail_call(self.mail.recent, max(1, min(20, limit)))
+        return json_response({
+            "items": [item.to_dict() for item in items],
+            "error": err,
+            "status": self.mail.status(),
+        })
+
+    async def _api_mail_send(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        content = str(payload.get("body") or "").strip()
+        if not content:
+            return json_response({"ok": False, "message": "正文不能为空"})
+        subject = str(payload.get("subject") or "").strip()
+        if not subject:
+            subject = content.splitlines()[0][:24] or "来自她"
+        ok, message = await self._mail_call(self.mail.send, subject, content)
+        return json_response({"ok": ok, "message": message})
+
+    async def _api_mail_test(self) -> Any:
+        ok, message = await self._mail_call(
+            self.mail.send, "测试邮件", "这是一封测试邮件，说明邮箱配好了。"
+        )
+        return json_response({"ok": ok, "message": message})
+
+    async def _api_daily(self) -> Any:
+        now = time.time()
+        info = calendar_engine.day_info(now)
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        try:
+            slot = _schedule.today(now)
+        except Exception:  # noqa: BLE001
+            slot = {}
+        year = time.localtime(now).tm_year
+        spans = [
+            {"name": name, "start": start.isoformat(), "end": end.isoformat(),
+             "days": (end - start).days + 1}
+            for start, end, name in sorted(
+                list(calendar_engine.blocks(year)) + list(calendar_engine.vacations(year)),
+                key=lambda item: item[0],
+            )
+        ]
+        return json_response({
+            "day": info.as_dict(),
+            "slot": {key: slot.get(key) for key in
+                     ("date", "now", "activity", "state", "tone", "note",
+                      "kind", "day_index", "day_total")},
+            "spans": spans,
+        })
 
     async def _api_style(self) -> Any:
         params = await self._params()
