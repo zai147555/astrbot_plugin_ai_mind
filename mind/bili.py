@@ -64,6 +64,26 @@ class BiliSettings:
     daily_hour: int = -1
     #: 让模型给每条写「一句话」（上游的「它自己的一句话」）
     one_liner: bool = True
+    #: 登录凭据（浏览器里复制的 Cookie 原文）。填了才有高清直链 / 字幕 / 排行榜
+    cookie: str = ""
+    #: 有登录态时优先要高清
+    prefer_hq: bool = True
+
+    def masked(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "keywords": self.keywords,
+            "has_cookie": bool(self.cookie),
+            "prefer_hq": bool(self.prefer_hq),
+            "candidates": int(self.candidates),
+            "storyboard_n": int(self.storyboard_n),
+            "min_seconds": int(self.min_seconds),
+            "max_seconds": int(self.max_seconds),
+            "max_download_mb": int(self.max_download_mb),
+            "use_search": bool(self.use_search),
+            "daily_hour": int(self.daily_hour),
+            "one_liner": bool(self.one_liner),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +98,8 @@ class BiliSettings:
             "use_search": bool(self.use_search),
             "daily_hour": int(self.daily_hour),
             "one_liner": bool(self.one_liner),
+            "cookie": self.cookie,
+            "prefer_hq": bool(self.prefer_hq),
         }
 
     @staticmethod
@@ -110,6 +132,8 @@ class BiliSettings:
             use_search=bool(raw.get("use_search", True)),
             daily_hour=num(raw.get("daily_hour"), -1, -1, 23),
             one_liner=bool(raw.get("one_liner", True)),
+            cookie=str(raw.get("cookie") or "").strip(),
+            prefer_hq=bool(raw.get("prefer_hq", True)),
         )
 
 
@@ -190,8 +214,29 @@ class SeenStore:
 # ---------------------------------------------------------------------------
 
 
+def normalize_cookie(raw: str) -> str:
+    """把「浏览器整段 Cookie」规整成可以直接放进请求头的一串。"""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text.lower().startswith("cookie:"):
+        text = text[7:].strip()
+    text = text.replace("\n", " ").replace("\r", " ")
+    parts = [piece.strip() for piece in text.split(";") if piece.strip()]
+    return "; ".join(parts)
+
+
+def cookie_value(cookie: str, name: str) -> str:
+    target = str(name or "").strip().lower()
+    for piece in normalize_cookie(cookie).split(";"):
+        key, _, value = piece.partition("=")
+        if key.strip().lower() == target:
+            return value.strip()
+    return ""
+
+
 def _get_json(path: str, params: dict[str, Any] | None = None,
-              timeout: int = HTTP_TIMEOUT) -> tuple[dict[str, Any] | None, str]:
+              timeout: int = HTTP_TIMEOUT, cookie: str = "") -> tuple[dict[str, Any] | None, str]:
     """请求一个 B 站接口，返回 (payload, 错误说明)。"""
     import urllib.error
     import urllib.request
@@ -199,9 +244,11 @@ def _get_json(path: str, params: dict[str, Any] | None = None,
     url = API + path
     if params:
         url += "?" + urlencode(params)
-    request = urllib.request.Request(url, headers={
-        "User-Agent": UA, "Referer": REFERER, "Accept": "application/json",
-    })
+    headers = {"User-Agent": UA, "Referer": REFERER, "Accept": "application/json"}
+    jar = normalize_cookie(cookie)
+    if jar:
+        headers["Cookie"] = jar
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read()
@@ -254,18 +301,41 @@ def normalize(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_region(rid: int = 1, limit: int = 5) -> tuple[list[dict[str, Any]], str]:
+def fetch_region(rid: int = 1, limit: int = 5,
+                 cookie: str = "") -> tuple[list[dict[str, Any]], str]:
     """分区最新（newlist 免登录可用；popular/ranking 会被 -352 拦）。"""
     payload, err = _get_json("/x/web-interface/newlist",
-                             {"rid": int(rid), "ps": max(1, min(20, int(limit))), "pn": 1})
+                             {"rid": int(rid), "ps": max(1, min(20, int(limit))), "pn": 1},
+                             cookie=cookie)
     if err:
         return [], err
     archives = ((payload or {}).get("data") or {}).get("archives") or []
     return [normalize(item) for item in archives if isinstance(item, dict)], ""
 
 
-def fetch_view(bvid: str) -> tuple[dict[str, Any] | None, str]:
-    payload, err = _get_json("/x/web-interface/view", {"bvid": str(bvid)})
+def login_check(cookie: str, timeout: int = HTTP_TIMEOUT) -> dict[str, Any]:
+    """查这个 Cookie 是不是登录态（顺便拿到昵称）。"""
+    jar = normalize_cookie(cookie)
+    if not jar:
+        return {"ok": False, "is_login": False, "uname": "", "message": "还没填 Cookie"}
+    payload, err = _get_json("/x/web-interface/nav", None, timeout=timeout, cookie=jar)
+    if err:
+        return {"ok": False, "is_login": False, "uname": "", "message": "接口返回：" + err}
+    data = (payload or {}).get("data") or {}
+    is_login = bool(data.get("isLogin"))
+    return {
+        "ok": True,
+        "is_login": is_login,
+        "uname": str(data.get("uname") or ""),
+        "mid": int(_num(data.get("mid"))),
+        "level": int(_num(((data.get("level_info") or {}).get("current_level")))),
+        "message": ("已登录：" + str(data.get("uname") or "")) if is_login
+                   else "Cookie 无效或已过期（没登录态）",
+    }
+
+
+def fetch_view(bvid: str, cookie: str = "") -> tuple[dict[str, Any] | None, str]:
+    payload, err = _get_json("/x/web-interface/view", {"bvid": str(bvid)}, cookie=cookie)
     if err:
         return None, err
     data = (payload or {}).get("data") or {}
@@ -274,11 +344,12 @@ def fetch_view(bvid: str) -> tuple[dict[str, Any] | None, str]:
     return normalize(data), ""
 
 
-def fetch_subtitle(bvid: str, cid: int) -> tuple[str, int, str]:
-    """取字幕原文。返回 (文本, 行数, 语言)。取不到就是空串。"""
+def fetch_subtitle(bvid: str, cid: int, cookie: str = "") -> tuple[str, int, str]:
+    """取字幕原文。返回 (文本, 行数, 语言)。取不到就是空串（登录后命中率高很多）。"""
     if not cid:
         return "", 0, ""
-    payload, err = _get_json("/x/player/v2", {"bvid": str(bvid), "cid": int(cid)})
+    payload, err = _get_json("/x/player/v2", {"bvid": str(bvid), "cid": int(cid)},
+                             cookie=cookie)
     if err:
         return "", 0, ""
     subtitles = (((payload or {}).get("data") or {}).get("subtitle") or {}).get("subtitles") or []
@@ -306,14 +377,33 @@ def fetch_subtitle(bvid: str, cid: int) -> tuple[str, int, str]:
     return " ".join(lines), len(lines), str(pick.get("lan_doc") or pick.get("lan") or "")
 
 
-def pick_stream(bvid: str, cid: int, quality: int = 32) -> tuple[str, int, str]:
-    """拿 mp4 直链。返回 (url, 字节数, 错误)。"""
+def pick_stream(bvid: str, cid: int, quality: int = 32,
+                cookie: str = "", prefer_hq: bool = True) -> tuple[str, int, str]:
+    """拿 mp4 直链。有登录态时先要高清（80 = 1080P），拿不到就退回低清。"""
     if not cid:
         return "", 0, "没有 cid"
-    payload, err = _get_json("/x/player/playurl", {
-        "bvid": str(bvid), "cid": int(cid), "qn": int(quality),
-        "fnval": 1, "platform": "html5",
-    })
+    jar = normalize_cookie(cookie)
+    attempts: list[int] = []
+    if jar and prefer_hq:
+        attempts.extend([80, 64, 32])
+    else:
+        attempts.append(int(quality))
+    last_err = ""
+    for qn in attempts:
+        payload, err = _get_json("/x/player/playurl", {
+            "bvid": str(bvid), "cid": int(cid), "qn": int(qn),
+            "fnval": 1, "platform": "html5",
+        }, cookie=jar)
+        if err:
+            last_err = err
+            continue
+        data = (payload or {}).get("data") or {}
+        durl = data.get("durl") or []
+        if isinstance(durl, list) and durl:
+            first = durl[0]
+            return str(first.get("url") or ""), int(_num(first.get("size"))), ""
+        last_err = "没有可下载的直链（可能是番剧/付费内容）"
+    return "", 0, last_err or "没有可下载的直链"
     if err:
         return "", 0, err
     data = (payload or {}).get("data") or {}
@@ -447,8 +537,9 @@ def _duration_to_seconds(raw: Any) -> int:
         return 0
 
 
-def search_videos(keyword: str, limit: int = 6) -> tuple[list[dict[str, Any]], str]:
-    """关键词搜索（WBI 签名 + 匿名 buvid3）。失败返回 (空, 原因)。"""
+def search_videos(keyword: str, limit: int = 6,
+                  cookie: str = "") -> tuple[list[dict[str, Any]], str]:
+    """关键词搜索（WBI 签名 + buvid3）。有登录 Cookie 就一起带上，命中率更高。"""
     import urllib.request
 
     word = str(keyword or "").strip()
@@ -462,9 +553,13 @@ def search_videos(keyword: str, limit: int = 6) -> tuple[list[dict[str, Any]], s
         "page": 1, "page_size": max(1, min(20, int(limit))), "order": "pubdate",
     }, mixin)
     headers = {"User-Agent": UA, "Referer": REFERER, "Accept": "application/json"}
-    buvid = _fetch_buvid()
-    if buvid:
-        headers["Cookie"] = "buvid3=" + buvid
+    jar = normalize_cookie(cookie)
+    if jar:
+        headers["Cookie"] = jar
+    else:
+        buvid = _fetch_buvid()
+        if buvid:
+            headers["Cookie"] = "buvid3=" + buvid
     try:
         request = urllib.request.Request(
             API + "/x/web-interface/wbi/search/type?" + query, headers=headers
@@ -498,11 +593,13 @@ def search_videos(keyword: str, limit: int = 6) -> tuple[list[dict[str, Any]], s
     return out, ""
 
 
-def fetch_subtitle_lines(bvid: str, cid: int) -> list[dict[str, Any]]:
+def fetch_subtitle_lines(bvid: str, cid: int,
+                         cookie: str = "") -> list[dict[str, Any]]:
     """带时间码的字幕行（挂到分镜每一格用）。取不到就是空列表。"""
     if not cid:
         return []
-    payload, err = _get_json("/x/player/v2", {"bvid": str(bvid), "cid": int(cid)})
+    payload, err = _get_json("/x/player/v2", {"bvid": str(bvid), "cid": int(cid)},
+                             cookie=cookie)
     if err:
         return []
     subtitles = (((payload or {}).get("data") or {}).get("subtitle") or {}).get("subtitles") or []
@@ -725,6 +822,7 @@ __all__ = [
     "fetch_region", "fetch_view", "fetch_subtitle", "pick_stream", "download",
     "normalize", "score_item", "pick", "format_duration", "format_count", "build_report",
     "sign_wbi", "search_videos", "fetch_subtitle_lines", "ytdlp_path",
+    "normalize_cookie", "cookie_value", "login_check",
     "download_with_ytdlp", "due_today",
 ]
 

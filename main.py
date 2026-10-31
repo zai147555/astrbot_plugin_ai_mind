@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 内置 ffmpeg（找 / 下载 / 校验）
+    from .mind import ffmpeg_setup
+except ImportError:  # pragma: no cover
+    from mind import ffmpeg_setup  # type: ignore[no-redef]
+
 try:  # 表情包库（收 → 打标 → 按情绪发）
     from .mind import sticker as sticker_engine
 except ImportError:  # pragma: no cover
@@ -903,6 +908,16 @@ class AIMindPlugin(Star):
         self._last_memory_ids: dict[str, list[int]] = {}
         self._feedback_applied = 0
         self._evolve_tick = 0
+        # 启动时先自己找一遍 ffmpeg（含插件内置目录 / winget / scoop）
+        try:
+            _ff = ffmpeg_setup.status(
+                self.data_dir, self.storyboard_settings.ffmpeg_path
+            )
+            if _ff.get("ok") and not self.storyboard_settings.ffmpeg_path:
+                self.storyboard_settings.ffmpeg_path = str(_ff.get("ffmpeg") or "")
+                self.storyboard_settings.ffprobe_path = str(_ff.get("ffprobe") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[ai_mind] 查找 ffmpeg 失败：{exc}")
         self.market_settings = market_engine.load_settings(
             Path(self.data_dir) / "market.json"
         )
@@ -2850,11 +2865,13 @@ class AIMindPlugin(Star):
             ("storyboard", self._api_storyboard, "视频分镜设置与自检"),
             ("storyboard/save", self._api_storyboard_save, "保存分镜设置"),
             ("storyboard/build", self._api_storyboard_build, "跑一次分镜"),
+            ("storyboard/install-ffmpeg", self._api_storyboard_install_ffmpeg, "内置 ffmpeg"),
             ("bili", self._api_bili, "刷B站设置与已读"),
             ("bili/save", self._api_bili_save, "保存刷B站设置"),
             ("bili/scroll", self._api_bili_scroll, "刷一轮"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
+            ("bili/login", self._api_bili_login, "校验登录凭据"),
             ("sticker", self._api_sticker, "表情包库"),
             ("sticker/save", self._api_sticker_save, "保存表情设置"),
             ("sticker/tag", self._api_sticker_tag, "给表情打标"),
@@ -4937,14 +4954,16 @@ class AIMindPlugin(Star):
         if not bvid:
             return row
         if not row.get("cid"):
-            detail, err = bili_engine.fetch_view(bvid)
+            detail, err = bili_engine.fetch_view(bvid, cookie=self.bili_settings.cookie)
             if not err and detail:
                 merged = dict(row)
                 for key in ("cid", "duration", "view", "up", "desc", "title"):
                     if detail.get(key):
                         merged[key] = detail[key]
                 row = merged
-        text, lines, lang = bili_engine.fetch_subtitle(bvid, int(row.get("cid") or 0))
+        text, lines, lang = bili_engine.fetch_subtitle(
+            bvid, int(row.get("cid") or 0), cookie=self.bili_settings.cookie
+        )
         if text:
             row["subtitle"] = text
             row["subtitle_lines"] = lines
@@ -5040,7 +5059,9 @@ class AIMindPlugin(Star):
                  .replace(",", " ").split() if word]
         if conf.use_search and words:
             for word in words[:3]:
-                rows, err = bili_engine.search_videos(word, max(3, want))
+                rows, err = bili_engine.search_videos(
+                    word, max(3, want), cookie=conf.cookie
+                )
                 if err:
                     errors.append("搜索「%s」：%s" % (word, err))
                     continue
@@ -5052,7 +5073,9 @@ class AIMindPlugin(Star):
         if not candidates:
             per_region = max(2, min(8, (want + len(conf.rids) - 1) // max(1, len(conf.rids)) + 1))
             for rid in conf.rids:
-                rows, err = bili_engine.fetch_region(rid, per_region)
+                rows, err = bili_engine.fetch_region(
+                    rid, per_region, cookie=conf.cookie
+                )
                 if err:
                     errors.append("分区 %s：%s" % (rid, err))
                     continue
@@ -5102,7 +5125,9 @@ class AIMindPlugin(Star):
                     "https://www.bilibili.com/video/" + bvid, local, cap, tool
                 )
             if not ok:
-                url, _size, stream_err = bili_engine.pick_stream(bvid, cid)
+                url, _size, stream_err = bili_engine.pick_stream(
+                    bvid, cid, cookie=conf.cookie, prefer_hq=conf.prefer_hq
+                )
                 if url:
                     ok, err = bili_engine.download(url, local, cap)
                 else:
@@ -5110,7 +5135,9 @@ class AIMindPlugin(Star):
             if not ok:
                 errors.append("%s 下载失败：%s" % (bvid, err))
                 continue
-            lines = bili_engine.fetch_subtitle_lines(bvid, cid)
+            lines = bili_engine.fetch_subtitle_lines(
+                bvid, cid, cookie=conf.cookie
+            )
             result = self._storyboard_build(str(local), transcript=lines)
             if not result.get("ok"):
                 errors.append("%s 分镜失败：%s" % (bvid, result.get("error")))
@@ -6587,6 +6614,7 @@ class AIMindPlugin(Star):
             "settings": conf.to_dict(),
             "delivery": self.delivery_settings.to_dict(),
             "selfcheck": report,
+            "ffmpeg": ffmpeg_setup.status(self.data_dir, conf.ffmpeg_path),
             "needs": [
                 {"key": key, "label": tier["label"], "w": tier["w"], "h": tier["h"],
                  "per_sheet": storyboard_engine.max_cells_for_need(key)}
@@ -6627,6 +6655,19 @@ class AIMindPlugin(Star):
         data["saved"] = ok
         if not ok:
             return error_response("写入分镜设置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_storyboard_install_ffmpeg(self) -> Any:
+        """一键把 ffmpeg 装进插件目录（data/bin），装完写进设置。"""
+        conf = self.storyboard_settings
+        result = await self._mail_call(ffmpeg_setup.install, self.data_dir)
+        if result.get("ok"):
+            conf.ffmpeg_path = str(result.get("ffmpeg") or "")
+            conf.ffprobe_path = str(result.get("ffprobe") or "")
+            storyboard_engine.save_settings(Path(self.data_dir) / "storyboard.json", conf)
+        data = self._storyboard_payload()
+        data["ok"] = bool(result.get("ok"))
+        data["message"] = str(result.get("message") or "")
         return json_response(data)
 
     async def _api_storyboard_build(self) -> Any:
@@ -6680,7 +6721,7 @@ class AIMindPlugin(Star):
 
     def _bili_payload(self) -> dict[str, Any]:
         return {
-            "settings": self.bili_settings.to_dict(),
+            "settings": self.bili_settings.masked(),
             "delivery": self.delivery_settings.to_dict(),
             "seen": self.bili_seen.count(),
             "storyboard": self.storyboard_settings.to_dict(),
@@ -6702,6 +6743,12 @@ class AIMindPlugin(Star):
             conf.enabled = bool(payload.get("enabled"))
         if payload.get("keywords") is not None:
             conf.keywords = str(payload.get("keywords") or "").strip()
+        if str(payload.get("cookie") or "").strip():
+            conf.cookie = bili_engine.normalize_cookie(str(payload.get("cookie")))
+        if payload.get("clear_cookie"):
+            conf.cookie = ""
+        if "prefer_hq" in payload:
+            conf.prefer_hq = bool(payload.get("prefer_hq"))
         merged = conf.to_dict()
         for key in ("candidates", "storyboard_n", "min_seconds", "max_seconds", "max_download_mb"):
             if payload.get(key) is not None:
@@ -6751,11 +6798,13 @@ class AIMindPlugin(Star):
 
     def _bili_one_storyboard(self, bvid: str) -> dict[str, Any]:
         """单条视频的分镜（面板上那个按钮）。"""
-        detail, err = bili_engine.fetch_view(bvid)
+        conf = self.bili_settings
+        detail, err = bili_engine.fetch_view(bvid, cookie=conf.cookie)
         if err or not detail:
             return {"ok": False, "error": err or "没有这条视频"}
-        conf = self.bili_settings
-        url, _size, err = bili_engine.pick_stream(bvid, int(detail.get("cid") or 0))
+        url, _size, err = bili_engine.pick_stream(
+            bvid, int(detail.get("cid") or 0), cookie=conf.cookie, prefer_hq=conf.prefer_hq,
+        )
         if err or not url:
             return {"ok": False, "error": err or "没有可下载的直链"}
         workdir = Path(self.data_dir) / "bili"
@@ -6792,6 +6841,14 @@ class AIMindPlugin(Star):
             "manifest": result.get("manifest", ""),
             "images": images,
         })
+
+    async def _api_bili_login(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        raw = str(payload.get("cookie") or "").strip() or self.bili_settings.cookie
+        report = await self._mail_call(bili_engine.login_check, raw)
+        report["has_cookie"] = bool(self.bili_settings.cookie)
+        return json_response(report)
 
     async def _api_bili_clear(self) -> Any:
         removed = self.bili_seen.clear()

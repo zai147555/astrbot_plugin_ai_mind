@@ -1420,6 +1420,10 @@
         <span class="small muted">把视频切成编号宫格图 + 时间码清单，纯文本模型也能"看"</span>
       </div>
       <div class="small muted" style="margin-top:6px" id="sb-check"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost small" id="sb-getffmpeg">一键内置 ffmpeg</button>
+        <span class="small muted" id="sb-ffmpeg-status"></span>
+      </div>
       <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
         <label class="small"><input type="checkbox" id="sb-enabled"> 启用</label>
         <label class="small muted">看得清到什么程度
@@ -1508,6 +1512,16 @@
         <label class="small muted">下载上限 <input id="bl-mb" type="number" min="4" max="2048" style="width:80px"> MB</label>
         <label class="small muted">每天 <input id="bl-daily" type="number" min="-1" max="23" style="width:70px"> 点自己刷（-1 关）</label>
         <span class="small muted" id="bl-check"></span>
+      </div>
+      <div style="margin-top:12px">
+        <div class="small muted">登录凭据（可选，填了才有高清直链 / 字幕 / 排行榜；只在你自己这台机器上存）</div>
+        <textarea id="bl-cookie" placeholder="粘贴浏览器里复制的一整段 Cookie，留空 = 不改" style="width:100%;min-height:56px;margin-top:6px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost small" id="bl-login">校验登录</button>
+          <label class="small"><input type="checkbox" id="bl-hq"> 优先高清</label>
+          <label class="small"><input type="checkbox" id="bl-clearcookie"> 清除凭据</label>
+          <span class="small muted" id="bl-login-status"></span>
+        </div>
       </div>
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
         <label class="small" title="有关键词就先走 B 站搜索（WBI 签名），搜不到再逛分区"><input type="checkbox" id="bl-search"> 用关键词搜索</label>
@@ -3246,6 +3260,16 @@
       }).then(function (data) { renderStoryboard(data); toast("已保存"); })
         .catch(function (e) { toast("保存失败：" + e.message); });
     };
+    $("sb-getffmpeg").onclick = function () {
+      $("sb-ffmpeg-status").textContent = "正在下载（几十 MB，慢的话等两分钟）…";
+      request("storyboard/install-ffmpeg", "POST", {}).then(function (data) {
+        $("sb-ffmpeg-status").textContent = data.message || (data.ok ? "装好了" : "没装上");
+        renderStoryboard(data);
+        toast(data.ok ? "ffmpeg 已内置" : "没装上，见下面说明");
+      }).catch(function (e) {
+        $("sb-ffmpeg-status").textContent = "失败：" + e.message;
+      });
+    };
     $("sb-reload").onclick = function () {
       loadStoryboard().then(function () { toast("已重新自检"); })
         .catch(function (e) { toast("自检失败：" + e.message); });
@@ -3267,6 +3291,15 @@
       setView("bili");
       loadBili().catch(function (e) { toast("加载刷B站设置失败：" + e.message); });
     };
+    $("bl-login").onclick = function () {
+      var cookie = ($("bl-cookie").value || "").trim();
+      $("bl-login-status").textContent = "正在问 B 站…";
+      request("bili/login", "POST", cookie ? { cookie: cookie } : {}).then(function (data) {
+        $("bl-login-status").textContent = data.message || (data.is_login ? "已登录" : "没登录");
+      }).catch(function (e) {
+        $("bl-login-status").textContent = "校验失败：" + e.message;
+      });
+    };
     $("bl-save").onclick = function () {
       request("bili/save", "POST", {
         enabled: $("bl-enabled").checked,
@@ -3279,9 +3312,16 @@
         daily_hour: Number($("bl-daily").value),
         use_search: $("bl-search").checked,
         one_liner: $("bl-one").checked,
-        bulk_to_private: $("bl-private").checked
-      }).then(function (data) { renderBili(data); toast("已保存"); })
-        .catch(function (e) { toast("保存失败：" + e.message); });
+        bulk_to_private: $("bl-private").checked,
+        cookie: $("bl-cookie").value,
+        clear_cookie: $("bl-clearcookie").checked,
+        prefer_hq: $("bl-hq").checked
+      }).then(function (data) {
+        $("bl-cookie").value = "";
+        $("bl-clearcookie").checked = false;
+        renderBili(data);
+        toast("已保存");
+      }).catch(function (e) { toast("保存失败：" + e.message); });
     };
     $("bl-reload").onclick = function () {
       loadBili().then(function () { toast("已刷新"); })
@@ -5956,10 +5996,17 @@
     }).join("");
     var check = data.selfcheck || {};
     $("sb-status").textContent = settings.enabled === false ? "已关" : "已开";
-    $("sb-check").innerHTML = check.ok
-      ? "ffmpeg 就绪：" + esc(check.version || "")
-      : "<span style='color:#e06'>ffmpeg 没找到</span>" +
-        (check.hint ? " —— " + esc(check.hint) : "");
+    var setup = data.ffmpeg || {};
+    var source = { "bundled": "插件内置", "PATH": "系统 PATH", "settings": "设置里填的", "system": "系统目录" }[setup.source] || "";
+    if (check.ok || setup.ok) {
+      $("sb-check").innerHTML = "ffmpeg 就绪" + (source ? "（" + esc(source) + "）" : "") +
+        "：" + esc(setup.version || check.version || "");
+      $("sb-ffmpeg-status").textContent = "";
+    } else {
+      $("sb-check").innerHTML = "<span style='color:#e06'>ffmpeg 没找到</span> —— " +
+        "点下面「一键内置」自动装到插件目录（免管理员、不改 PATH）" +
+        (check.hint ? "；" + esc(check.hint) : "");
+    }
   }
 
   function loadStoryboard() {
@@ -6227,6 +6274,8 @@
     $("bl-daily").value = (settings.daily_hour === undefined ? -1 : settings.daily_hour);
     $("bl-search").checked = settings.use_search !== false;
     $("bl-one").checked = settings.one_liner !== false;
+    $("bl-hq").checked = settings.prefer_hq !== false;
+    $("bl-login-status").textContent = settings.has_cookie ? "已有凭据（不回显）" : "还没填凭据";
     var blDelivery = data.delivery || {};
     $("bl-private").checked = blDelivery.bulk_to_private !== false;
     $("bl-status").textContent = "已读 " + (data.seen || 0) + " 条";
