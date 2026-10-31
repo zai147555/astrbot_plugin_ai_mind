@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .appraisal import Appraiser, Rule, Stimulus, parse_custom_rule
-from . import physiology
+from . import brain, physiology
 from .model import (
     PAD,
     Prototype,
@@ -260,6 +260,8 @@ class SessionMood:
     history: list[MoodEvent] = field(default_factory=list)
     #: 身体状态（昼夜节律/能量/饥饿/压力/疾病）
     body: physiology.Body = field(default_factory=physiology.Body)
+    #: 工作记忆：最近几条刺激的指纹（习惯化 / 前额叶抑制用）
+    recent_stimuli: list[str] = field(default_factory=list)
 
 
     # -- 时间演化 -----------------------------------------------------------
@@ -312,6 +314,7 @@ class SessionMood:
             "users": {uid: rel.to_dict() for uid, rel in self.users.items()},
             "history": [e.to_dict() for e in self.history[-history_size:]],
             "body": self.body.to_dict(),
+            "recent_stimuli": list(self.recent_stimuli[-brain.HABIT_SEEN:]),
         }
 
     @staticmethod
@@ -333,6 +336,9 @@ class SessionMood:
             emotion_hint_until=to_float(data.get("emotion_hint_until"), 0.0),
             body=physiology.Body.from_dict(data.get("body")),
         )
+        raw_brain = data.get("recent_stimuli")
+        if isinstance(raw_brain, list):
+            session.recent_stimuli = [str(x) for x in raw_brain if x][-brain.HABIT_SEEN:]
         raw_users = data.get("users")
         if isinstance(raw_users, dict):
             for uid, payload in raw_users.items():
@@ -642,9 +648,41 @@ class EmotionEngine:
     ) -> None:
         now = self.clock() if now is None else now
         before = session.emotion
-        session.emotion = (session.emotion + stimulus.delta).limit(1.0)
+        rpe = 0.0
+        # ---- 前额叶：习惯化 ----
+        # 同一类刺激反复出现，反应被抑制（挨第一次凶会疼，挨第十次就麻了）；
+        # 但有地板，不会真的变成无感，否则就聊不下去了。
+        fp = brain.fingerprint(stimulus)
+        if stimulus.source == "user":
+            factor, repeat = brain.habituation(session.recent_stimuli, fp)
+        else:
+            factor, repeat = 1.0, 0
+        delta = stimulus.delta if factor >= 0.999 else stimulus.delta * factor
+        session.emotion = (session.emotion + delta).limit(1.0)
+        # ---- 镜像神经元：共情 ----
+        # 对方有情绪时，按亲密度渗进**慢心境**；即时情绪不被直接带跑，
+        # 所以"我会被你的难过影响一整天"，但不会"你说难过我立刻难过"。
+        if relation is not None and stimulus.source in ("user", "crisis"):
+            session.mood = (
+                session.mood + brain.empathy_delta(delta, relation.familiarity)
+            ).limit(1.0)
+        # ---- 伏隔核：奖励预测误差 ----
+        # 好感高的人突然给了很重的一击（或者反而特别甜），落差本身就是唤起。
+        if relation is not None and stimulus.source == "user":
+            expected = brain.expected_valence(
+                relation.affinity, relation.familiarity, self.settings.affinity_max
+            )
+            rpe = brain.reward_prediction_error(delta.p, expected)
+            boost = brain.surprise_boost(rpe)
+            if not brain.is_zero(boost):
+                session.emotion = (session.emotion + boost).limit(1.0)
         # 心境被即时情绪慢慢带偏，但不会一步到位
         session.mood = session.mood.lerp(session.emotion, self.settings.mood_coupling)
+        # 面板/日志里要能看出"这次为什么没那么疼"
+        note = brain.describe(factor, repeat, rpe)
+        # 记进工作记忆（下一轮的习惯化要用）
+        if stimulus.source == "user":
+            brain.remember(session.recent_stimuli, fp)
         if relation is not None and stimulus.affinity:
             gain = stimulus.affinity
             if gain > 0 and self.settings.affinity_max > 0:
@@ -668,7 +706,8 @@ class EmotionEngine:
         if stimulus.source != "idle":
             session.last_interaction = now
             session.last_idle_mark = now
-        self._record(session, now, stimulus.cause, session.emotion - before, stimulus.source)
+        cause = (stimulus.cause + "·" + note) if note else stimulus.cause
+        self._record(session, now, cause, session.emotion - before, stimulus.source)
         self._dirty = True
 
     def apply_self_expression(
