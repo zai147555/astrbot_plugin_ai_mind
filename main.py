@@ -271,6 +271,11 @@ try:  # 表达示例（学她怎么说话 + 待审队列）
 except ImportError:  # pragma: no cover
     from mind import style as style_engine  # type: ignore[no-redef]
 
+try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
+    from .mind import imitate as imitate_engine
+except ImportError:  # pragma: no cover
+    from mind import imitate as imitate_engine  # type: ignore[no-redef]
+
 try:  # 提示词仓库（注入给模型的原话都从这里取）
     from .mind import prompts as prompt_engine
 except ImportError:  # pragma: no cover
@@ -435,6 +440,7 @@ DEBUG_HELP = "\n".join([
     "#记忆　最近 5 条记忆 + 待抽取轮数",
     "#抽取　立刻把攒着的对话送去抽记忆",
     "#工具　工具闸门的开关与名单",
+    "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
     "#帮助　这份清单",
     "",
     "调试模式里插件完全让路：不注入情绪 / 记忆 / 身份，不分段，不记记忆。",
@@ -796,6 +802,10 @@ class AIMindPlugin(Star):
         self.lexicons = LexiconStore(self.store, logger)
         self.humanize_log = HumanizeStore(self.store, logger)
         self.styles = StyleStore(self.store, logger)
+        self.imitate = imitate_engine.ImitateStore(self.store, logger)
+        self.imitate_settings = imitate_engine.load_settings(
+            Path(self.data_dir) / "imitate.json"
+        )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -1655,6 +1665,18 @@ class AIMindPlugin(Star):
                     trusted=self.emotion_trusted, mode="content_part",
                 )
 
+            # ---------- 模仿指定 QQ 的说话习惯 ----------
+            try:
+                imitate_block = self._imitate_block(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 组装模仿块失败：{exc}")
+                imitate_block = ""
+            if imitate_block:
+                self._cache_or_place(
+                    req, imitate_block, cache_tail,
+                    trusted=True, mode="content_part",
+                )
+
             # ---------- 工具守卫（请求级） ----------
             self._apply_tool_guard(event, req)
             # 排查「某个工具到底在不在」用的：打开 debug_log 后，这一行会列出
@@ -2486,6 +2508,25 @@ class AIMindPlugin(Star):
     # ------------------------------------------------------------------
     # 关键词配图
     # ------------------------------------------------------------------
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=999)
+    async def on_imitate_capture(self, event: AstrMessageEvent) -> None:
+        """只学指定 QQ 说过的话（模仿用）。默认关，显式打开才开始记。"""
+        try:
+            conf = self.imitate_settings
+            if not conf.enabled or not conf.targets:
+                return
+            sender = str(event.get_sender_id() or "")
+            if not sender or sender not in conf.targets:
+                return
+            text = (event.message_str or "").strip()
+            if not text or self._looks_like_command(text):
+                return
+            self.imitate.add_sample(
+                sender, text, session_id=str(event.unified_msg_origin or "")
+            )
+        except Exception as exc:  # noqa: BLE001 - 采样失败绝不能影响聊天
+            logger.debug(f"[ai_mind] 模仿采样失败：{exc}")
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
         """消息进来时先看配图触发词；命中就直接发图。
@@ -4602,9 +4643,105 @@ class AIMindPlugin(Star):
                 return self._debug_tools()
             if word in ("语音", "tts", "voice"):
                 return await self._debug_tts()
+            if word.split()[0] in ("模仿", "imitate"):
+                return self._debug_imitate(text)
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
+
+    # -- 模仿指定 QQ -------------------------------------------------------
+    def _imitate_save(self) -> str:
+        path = Path(self.data_dir) / "imitate.json"
+        ok = imitate_engine.save_settings(path, self.imitate_settings)
+        return "" if ok else "（注意：设置没写进磁盘，重启会丢）"
+
+    def _sender_name(self, event: AstrMessageEvent) -> str:
+        """尽量叫出他的名字，拿不到就用「对方」。"""
+        try:
+            session = self.engine.sessions.get(self._event_key(event))
+            relation = session.users.get(str(event.get_sender_id() or "")) if session else None
+            name = str(getattr(relation, "name", "") or "").strip()
+            if name:
+                return name
+        except Exception:  # noqa: BLE001
+            pass
+        return "对方"
+
+    def _imitate_block(self, event: AstrMessageEvent) -> str:
+        """只对指定 QQ 注入：学他的话风，不学他的内容。"""
+        conf = self.imitate_settings
+        if not conf.enabled or not conf.inject:
+            return ""
+        sender = str(event.get_sender_id() or "")
+        if not sender or sender not in conf.targets:
+            return ""
+        profile = self.imitate.profile(sender)
+        if profile.samples < conf.min_samples:
+            return ""
+        return imitate_engine.render_block(profile, self._sender_name(event))
+
+    def _imitate_report(self) -> str:
+        conf = self.imitate_settings
+        out = [
+            "模仿：%s｜注入：%s｜目标：%s"
+            % ("开" if conf.enabled else "关", "开" if conf.inject else "关",
+               "、".join(conf.targets) if conf.targets else "未指定"),
+            "注入门槛：至少 %d 条样本" % conf.min_samples,
+        ]
+        rows = self.imitate.users()
+        if not rows:
+            out.append("还没学到任何样本。发 #模仿 学 <QQ> 指定要学谁。")
+            return "\n".join(out)
+        out.append("样本：")
+        for uid, count in rows[:6]:
+            out.append("  %s　%d 条" % (uid, count))
+            for line in imitate_engine.describe(self.imitate.profile(uid))[:4]:
+                out.append("    · " + line)
+        return "\n".join(out)
+
+    def _debug_imitate(self, text: str) -> str:
+        conf = self.imitate_settings
+        args = [part for part in text.lstrip("#").strip().split() if part]
+        if args and args[0].lower() in ("模仿", "imitate"):
+            args = args[1:]
+        if not args:
+            return self._imitate_report()
+        head = args[0].lower()
+        rest = args[1:]
+        if head in ("开", "on", "启用"):
+            conf.enabled = True
+            tip = "" if conf.targets else "，但还没指定 QQ，发 #模仿 学 <QQ>"
+            return "模仿采样：开" + tip + self._imitate_save()
+        if head in ("关", "off", "关闭"):
+            conf.enabled = False
+            return "模仿采样：关（已学的样本还在）" + self._imitate_save()
+        if head in ("学", "learn", "add", "加"):
+            if not rest:
+                return "用法：#模仿 学 <QQ 号>，可以一次给多个（空格隔开）"
+            added = [qq for qq in rest if conf.add_target(qq)]
+            conf.enabled = True
+            if not added:
+                return "这些 QQ 已经在名单里了。当前目标：" + "、".join(conf.targets) + self._imitate_save()
+            return ("开始学：" + "、".join(added)
+                    + "（他之后说的话会被记下来，凑够 %d 条就会注入参考）" % conf.min_samples
+                    + self._imitate_save())
+        if head in ("停", "del", "remove", "删"):
+            if not rest:
+                return "用法：#模仿 停 <QQ 号>"
+            gone = [qq for qq in rest if conf.remove_target(qq)]
+            return ("不再学：" + "、".join(gone) if gone else "这些 QQ 本来就不在名单里。") + self._imitate_save()
+        if head in ("清空", "clear"):
+            target = rest[0] if rest else ""
+            removed = self.imitate.clear(target)
+            who = target or "全部"
+            return ("已清掉 %d 条样本（%s）。" % (removed, "全部账号" if who == "全部" else who))
+        if head in ("样本", "list", "列表"):
+            return self._imitate_report()
+        return ("用法：#模仿　　看状态\n"
+                "#模仿 学 <QQ>　　开始学他说话\n"
+                "#模仿 停 <QQ>　　不再学\n"
+                "#模仿 清空 [QQ]　　删样本\n"
+                "#模仿 开 / 关　　总开关")
 
     async def _debug_status(self, event: AstrMessageEvent, key: str) -> str:
         out = [
@@ -4657,6 +4794,16 @@ class AIMindPlugin(Star):
                sum(len(v) for v in self._buffers.values()))
         )
         out.append("工具闸门：" + ("开" if self.settings.guard.block_tools else "关"))
+        try:
+            conf = self.imitate_settings
+            learned = self.imitate.count(str(event.get_sender_id() or ""))
+            out.append(
+                "模仿：" + ("开" if conf.enabled else "关")
+                + "｜目标 " + ("、".join(conf.targets) if conf.targets else "未指定")
+                + "｜你这里学了 %d 条" % learned
+            )
+        except Exception as exc:  # noqa: BLE001
+            out.append("模仿状态读不出来：" + str(exc))
         return "\n".join(out)
 
     def _debug_curve(self, key: str) -> str:
