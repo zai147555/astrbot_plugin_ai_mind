@@ -8,6 +8,17 @@
 > 装一次 3.0.0，之后我改的东西仍然叫 3.0.0 —— 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0 持续新增
+- **视频分镜**（新模块 `mind/storyboard.py`，移植自 SAOS-3624/dsh-video-storyboard，Apache-2.0）：
+  - 纯算术层决定**切几格、每格多大**：可读性三档 shot 160×90 / scene 320×180 / text 480×270，
+    单图 640k 像素预算，gutter 96%，卡门槛再保守 6%；时间码口径 `mm:ss.ss`。
+  - 媒体层只调 ffmpeg：取帧（`-ss` 定位 + scale/pad 补边）、拼图（`xstack` 显式坐标）。
+    **零第三方依赖**，不需要图像库与字体配置。
+  - 一张图覆盖 5 分钟；90 秒 → 9 格 1 张 · 11 分钟 → 3 张；单图 token 估算进面板提示。
+  - 入口：`#分镜 [文件或链接]`（先发宫格图再给清单）、面板「分镜」页签（自检/档位/路径或链接/看图）。
+  - 链接会先下载（默认上限 200 MB 可改）；没有 ffmpeg 时只给一句安装提示，不刷屏不抛异常。
+  - 没搬的：台词 ASR、yt-dlp 取流与 cookies、逐格 zoom。
+  - 新增 tests/test_storyboard.py（23 条）+ tests/test_storyboard_plugin.py（11 条）。
+
 - **全部搬进面板**（新页签「模仿」「邮箱」+ 情绪页「今天」卡）：
   - 后端新增 9 个接口：`imitate` / `imitate/save` / `imitate/clear`、
     `mail` / `mail/save` / `mail/inbox` / `mail/send` / `mail/test`、`daily`。

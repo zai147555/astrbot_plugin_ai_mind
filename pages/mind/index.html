@@ -379,6 +379,7 @@
     <button id="tab-persona">人格定制</button>
     <button id="tab-imitate">模仿</button>
     <button id="tab-mail">邮箱</button>
+    <button id="tab-storyboard" data-adv="1">分镜</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1353,6 +1354,45 @@
         <span class="grow"></span>
         <span class="small muted" id="ml-send-status"></span>
       </div>
+    </div>
+  </div>
+
+  <div id="view-storyboard" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>视频分镜</h3>
+        <span class="small muted">把视频切成编号宫格图 + 时间码清单，纯文本模型也能"看"</span>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="sb-check"></div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="sb-enabled"> 启用</label>
+        <label class="small muted">看得清到什么程度
+          <select id="sb-need"></select>
+        </label>
+        <label class="small muted">下载上限 <input id="sb-limit" type="number" min="1" max="2048" style="width:80px"> MB</label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small muted">ffmpeg 路径 <input id="sb-ffmpeg" placeholder="留空就用 PATH 里的" style="width:230px"></label>
+        <label class="small muted">ffprobe 路径 <input id="sb-ffprobe" placeholder="留空就用 PATH 里的" style="width:230px"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="sb-save">保存</button>
+        <button class="ghost small" id="sb-reload">重新自检</button>
+        <span class="grow"></span>
+        <span class="small muted" id="sb-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">跑一次</h3>
+        <input id="sb-path" placeholder="视频文件的完整路径，或 http(s) 链接" style="flex:1;min-width:200px">
+        <button class="primary" id="sb-build">生成分镜</button>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="sb-hint">
+        视频要在这台机器上（或给一个能下载的链接）。取帧和拼图都交给 ffmpeg，不需要图像库。
+      </div>
+      <div id="sb-result" style="margin-top:12px"></div>
     </div>
   </div>
 
@@ -2750,6 +2790,37 @@
         if (data.ok) { $("ml-body").value = ""; $("ml-subject").value = ""; }
       }).catch(function (e) {
         $("ml-send-status").textContent = "失败：" + e.message;
+      });
+    };
+    $("tab-storyboard").onclick = function () {
+      setView("storyboard");
+      loadStoryboard().catch(function (e) { toast("加载分镜设置失败：" + e.message); });
+    };
+    $("sb-save").onclick = function () {
+      request("storyboard/save", "POST", {
+        enabled: $("sb-enabled").checked,
+        need: $("sb-need").value,
+        ffmpeg_path: $("sb-ffmpeg").value,
+        ffprobe_path: $("sb-ffprobe").value,
+        max_download_mb: Number($("sb-limit").value) || 200
+      }).then(function (data) { renderStoryboard(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("sb-reload").onclick = function () {
+      loadStoryboard().then(function () { toast("已重新自检"); })
+        .catch(function (e) { toast("自检失败：" + e.message); });
+    };
+    $("sb-build").onclick = function () {
+      var source = ($("sb-path").value || "").trim();
+      if (!source) { toast("先填一个视频路径或链接"); return; }
+      $("sb-result").innerHTML = "<div class='small muted'>正在取帧、拼图…（长片子要几十秒）</div>";
+      $("sb-hint").textContent = "跑着呢，别关页面。";
+      request("storyboard/build", "POST", { path: source }).then(function (data) {
+        renderStoryboardResult(data);
+        $("sb-hint").textContent = "视频要在这台机器上（或给一个能下载的链接）。";
+      }).catch(function (e) {
+        $("sb-result").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
+        $("sb-hint").textContent = "视频要在这台机器上（或给一个能下载的链接）。";
       });
     };
     $("tab-style").onclick = function () {
@@ -5229,6 +5300,51 @@
       });
   }
 
+  // ---- 视频分镜 -----------------------------------------------------------
+  function renderStoryboard(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    $("sb-enabled").checked = settings.enabled !== false;
+    $("sb-limit").value = settings.max_download_mb || 200;
+    $("sb-ffmpeg").value = settings.ffmpeg_path || "";
+    $("sb-ffprobe").value = settings.ffprobe_path || "";
+    var needs = data.needs || [];
+    $("sb-need").innerHTML = needs.map(function (item) {
+      return "<option value='" + item.key + "'" +
+        (settings.need === item.key ? " selected" : "") + ">" +
+        item.label + "（每张 " + item.per_sheet + " 格）</option>";
+    }).join("");
+    var check = data.selfcheck || {};
+    $("sb-status").textContent = settings.enabled === false ? "已关" : "已开";
+    $("sb-check").innerHTML = check.ok
+      ? "ffmpeg 就绪：" + esc(check.version || "")
+      : "<span style='color:#e06'>ffmpeg 没找到</span>" +
+        (check.hint ? " —— " + esc(check.hint) : "");
+  }
+
+  function loadStoryboard() {
+    return request("storyboard", "GET").then(renderStoryboard);
+  }
+
+  function renderStoryboardResult(data) {
+    data = data || {};
+    if (!data.ok) {
+      $("sb-result").innerHTML = "<div class='small'>失败：" + esc(data.error || "未知原因") +
+        (data.hint ? "<br><span class='muted'>" + esc(data.hint) + "</span>" : "") + "</div>";
+      return;
+    }
+    var html = "<div class='small' style='margin-bottom:8px'>" + esc(data.summary || "") + "</div>";
+    (data.images || []).forEach(function (sheet) {
+      html += "<div style='margin-bottom:10px'>" +
+        "<div class='small muted'>第 " + sheet.i + " 张 · " + sheet.cells + " 格</div>" +
+        "<img src='" + sheet.image + "' style='max-width:100%;border-radius:8px;margin-top:4px'>" +
+        "</div>";
+    });
+    html += "<pre class='small' style='white-space:pre-wrap;margin-top:8px;max-height:320px;overflow:auto'>" +
+      esc(data.manifest || "") + "</pre>";
+    $("sb-result").innerHTML = html;
+  }
+
   // ---- 今天 / 模仿 / 邮箱 -------------------------------------------------
   function renderDaily(data) {
     data = data || {};
@@ -5352,7 +5468,7 @@
       images: "view-images", persona: "view-persona", split: "view-split",
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
-      imitate: "view-imitate", mail: "view-mail"
+      imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

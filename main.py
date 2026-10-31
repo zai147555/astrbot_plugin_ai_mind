@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 视频分镜（ffmpeg 宫格图 + 时间码清单）
+    from .mind import storyboard as storyboard_engine
+except ImportError:  # pragma: no cover
+    from mind import storyboard as storyboard_engine  # type: ignore[no-redef]
+
 try:  # 中国日历（今天是什么日子：法定假 / 寒暑假 / 调休）
     from .mind import calendar_cn as calendar_engine
 except ImportError:  # pragma: no cover
@@ -452,6 +457,7 @@ DEBUG_HELP = "\n".join([
     "#工具　工具闸门的开关与名单",
     "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
     "#邮件　她的邮箱：状态 / 看 [N] / 发 <正文> / 测试",
+    "#分镜 [文件或链接]　把视频切成宫格图 + 时间码清单",
     "#帮助　这份清单",
     "",
     "调试模式里插件完全让路：不注入情绪 / 记忆 / 身份，不分段，不记记忆。",
@@ -819,6 +825,9 @@ class AIMindPlugin(Star):
         )
         self.mail = mail_engine.Mailbox(
             mail_engine.load_config(Path(self.data_dir) / "mail.json"), logger
+        )
+        self.storyboard_settings = storyboard_engine.load_settings(
+            Path(self.data_dir) / "storyboard.json"
         )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
@@ -2686,6 +2695,9 @@ class AIMindPlugin(Star):
             ("mail/send", self._api_mail_send, "发一封邮件"),
             ("mail/test", self._api_mail_test, "发测试邮件"),
             ("daily", self._api_daily, "今天是什么日子"),
+            ("storyboard", self._api_storyboard, "视频分镜设置与自检"),
+            ("storyboard/save", self._api_storyboard_save, "保存分镜设置"),
+            ("storyboard/build", self._api_storyboard_build, "跑一次分镜"),
         ]
 
     def _register_web_apis(self) -> None:
@@ -4670,6 +4682,8 @@ class AIMindPlugin(Star):
                 return self._debug_imitate(text)
             if word.split()[0] in ("邮件", "mail", "邮箱"):
                 return await self._debug_mail(text)
+            if word.split()[0] in ("分镜", "storyboard", "sb"):
+                return await self._debug_storyboard(event, text)
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
@@ -4723,6 +4737,99 @@ class AIMindPlugin(Star):
             for line in imitate_engine.describe(self.imitate.profile(uid))[:4]:
                 out.append("    · " + line)
         return "\n".join(out)
+
+    # -- 视频分镜 -----------------------------------------------------------
+    def _storyboard_workdir(self) -> Path:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        root = Path(self.data_dir) / "storyboard" / stamp
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _storyboard_build(self, source: str) -> dict[str, Any]:
+        """拿路径或链接跑一次分镜。永不抛异常。"""
+        conf = self.storyboard_settings
+        if not conf.enabled:
+            return {"ok": False, "error": "分镜功能被关掉了（data/storyboard.json）", "hint": ""}
+        workdir = self._storyboard_workdir()
+        target = str(source or "").strip()
+        if not target:
+            return {"ok": False, "error": "没给视频路径或链接", "hint": ""}
+        if storyboard_engine.is_url(target):
+            local = workdir / "download.mp4"
+            ok, err = storyboard_engine.download(
+                target, local, conf.max_download_mb * 1024 * 1024
+            )
+            if not ok:
+                return {"ok": False, "error": err, "hint": ""}
+            target = str(local)
+        result = storyboard_engine.build(
+            target, need=conf.need, workdir=workdir,
+            ffmpeg_hint=conf.ffmpeg_path, ffprobe_hint=conf.ffprobe_path,
+        )
+        result["workdir"] = str(workdir)
+        return result
+
+    @staticmethod
+    def _storyboard_text(result: dict[str, Any], max_lines: int = 40) -> str:
+        """聊天里用的短版：摘要 + 清单（太长就截断）。"""
+        if not result.get("ok"):
+            text = "分镜失败：" + str(result.get("error") or "未知原因")
+            hint = str(result.get("hint") or "").strip()
+            if hint:
+                text += "\n" + hint
+            return text
+        lines = [str(result.get("summary") or "")]
+        manifest = str(result.get("manifest") or "").splitlines()
+        if manifest:
+            lines.append("")
+            body = manifest[1:] if len(manifest) > 1 else manifest
+            lines.extend(body[:max_lines])
+            if len(body) > max_lines:
+                lines.append("…（还有 %d 行，面板里看全部）" % (len(body) - max_lines))
+        return "\n".join(line for line in lines if line is not None)
+
+    async def _send_storyboard_images(self, event: AstrMessageEvent,
+                                      result: dict[str, Any]) -> int:
+        """把宫格图发进会话（发失败也不影响文字结果）。"""
+        if Comp is None or not result.get("ok"):
+            return 0
+        key = event.unified_msg_origin
+        sent = 0
+        for sheet in result.get("sheets") or []:
+            path = Path(str(sheet.get("image") or ""))
+            if not path.is_file():
+                continue
+            try:
+                chain = [Comp.Plain("第 %d 张分镜：" % int(sheet.get("i") or 0))]
+                chain.append(Comp.Image.fromFileSystem(str(path)))
+                await self.context.send_message(key, chain)
+                sent += 1
+            except Exception as exc:  # noqa: BLE001 - 发图失败不该毁掉结果
+                logger.warning(f"[ai_mind] 发送分镜图失败：{exc}")
+                break
+        return sent
+
+    async def _debug_storyboard(self, event: AstrMessageEvent, text: str) -> str:
+        conf = self.storyboard_settings
+        parts = text.lstrip("#").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if not arg:
+            report = storyboard_engine.selfcheck(conf.ffmpeg_path, conf.ffprobe_path)
+            out = [
+                "分镜：%s｜档位 %s｜每张最多 %d 格"
+                % ("开" if conf.enabled else "关", conf.need,
+                   storyboard_engine.max_cells_for_need(conf.need)),
+                "ffmpeg：" + (report.get("version") or "没找到"),
+            ]
+            if not report.get("ok"):
+                out.append(str(report.get("hint") or ""))
+            out.append("")
+            out.append("用法：#分镜 <视频文件路径 或 链接>")
+            return "\n".join(out)
+        result = await asyncio.to_thread(self._storyboard_build, arg) \
+            if hasattr(asyncio, "to_thread") else self._storyboard_build(arg)
+        await self._send_storyboard_images(event, result)
+        return self._storyboard_text(result)
 
     # -- 她的邮箱 -----------------------------------------------------------
     @staticmethod
@@ -5458,6 +5565,86 @@ class AIMindPlugin(Star):
                      ("date", "now", "activity", "state", "tone", "note",
                       "kind", "day_index", "day_total")},
             "spans": spans,
+        })
+
+    # -- 面板：视频分镜 -----------------------------------------------------
+    def _storyboard_payload(self) -> dict[str, Any]:
+        conf = self.storyboard_settings
+        report = storyboard_engine.selfcheck(conf.ffmpeg_path, conf.ffprobe_path)
+        return {
+            "settings": conf.to_dict(),
+            "selfcheck": report,
+            "needs": [
+                {"key": key, "label": tier["label"], "w": tier["w"], "h": tier["h"],
+                 "per_sheet": storyboard_engine.max_cells_for_need(key)}
+                for key, tier in storyboard_engine.NEED_TIERS.items()
+            ],
+        }
+
+    async def _api_storyboard(self) -> Any:
+        return json_response(self._storyboard_payload())
+
+    async def _api_storyboard_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.storyboard_settings
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        if payload.get("need") is not None:
+            need = str(payload.get("need") or "").strip().lower()
+            if need in storyboard_engine.NEED_TIERS:
+                conf.need = need
+        if payload.get("ffmpeg_path") is not None:
+            conf.ffmpeg_path = str(payload.get("ffmpeg_path") or "").strip()
+        if payload.get("ffprobe_path") is not None:
+            conf.ffprobe_path = str(payload.get("ffprobe_path") or "").strip()
+        if payload.get("max_download_mb") is not None:
+            try:
+                conf.max_download_mb = max(1, min(2048, int(payload["max_download_mb"])))
+            except (TypeError, ValueError):
+                pass
+        ok = storyboard_engine.save_settings(
+            Path(self.data_dir) / "storyboard.json", conf
+        )
+        data = self._storyboard_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入分镜设置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_storyboard_build(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        source = str(payload.get("path") or "").strip()
+        if not source:
+            return json_response({"ok": False, "error": "先填一个视频路径或链接"})
+        result = await self._mail_call(self._storyboard_build, source)
+        images: list[dict[str, Any]] = []
+        for sheet in result.get("sheets") or []:
+            path = Path(str(sheet.get("image") or ""))
+            if not path.is_file():
+                continue
+            try:
+                blob = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            images.append({
+                "i": int(sheet.get("i") or 0),
+                "from": sheet.get("from"),
+                "to": sheet.get("to"),
+                "cells": len(sheet.get("cells") or []),
+                "image": "data:image/png;base64," + blob,
+            })
+        return json_response({
+            "ok": bool(result.get("ok")),
+            "error": result.get("error", ""),
+            "hint": result.get("hint", ""),
+            "summary": result.get("summary", ""),
+            "manifest": result.get("manifest", ""),
+            "images": images,
+            "settings": self.storyboard_settings.to_dict(),
         })
 
     async def _api_style(self) -> Any:
