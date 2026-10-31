@@ -2872,6 +2872,8 @@ class AIMindPlugin(Star):
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
             ("bili/login", self._api_bili_login, "校验登录凭据"),
+            ("bili/qr/start", self._api_bili_qr_start, "生成扫码登录二维码"),
+            ("bili/qr/poll", self._api_bili_qr_poll, "轮询扫码结果"),
             ("sticker", self._api_sticker, "表情包库"),
             ("sticker/save", self._api_sticker_save, "保存表情设置"),
             ("sticker/tag", self._api_sticker_tag, "给表情打标"),
@@ -6849,6 +6851,35 @@ class AIMindPlugin(Star):
         report = await self._mail_call(bili_engine.login_check, raw)
         report["has_cookie"] = bool(self.bili_settings.cookie)
         return json_response(report)
+
+    async def _api_bili_qr_start(self) -> Any:
+        report = await self._mail_call(bili_engine.qr_generate)
+        report["has_cookie"] = bool(self.bili_settings.cookie)
+        return json_response(report)
+
+    async def _api_bili_qr_poll(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            return json_response({"status": "error", "message": "缺 key", "cookie": ""})
+        result = await self._mail_call(bili_engine.qr_poll, key)
+        saved = False
+        login = {}
+        if result.get("status") == "success":
+            jar = bili_engine.normalize_cookie(str(result.get("cookie") or ""))
+            if jar:
+                self.bili_settings.cookie = jar
+                bili_engine.save_settings(Path(self.data_dir) / "bili.json", self.bili_settings)
+                saved = True
+                try:
+                    login = await self._mail_call(bili_engine.login_check, jar)
+                except Exception:  # noqa: BLE001
+                    login = {}
+        result["saved"] = saved
+        result["login"] = login
+        result["has_cookie"] = bool(self.bili_settings.cookie)
+        return json_response(result)
 
     async def _api_bili_clear(self) -> Any:
         removed = self.bili_seen.clear()

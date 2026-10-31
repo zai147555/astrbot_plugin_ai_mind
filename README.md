@@ -316,3 +316,13 @@ python3 audit_buttons.py                   # 面板按钮绑定审计
 登录后：高清直链（1080P 优先，拿不到自动降级）、字幕命中率更高、排行榜不再被 -352 拦。
 新增「校验登录」会直接告诉你昵称与等级；Cookie 失效时链路自动退回匿名可用部分。
 
+
+### 扫码登录（3.0.0.1 补充）
+
+「刷B站」页的「扫码登录」会走 B 站官方扫码流程：插件向
+`passport.bilibili.com/x/passport-login/web/qrcode/generate` 要一张码，
+面板用内联的 MIT 二维码库（qrcode-generator）画在 canvas 上——**不联网、不经过第三方**。
+你用 B 站 App 扫、手机上点确认，面板每 2 秒问一次结果；成功时把响应头里的
+`SESSDATA` / `bili_jct` / `DedeUserID` 等凭据存进 `data/bili.json`，并顺手校验一次昵称。
+过期了会提示重新生成；也可以随时改用手动粘贴 Cookie。
+

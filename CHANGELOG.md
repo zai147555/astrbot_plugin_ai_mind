@@ -8,6 +8,11 @@
 > 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0.1 做了什么
+- **B 站扫码登录**：面板「刷B站」新增「扫码登录」——走官方 qrcode 协议（generate + poll），
+  二维码用内联的 MIT 库（qrcode-generator）画在 canvas 上，不联网、不经过第三方；
+  每 2 秒轮询一次，成功后自动从 Set-Cookie 取 SESSDATA / bili_jct / DedeUserID 存进
+  data/bili.json 并校验昵称；过期会提示重新生成，手动粘贴 Cookie 的方式保留。
+
 - **内置 ffmpeg**（新模块 mind/ffmpeg_setup.py）：面板「分镜」页一键下载静态包 → 解到
   data/bin（免管理员、不改 PATH）→ 校验 -version 后写进设置；启动时自动找插件目录 /
   PATH / winget / scoop / 常见安装位置。下载源可换，失败会把原因带回面板。

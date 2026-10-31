@@ -28,7 +28,25 @@ from typing import Any, Iterable
 from urllib.parse import urlencode
 
 API = "https://api.bilibili.com"
+PASSPORT = "https://passport.bilibili.com"
 REFERER = "https://www.bilibili.com"
+
+#: 扫码登录的状态码 → 给面板看的说法
+QR_STATES = {
+    0: "success",
+    86038: "expired",
+    86090: "scanned",
+    86101: "waiting",
+}
+QR_MESSAGES = {
+    "success": "登录成功，凭据已保存",
+    "expired": "二维码过期了，重新生成一张",
+    "scanned": "扫到了，等手机上点确认",
+    "waiting": "等着扫码…",
+    "error": "请求失败",
+}
+#: 扫码成功后要留下哪几个 Cookie
+COOKIE_KEEP = ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "buvid3", "sid")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
@@ -311,6 +329,92 @@ def fetch_region(rid: int = 1, limit: int = 5,
         return [], err
     archives = ((payload or {}).get("data") or {}).get("archives") or []
     return [normalize(item) for item in archives if isinstance(item, dict)], ""
+
+
+def _get_json_headers(path: str, params: dict[str, Any] | None = None,
+                      timeout: int = HTTP_TIMEOUT, cookie: str = "",
+                      host: str = API) -> tuple[dict[str, Any] | None, list[str], str]:
+    """请求并**留下响应头**（扫码登录要从 Set-Cookie 里拿凭据）。"""
+    import urllib.error
+    import urllib.request
+
+    url = host + path
+    if params:
+        url += "?" + urlencode(params)
+    headers = {"User-Agent": UA, "Referer": REFERER, "Accept": "application/json"}
+    jar = normalize_cookie(cookie)
+    if jar:
+        headers["Cookie"] = jar
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            set_cookie = list(response.headers.get_all("Set-Cookie") or [])
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, [], "%s: %s" % (type(exc).__name__, exc)
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        return None, [], "返回的不是 JSON"
+    code = payload.get("code")
+    if code not in (0, None):
+        return None, [], "接口返回 %s（%s）" % (code, payload.get("message") or "")
+    return payload, set_cookie, ""
+
+
+def cookie_from_set_cookie(rows: list[str]) -> str:
+    """从 Set-Cookie 列表里挑出登录凭据，拼成请求头那种一串。"""
+    found: dict[str, str] = {}
+    for row in rows or ():
+        head = str(row or "").split(";", 1)[0].strip()
+        name, _, value = head.partition("=")
+        name = name.strip()
+        if name in COOKIE_KEEP and value.strip():
+            found[name] = value.strip()
+    order = [name for name in COOKIE_KEEP if name in found]
+    return "; ".join("%s=%s" % (name, found[name]) for name in order)
+
+
+def qr_generate(timeout: int = HTTP_TIMEOUT) -> dict[str, Any]:
+    """要一张扫码登录的二维码（url 给前端画，key 给轮询）。"""
+    payload, _headers, err = _get_json_headers(
+        "/x/passport-login/web/qrcode/generate", timeout=timeout, host=PASSPORT
+    )
+    if err:
+        return {"ok": False, "error": err}
+    data = (payload or {}).get("data") or {}
+    url = str(data.get("url") or "")
+    key = str(data.get("qrcode_key") or "")
+    if not url or not key:
+        return {"ok": False, "error": "没拿到二维码"}
+    return {"ok": True, "url": url, "key": key, "error": ""}
+
+
+def qr_poll(key: str, timeout: int = HTTP_TIMEOUT) -> dict[str, Any]:
+    """问一次扫码结果。成功时把 Set-Cookie 里的凭据带回去。"""
+    token = str(key or "").strip()
+    if not token:
+        return {"status": "error", "message": "缺 qrcode_key", "cookie": ""}
+    payload, headers, err = _get_json_headers(
+        "/x/passport-login/web/qrcode/poll", {"qrcode_key": token},
+        timeout=timeout, host=PASSPORT,
+    )
+    if err:
+        return {"status": "error", "message": err, "cookie": ""}
+    data = (payload or {}).get("data") or {}
+    try:
+        code = int(data.get("code") or 0)
+    except (TypeError, ValueError):
+        code = -1
+    state = QR_STATES.get(code, "error")
+    cookie = cookie_from_set_cookie(headers) if state == "success" else ""
+    message = str(data.get("message") or QR_MESSAGES.get(state, ""))
+    return {
+        "status": state,
+        "message": message or QR_MESSAGES.get(state, ""),
+        "cookie": cookie,
+        "code": code,
+    }
 
 
 def login_check(cookie: str, timeout: int = HTTP_TIMEOUT) -> dict[str, Any]:
@@ -823,6 +927,8 @@ __all__ = [
     "normalize", "score_item", "pick", "format_duration", "format_count", "build_report",
     "sign_wbi", "search_videos", "fetch_subtitle_lines", "ytdlp_path",
     "normalize_cookie", "cookie_value", "login_check",
+    "PASSPORT", "QR_STATES", "QR_MESSAGES", "COOKIE_KEEP",
+    "cookie_from_set_cookie", "qr_generate", "qr_poll",
     "download_with_ytdlp", "due_today",
 ]
 

@@ -181,7 +181,7 @@ const KNOWN_ROUTES = [
   PLUGIN + "/imitate/clear", PLUGIN + "/mail", PLUGIN + "/mail/save",
   PLUGIN + "/mail/inbox", PLUGIN + "/mail/send", PLUGIN + "/mail/test",
   PLUGIN + "/storyboard", PLUGIN + "/storyboard/save",
-  PLUGIN + "/storyboard/install-ffmpeg", PLUGIN + "/bili/login",
+  PLUGIN + "/storyboard/install-ffmpeg", PLUGIN + "/bili/login",  PLUGIN + "/bili/qr/start", PLUGIN + "/bili/qr/poll",
   PLUGIN + "/bili", PLUGIN + "/bili/save", PLUGIN + "/bili/scroll",
   PLUGIN + "/bili/storyboard", PLUGIN + "/bili/clear",
   PLUGIN + "/sticker", PLUGIN + "/sticker/save", PLUGIN + "/sticker/tag",
