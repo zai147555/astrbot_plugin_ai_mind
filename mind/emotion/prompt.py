@@ -88,6 +88,10 @@ def render_state_block(snapshot: Snapshot, verbosity: str = "normal", bot_name: 
             )
 
     lines.append(f"表达基调：{snapshot.style}")
+    # 身体是另一层滤镜：困了/饿了/病了，先让她自己知道，
+    # 否则光有情绪，半夜三点也精神抖擞 —— 那不叫像人。
+    if getattr(snapshot, "body_note", ""):
+        lines.append(snapshot.body_note)
     if bot_name:
         lines.insert(0, f"（{bot_name} 的内心状态，不是要说出口的内容）")
     else:

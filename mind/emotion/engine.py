@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .appraisal import Appraiser, Rule, Stimulus, parse_custom_rule
+from . import physiology
 from .model import (
     PAD,
     Prototype,
@@ -257,6 +258,10 @@ class SessionMood:
     emotion_hint_until: float = 0.0
     users: dict[str, Relation] = field(default_factory=dict)
     history: list[MoodEvent] = field(default_factory=list)
+    #: 身体状态（昼夜节律/能量/饥饿/压力/疾病）
+    body: physiology.Body = field(default_factory=physiology.Body)
+    #: 上一次身体给情绪的偏移：用来算「这轮身体变了多少」，避免每 tick 反复叠加
+    body_offset: PAD = field(default_factory=PAD)
 
     # -- 时间演化 -----------------------------------------------------------
     def tick(self, now: float, settings: Settings) -> None:
@@ -280,6 +285,19 @@ class SessionMood:
                     relation.affinity = decay_scalar(relation.affinity, 0.0, half_life, dt)
         self.last_tick = now
 
+        # ---- 身体 ----
+        # 身体独立演化，只把「变化量」折算进情绪（不是覆盖）：
+        # 困了/饿了/病了是慢慢把人往下推，而不是一下子换个人。
+        try:
+            physiology.evolve(self.body, now)
+            offset = physiology.pad_offset(self.body)
+            delta = (offset - self.body_offset) * 0.6
+            if abs(delta.p) + abs(delta.a) + abs(delta.d) > 1e-4:
+                self.emotion = (self.emotion + delta).limit(1.0)
+            self.body_offset = offset
+        except Exception:  # noqa: BLE001 - 身体算不出来不能影响聊天
+            pass
+
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self, history_size: int) -> dict[str, Any]:
         return {
@@ -296,6 +314,7 @@ class SessionMood:
             "emotion_hint_until": round(self.emotion_hint_until, 2),
             "users": {uid: rel.to_dict() for uid, rel in self.users.items()},
             "history": [e.to_dict() for e in self.history[-history_size:]],
+            "body": self.body.to_dict(),
         }
 
     @staticmethod
@@ -315,6 +334,7 @@ class SessionMood:
             style_until=to_float(data.get("style_until"), 0.0),
             emotion_hint=str(data.get("emotion_hint", "") or ""),
             emotion_hint_until=to_float(data.get("emotion_hint_until"), 0.0),
+            body=physiology.Body.from_dict(data.get("body")),
         )
         raw_users = data.get("users")
         if isinstance(raw_users, dict):
@@ -359,6 +379,10 @@ class Snapshot:
     gap_seconds: float    # 这条消息到来之前隔了多久（注入给模型用）
     history: list[MoodEvent]
     crisis: bool
+    #: 身体状态（面板可单独展示；身体与情绪是两层，别混）
+    body: physiology.Body = field(default_factory=physiology.Body)
+    #: 一句人话（「病着呢：头发沉」），没特殊情况就是空串
+    body_note: str = ""
 
     # -- 便利属性 -----------------------------------------------------------
     @property
@@ -807,6 +831,8 @@ class EmotionEngine:
             gap_seconds=max(0.0, session.last_gap),
             history=list(session.history[-self.settings.history_size :]),
             crisis=now < session.crisis_until,
+            body=session.body,
+            body_note=physiology.describe(session.body),
         )
 
     def rank(self, session: SessionMood, limit: int = 10) -> list[Relation]:
