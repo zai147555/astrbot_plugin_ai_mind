@@ -8,6 +8,15 @@
 > 装一次 3.0.0，之后我改的东西仍然叫 3.0.0 —— 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0 持续新增
+- **记忆价值回传 + 经验结晶**（新模块 `mind/memory/evolve.py`，移植 MemOS memos-local-plugin，MIT）：
+  - 隐含反馈：用户短句「对 / 不对 / 记错了」评价上一轮注入的记忆，价值按 +0.12 / −0.18 调整，
+    并沿超图邻居（共享 ≥2 关键词）按 0.4 传播一跳；
+  - 手动入口：`#记忆 对|错 <id>`；`#记忆` 显示「价值回传 N 次」；
+  - 经验结晶：同话题 ≥3 条、均价 ≥0.8 的高价值记忆压成 `kind=policy` 的「经验」卡，
+    维护循环里每 20 圈跑一次，同组不重复；
+  - 不搬 step-level 反思流水线与 skill 结晶（聊天场景用不上）。
+  - 新增 tests/test_evolve.py（18 条）+ tests/test_evolve_plugin.py（9 条）。
+
 - **画图**（新模块 `mind/imagegen.py`，移植 dsh-mo-image，MIT）：
   - 文生图 + 参考图编辑（multipart），OpenAI Images 兼容；
   - 适配器层：openai-images / gpt-image / dall-e-3 / siliconflow / dashscope-wanx，

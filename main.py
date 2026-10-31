@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 记忆价值回传与经验结晶（移植 MemOS 的 Reflect2Evolve 思路）
+    from .mind.memory import evolve as evolve_engine
+except ImportError:  # pragma: no cover
+    from mind.memory import evolve as evolve_engine  # type: ignore[no-redef]
+
 try:  # 知识树（按会话激活的结构化知识，模型改件待审）
     from .mind import knowledge as knowledge_engine
 except ImportError:  # pragma: no cover
@@ -482,7 +487,7 @@ DEBUG_HELP = "\n".join([
     "🔧 调试模式命令（只在开了调试模式的会话、只有你能用）",
     "#状态　插件 / 情绪 / 关系 / 曲线 / 待抽取，一屏看完",
     "#曲线　采样点数量、最近一点、数据库能不能写",
-    "#记忆　最近 5 条记忆 + 待抽取轮数",
+    "#记忆　最近 5 条记忆 + 待抽取轮数；#记忆 对|错 <id> 调整价值",
     "#抽取　立刻把攒着的对话送去抽记忆",
     "#工具　工具闸门的开关与名单",
     "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
@@ -882,6 +887,10 @@ class AIMindPlugin(Star):
         self.imagegen_settings = imagegen_engine.load_settings(
             Path(self.data_dir) / "imagegen.json"
         )
+        #: 上一轮注入给模型的记忆 id（下一轮用户说「不对」就是一次评价）
+        self._last_memory_ids: dict[str, list[int]] = {}
+        self._feedback_applied = 0
+        self._evolve_tick = 0
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -1029,6 +1038,12 @@ class AIMindPlugin(Star):
                 self._style_maintenance()
                 self._debounce_gc()
                 await self._bili_daily_tick()
+                self._evolve_tick += 1
+                if self._evolve_tick >= 20:
+                    self._evolve_tick = 0
+                    made = await asyncio.to_thread(self._crystallize_memories)
+                    if made:
+                        logger.info(f"[ai_mind] 结晶出 {made} 条经验")
                 if self.engine.dirty:
                     await asyncio.to_thread(self.engine.flush, now)
                 await self.flush_memories()
@@ -1698,6 +1713,13 @@ class AIMindPlugin(Star):
                         else:
                             self._place(req, relation_block, self.emotion_injection_mode)
 
+            # ---------- 记忆反馈（对上一轮注入的那几条） ----------
+            if self.settings.memory.enabled:
+                try:
+                    self._apply_memory_feedback(session_key, event.message_str or "")
+                except Exception as exc:  # noqa: BLE001 - 反馈算错不能影响聊天
+                    logger.warning(f"[ai_mind] 记忆反馈失败：{exc}")
+
             # ---------- 记忆 ----------
             if self.settings.memory.enabled:
                 query = event.message_str or ""
@@ -1740,6 +1762,8 @@ class AIMindPlugin(Star):
                         trusted=False, mode=self.memory_injection_mode,
                     )
                     self.store.touch(result.ids())
+                    # 记下来：下一轮用户要是说「不对」，评价的就是这几条
+                    self._last_memory_ids[session_key] = list(result.ids())
 
             # ---------- 表达示例（先审后注入） ----------
             try:
@@ -4751,7 +4775,7 @@ class AIMindPlugin(Star):
             if word in ("曲线", "curve"):
                 return self._debug_curve(key)
             if word in ("记忆", "memory", "mem"):
-                return self._debug_memory()
+                return self._debug_memory(text)
             if word in ("抽取", "extract"):
                 return await self._debug_extract()
             if word in ("工具", "tools"):
@@ -5116,6 +5140,63 @@ class AIMindPlugin(Star):
         if not result.get("ok"):
             return text_out
         return await self._emit_bulk(event, text_out, result.get("images") or [], "画好了")
+
+    # -- 记忆价值回传 / 经验结晶 --------------------------------------------
+    def _apply_memory_feedback(self, session: str, text: str) -> int:
+        """用户这句话在肯定/否定上一轮想起的记忆 → 价值回传（含邻居）。"""
+        key = str(session or "")
+        ids = self._last_memory_ids.pop(key, [])
+        if not ids:
+            return 0
+        sign, word = evolve_engine.detect_feedback(text)
+        if not sign or not self.settings.memory.enabled:
+            return 0
+        rows = [item for item in (self.store.get(int(mid)) for mid in ids if mid) if item]
+        changes = evolve_engine.apply_value(rows, ids, sign)
+        for memory_id, value in changes.items():
+            self.store.update_many([memory_id], importance=float(value))
+        if changes:
+            self._feedback_applied += 1
+            logger.info(
+                f"[ai_mind] 记忆反馈「{word}」({'+' if sign > 0 else '-'})："
+                f"调整 {len(changes)} 条"
+            )
+        return len(changes)
+
+    def _crystallize_memories(self) -> int:
+        """把同一话题下一批高价值记忆压成「经验」卡（kind=policy）。"""
+        try:
+            rows = self.store.list_memories(limit=300)
+        except Exception:  # noqa: BLE001
+            return 0
+        try:
+            from .mind.memory.model import Memory as _Memory
+            from .mind.memory.model import SCOPE_USER as _user_scope
+        except ImportError:  # pragma: no cover - 测试里 main 是顶层模块
+            from mind.memory.model import Memory as _Memory  # type: ignore[no-redef]
+            from mind.memory.model import SCOPE_USER as _user_scope  # type: ignore[no-redef]
+
+        policies = [item for item in rows if str(getattr(item, "kind", "")) == "policy"]
+        seeds = [
+            item for item in rows
+            if str(getattr(item, "kind", "")) != "policy"
+            and float(getattr(item, "importance", 0) or 0) >= evolve_engine.CLUSTER_MIN_VALUE
+        ]
+        made = 0
+        for card in evolve_engine.crystallize(seeds, policies)[:2]:
+            memory = _Memory(
+                content=str(card.get("content") or "")[:400],
+                keywords=tuple(card.get("keywords") or ())[:8],
+                kind="policy",
+                importance=float(card.get("importance") or 0.7),
+                scope=_user_scope,
+                owner_id="",
+                session_id="",
+                source="auto",
+            )
+            if self.store.add(memory):
+                made += 1
+        return made
 
     # -- 知识树 -------------------------------------------------------------
     def _knowledge_save(self) -> bool:
@@ -5688,7 +5769,20 @@ class AIMindPlugin(Star):
             out.append("注意：采样已被标记为不可用（面板上会出红条）")
         return "\n".join(out)
 
-    def _debug_memory(self) -> str:
+    def _debug_memory(self, text: str = "") -> str:
+        args = [part for part in str(text or "").lstrip("#").strip().split() if part]
+        if len(args) >= 3 and args[1] in ("对", "错"):
+            sign = 1 if args[1] == "对" else -1
+            targets = [item for item in args[2:4] if item.isdigit()]
+            rows = [item for item in (self.store.get(int(mid)) for mid in targets) if item]
+            changes = evolve_engine.apply_value(rows, targets, sign)
+            for memory_id, value in changes.items():
+                self.store.update_many([memory_id], importance=float(value))
+            if not changes:
+                return "没调整到任何记忆（id 不对，或者价值已经在边界上）。"
+            return "已按「%s」调整 %d 条记忆的价值。\n" % (args[1], len(changes)) + "\n".join(
+                "%d → %.2f" % (mid, value) for mid, value in changes.items()
+            )
         rows = self.store.list_memories(limit=5)
         out = ["记忆共 %d 条，最近 5 条：" % int(self.store.stats().get("total", 0))]
         for item in rows:
@@ -5707,6 +5801,8 @@ class AIMindPlugin(Star):
         if not rows:
             out.append("（还没有记忆）")
         out.append("待抽取 %d 轮" % sum(len(v) for v in self._buffers.values()))
+        out.append("价值回传 %d 次｜用法：#记忆 对|错 <id> 手动调整"
+                   % int(getattr(self, "_feedback_applied", 0)))
         return "\n".join(out)
 
     async def _debug_extract(self) -> str:
