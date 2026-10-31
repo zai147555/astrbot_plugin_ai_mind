@@ -383,6 +383,7 @@
     <button id="tab-bili" data-adv="1">刷B站</button>
     <button id="tab-knowledge" data-adv="1">知识</button>
     <button id="tab-imagegen" data-adv="1">画图</button>
+    <button id="tab-market" data-adv="1">市场</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1575,6 +1576,45 @@
         <span class="small muted">最多 12 张</span>
       </div>
       <div id="ig-recent" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="view-market" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>需求先搜市场</h3>
+        <span class="small muted">提需求时自动去开源插件市场找现成的</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        数据源是 DSH 官方插件目录。只在「像需求」的那句话上触发（插件/功能 + 做/加/找/接入），
+        默认只对专属用户触发，免得群里刷屏。
+      </div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="mk-enabled"> 启用</label>
+        <label class="small"><input type="checkbox" id="mk-auto"> 自动搜</label>
+        <label class="small"><input type="checkbox" id="mk-owner"> 仅主人触发</label>
+        <label class="small muted">每次 <input id="mk-limit" type="number" min="1" max="20" style="width:70px"> 条</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="mk-save">保存</button>
+        <button class="ghost small" id="mk-reload">刷新</button>
+        <span class="grow"></span>
+        <span class="small muted" id="mk-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin-right:8px">搜一下</h3>
+        <input id="mk-query" placeholder="用能力词，例如：记忆 / 语音 / 终端界面" style="flex:1;min-width:220px">
+        <button class="primary small" id="mk-go">搜索</button>
+      </div>
+      <div id="mk-hits" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:8px">最近查过</h3>
+      <div id="mk-history"></div>
     </div>
   </div>
 
@@ -3142,6 +3182,34 @@
         loadImagegen().catch(function () {});
       }).catch(function (e) {
         $("ig-go-status").textContent = "失败：" + e.message;
+      });
+    };
+    $("tab-market").onclick = function () {
+      setView("market");
+      loadMarket().catch(function (e) { toast("加载市场设置失败：" + e.message); });
+    };
+    $("mk-reload").onclick = function () {
+      loadMarket().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("mk-save").onclick = function () {
+      request("market/save", "POST", {
+        enabled: $("mk-enabled").checked,
+        auto: $("mk-auto").checked,
+        owner_only: $("mk-owner").checked,
+        limit: Number($("mk-limit").value) || 6
+      }).then(function (data) { renderMarket(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("mk-go").onclick = function () {
+      var query = ($("mk-query").value || "").trim();
+      if (!query) { toast("先填个能力词"); return; }
+      $("mk-hits").innerHTML = "<div class='small muted'>正在搜…</div>";
+      request("market/search", "POST", { query: query }).then(function (data) {
+        renderMarketHits(data);
+        if (data.history) renderMarket({ settings: null, history: data.history });
+      }).catch(function (e) {
+        $("mk-hits").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
       });
     };
     $("tab-style").onclick = function () {
@@ -5673,6 +5741,63 @@
     $("sb-result").innerHTML = html;
   }
 
+  // ---- 市场 ---------------------------------------------------------------
+  function renderMarket(data) {
+    data = data || {};
+    var settings = data.settings;
+    if (settings) {
+      $("mk-enabled").checked = settings.enabled !== false;
+      $("mk-auto").checked = settings.auto !== false;
+      $("mk-owner").checked = settings.owner_only !== false;
+      $("mk-limit").value = settings.limit || 6;
+      $("mk-status").textContent = (settings.enabled ? "开" : "关") +
+        "｜自动 " + (settings.auto ? "开" : "关") +
+        "｜仅主人 " + (settings.owner_only ? "是" : "否");
+    }
+    var history = data.history || [];
+    $("mk-history").innerHTML = history.length ? history.map(function (row) {
+      var hits = (row.hits || []).slice(0, 3).map(function (hit) {
+        return "<div class='small muted' style='margin-left:12px'>· " +
+          esc(hit.fullName || "") + "　" + esc(hit.license || "") +
+          ((hit.riskFlags || []).length ? "　风险：" + esc((hit.riskFlags || []).join("、")) : "") +
+          "</div>";
+      }).join("");
+      return "<div style='margin-bottom:10px'><div class='small'><b>" +
+        esc(row.query || "") + "</b>　<span class='muted'>" +
+        (row.hits || []).length + " 条</span></div>" + hits + "</div>";
+    }).join("") : "<div class='small muted'>还没查过。</div>";
+  }
+
+  function loadMarket() {
+    return request("market", "GET").then(renderMarket);
+  }
+
+  function renderMarketHits(data) {
+    data = data || {};
+    if (!data.ok) {
+      $("mk-hits").innerHTML = "<div class='small'>" + esc(data.error || "搜不了") + "</div>";
+      return;
+    }
+    var hits = data.hits || [];
+    if (!hits.length) {
+      $("mk-hits").innerHTML = "<div class='small muted'>没有搜到。换几个说法（能力词）再试。</div>";
+      return;
+    }
+    $("mk-hits").innerHTML = hits.map(function (hit) {
+      var meta = [hit.license || "", (hit.stars || 0) + "★", hit.inRegistry ? "社区登记" : ""]
+        .filter(Boolean).join("，");
+      var risks = (hit.riskFlags || []).length
+        ? "<div class='small' style='color:#e06'>风险：" + esc((hit.riskFlags || []).join("、")) + "</div>"
+        : "";
+      return "<div style='margin-bottom:12px'>" +
+        "<div><b>" + esc(hit.fullName || "") + "</b> <span class='small muted'>" + esc(meta) + "</span></div>" +
+        "<div class='small'>" + esc(hit.summary || "") + "</div>" + risks +
+        (hit.url ? "<div class='small muted'>" + esc(hit.url) + "</div>" : "") +
+        (hit.install ? "<div class='small muted'>" + esc(hit.install) + "</div>" : "") +
+        "</div>";
+    }).join("");
+  }
+
   // ---- 生图 ---------------------------------------------------------------
   function renderImagegen(data) {
     data = data || {};
@@ -5981,7 +6106,8 @@
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
       imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
-      bili: "view-bili", knowledge: "view-knowledge", imagegen: "view-imagegen"
+      bili: "view-bili", knowledge: "view-knowledge", imagegen: "view-imagegen",
+      market: "view-market"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

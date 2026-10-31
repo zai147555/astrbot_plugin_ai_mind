@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 需求先搜市场（DSH 插件目录）
+    from .mind import market as market_engine
+except ImportError:  # pragma: no cover
+    from mind import market as market_engine  # type: ignore[no-redef]
+
 try:  # 记忆价值回传与经验结晶（移植 MemOS 的 Reflect2Evolve 思路）
     from .mind.memory import evolve as evolve_engine
 except ImportError:  # pragma: no cover
@@ -498,6 +503,7 @@ DEBUG_HELP = "\n".join([
     "#听歌 <文件>　响度/动态/峰值 + 一句结论",
     "#知识　知识树：列表 / 学 <名> / 开|关 <名> / 加 <名> <标题> <内容> / 待审 / 批|否 <id>",
     "#画 <描述>　文生图；#画 改 <图片> <说明>　参考图编辑",
+    "#市场 <能力词>　去开源插件市场搜有没有现成的",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -891,6 +897,13 @@ class AIMindPlugin(Star):
         self._last_memory_ids: dict[str, list[int]] = {}
         self._feedback_applied = 0
         self._evolve_tick = 0
+        self.market_settings = market_engine.load_settings(
+            Path(self.data_dir) / "market.json"
+        )
+        self.market_history = market_engine.load_history(
+            Path(self.data_dir) / "market_history.json"
+        )
+        self._market_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -1639,6 +1652,15 @@ class AIMindPlugin(Star):
                 _kb = ""
             if _kb:
                 req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _kb).strip()
+
+            # ---------- 需求先搜市场 ----------
+            try:
+                _market = await self._market_for_turn(event)
+            except Exception as exc:  # noqa: BLE001 - 搜市场失败不能影响聊天
+                logger.warning(f"[ai_mind] 搜市场失败：{exc}")
+                _market = ""
+            if _market:
+                req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _market).strip()
 
             # ---------- 情绪 ----------
             self._diag["turns"] += 1
@@ -2792,6 +2814,9 @@ class AIMindPlugin(Star):
             ("bili/scroll", self._api_bili_scroll, "刷一轮"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
+            ("market", self._api_market, "插件市场搜索"),
+            ("market/search", self._api_market_search, "搜市场"),
+            ("market/save", self._api_market_save, "保存市场搜索设置"),
             ("imagegen", self._api_imagegen, "生图设置与最近作品"),
             ("imagegen/save", self._api_imagegen_save, "保存生图配置"),
             ("imagegen/generate", self._api_imagegen_generate, "文生图"),
@@ -4794,6 +4819,8 @@ class AIMindPlugin(Star):
                 return await self._debug_bili(event, text)
             if word.split()[0] in ("画", "画图", "draw"):
                 return await self._debug_imagegen(event, text)
+            if word.split()[0] in ("市场", "market"):
+                return await self._debug_market(event, text)
             if word.split()[0] in ("知识", "kb"):
                 return self._debug_knowledge(event, text)
             if word.split()[0] in ("动图", "gif"):
@@ -5090,6 +5117,77 @@ class AIMindPlugin(Star):
         for sheet in result.get("sheets") or []:
             images.extend(str(item) for item in (sheet.get("images") or []))
         return await self._emit_bulk(event, text, images, "今天的 B 站日报")
+
+    # -- 需求先搜市场 -------------------------------------------------------
+    def _market_is_owner(self, sender: str) -> bool:
+        who = str(sender or "")
+        if who and who == DEBUG_UID:
+            return True
+        try:
+            special = getattr(self.settings.emotion, "special_users", ()) or ()
+            return who in {str(item) for item in special}
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _market_search(self, query: str) -> tuple[list[dict[str, Any]], str]:
+        """带 5 分钟缓存的搜索（同一句话不会重复打网络）。"""
+        key = str(query or "")
+        cached = self._market_cache.get(key)
+        if cached and (time.time() - cached[0]) < 300:
+            return list(cached[1]), ""
+        hits, err = market_engine.search(key, self.market_settings)
+        if not err:
+            self._market_cache[key] = (time.time(), list(hits))
+        return hits, err
+
+    async def _market_for_turn(self, event: AstrMessageEvent) -> str:
+        """这一轮像需求 → 先去市场搜一圈，把结果塞进提示词。"""
+        conf = self.market_settings
+        if not conf.enabled or not conf.auto:
+            return ""
+        text = str(getattr(event, "message_str", "") or "")
+        if not market_engine.looks_like_requirement(text):
+            return ""
+        sender = str(event.get_sender_id() or "")
+        if conf.owner_only and not self._market_is_owner(sender):
+            return ""
+        words = market_engine.keywords_of(text)
+        query = " ".join(words[:3]).strip() or text.strip()[:16]
+        hits, err = await asyncio.to_thread(self._market_search, query)
+        if err:
+            return ""          # 网络问题不冒充「没有」
+        self.market_history.add(query, hits, note="")
+        market_engine.save_history(Path(self.data_dir) / "market_history.json",
+                                   self.market_history)
+        return market_engine.render_block(query, hits)
+
+    async def _debug_market(self, event: AstrMessageEvent, text: str) -> str:
+        conf = self.market_settings
+        parts = text.lstrip("#").strip().split(None, 1)
+        query = parts[1].strip() if len(parts) > 1 else ""
+        if not query:
+            rows = [
+                "市场：%s｜自动搜 %s｜仅主人 %s｜每次 %d 条"
+                % ("开" if conf.enabled else "关", "开" if conf.auto else "关",
+                   "是" if conf.owner_only else "否", conf.limit),
+                "用法：#市场 <能力词>（用能力，不要用产品名）",
+            ]
+            recent = self.market_history.rows[:3]
+            if recent:
+                rows.append("")
+                rows.append("最近查过：")
+                for row in recent:
+                    rows.append("  %s（%d 条）" % (str(row.get("query") or "")[:24],
+                                                  len(row.get("hits") or [])))
+            return "\n".join(rows)
+        words = market_engine.keywords_of(query) or [query]
+        term = " ".join(words[:3])
+        hits, err = await asyncio.to_thread(self._market_search, term)
+        if not err:
+            self.market_history.add(term, hits)
+            market_engine.save_history(Path(self.data_dir) / "market_history.json",
+                                       self.market_history)
+        return market_engine.render_chat(term, hits, err)
 
     # -- 生图 ---------------------------------------------------------------
     def _imagegen_out(self) -> Path:
@@ -6528,6 +6626,57 @@ class AIMindPlugin(Star):
         removed = self.bili_seen.clear()
         data = self._bili_payload()
         data["removed"] = removed
+        return json_response(data)
+
+    # -- 面板：市场 ---------------------------------------------------------
+    def _market_payload(self) -> dict[str, Any]:
+        return {
+            "settings": self.market_settings.to_dict(),
+            "history": list(self.market_history.rows[:10]),
+        }
+
+    async def _api_market(self) -> Any:
+        return json_response(self._market_payload())
+
+    async def _api_market_search(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            return json_response({"ok": False, "error": "先给一个能力词", "hits": []})
+        words = market_engine.keywords_of(query) or [query]
+        term = " ".join(words[:3])
+        hits, err = await self._mail_call(self._market_search, term)
+        if not err:
+            self.market_history.add(term, hits)
+            market_engine.save_history(Path(self.data_dir) / "market_history.json",
+                                       self.market_history)
+        return json_response({"ok": not err, "error": err, "query": term,
+                              "hits": hits, "history": list(self.market_history.rows[:10])})
+
+    async def _api_market_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.market_settings
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        if "auto" in payload:
+            conf.auto = bool(payload.get("auto"))
+        if "owner_only" in payload:
+            conf.owner_only = bool(payload.get("owner_only"))
+        if payload.get("base_url") is not None:
+            conf.base_url = str(payload.get("base_url") or "").strip() or conf.base_url
+        if payload.get("limit") is not None:
+            try:
+                conf.limit = max(1, min(20, int(payload["limit"])))
+            except (TypeError, ValueError):
+                pass
+        ok = market_engine.save_settings(Path(self.data_dir) / "market.json", conf)
+        data = self._market_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入市场设置失败，详细原因见日志")
         return json_response(data)
 
     # -- 面板：生图 ---------------------------------------------------------

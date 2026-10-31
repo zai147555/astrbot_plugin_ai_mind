@@ -183,6 +183,7 @@ const KNOWN_ROUTES = [
   PLUGIN + "/storyboard", PLUGIN + "/storyboard/save",
   PLUGIN + "/bili", PLUGIN + "/bili/save", PLUGIN + "/bili/scroll",
   PLUGIN + "/bili/storyboard", PLUGIN + "/bili/clear",
+  PLUGIN + "/market", PLUGIN + "/market/search", PLUGIN + "/market/save",
   PLUGIN + "/imagegen", PLUGIN + "/imagegen/save",
   PLUGIN + "/imagegen/generate", PLUGIN + "/imagegen/edit",
   PLUGIN + "/knowledge", PLUGIN + "/knowledge/tree",
