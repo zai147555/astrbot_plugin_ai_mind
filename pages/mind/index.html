@@ -380,6 +380,7 @@
     <button id="tab-imitate">模仿</button>
     <button id="tab-mail">邮箱</button>
     <button id="tab-storyboard" data-adv="1">分镜</button>
+    <button id="tab-bili" data-adv="1">刷B站</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1393,6 +1394,54 @@
         视频要在这台机器上（或给一个能下载的链接）。取帧和拼图都交给 ffmpeg，不需要图像库。
       </div>
       <div id="sb-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <div id="view-bili" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>刷 B 站</h3>
+        <span class="small muted">先看字（字幕/简介），值得的再看画（分镜）</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        免登录逛分区最新，按关键词和时长打分，挑出来的写成日报；最值得的几条会下载下来做分镜，
+        直接看图。推过的不会重复推。
+      </div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="bl-enabled"> 启用</label>
+        <label class="small muted">关键词 <input id="bl-keywords" placeholder="留空就只看时长和热度" style="width:220px"></label>
+        <label class="small muted">挑几条 <input id="bl-candidates" type="number" min="1" max="20" style="width:70px"></label>
+        <label class="small muted">做几条分镜 <input id="bl-sb" type="number" min="0" max="5" style="width:70px"></label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small muted">时长 <input id="bl-min" type="number" min="5" style="width:74px"> ~ <input id="bl-max" type="number" min="30" style="width:80px"> 秒</label>
+        <label class="small muted">下载上限 <input id="bl-mb" type="number" min="4" max="2048" style="width:80px"> MB</label>
+        <span class="small muted" id="bl-check"></span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="bl-save">保存</button>
+        <button class="primary small" id="bl-scroll">刷一轮</button>
+        <button class="ghost small" id="bl-clear">清空已读</button>
+        <button class="ghost small" id="bl-reload">刷新</button>
+        <span class="grow"></span>
+        <span class="small muted" id="bl-status"></span>
+      </div>
+      <div class="small muted" style="margin-top:6px" id="bl-hint">刷一轮要联网，几秒到一分钟。</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>今天挑的</h3>
+        <span class="small muted" id="bl-day"></span>
+      </div>
+      <div id="bl-list" style="margin-top:10px"></div>
+      <div id="bl-images" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><h3 style="margin-right:8px">日报</h3>
+        <span class="small muted">同时写到 data/bili/报告-日期.md</span></div>
+      <pre class="small" id="bl-report" style="white-space:pre-wrap;margin-top:8px;max-height:360px;overflow:auto"></pre>
     </div>
   </div>
 
@@ -2821,6 +2870,41 @@
       }).catch(function (e) {
         $("sb-result").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
         $("sb-hint").textContent = "视频要在这台机器上（或给一个能下载的链接）。";
+      });
+    };
+    $("tab-bili").onclick = function () {
+      setView("bili");
+      loadBili().catch(function (e) { toast("加载刷B站设置失败：" + e.message); });
+    };
+    $("bl-save").onclick = function () {
+      request("bili/save", "POST", {
+        enabled: $("bl-enabled").checked,
+        keywords: $("bl-keywords").value,
+        candidates: Number($("bl-candidates").value) || 6,
+        storyboard_n: Number($("bl-sb").value) || 0,
+        min_seconds: Number($("bl-min").value) || 60,
+        max_seconds: Number($("bl-max").value) || 1800,
+        max_download_mb: Number($("bl-mb").value) || 60
+      }).then(function (data) { renderBili(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("bl-reload").onclick = function () {
+      loadBili().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("bl-clear").onclick = function () {
+      request("bili/clear", "POST", {}).then(function (data) {
+        renderBili(data);
+        toast("已清空已读");
+      }).catch(function (e) { toast("清空失败：" + e.message); });
+    };
+    $("bl-scroll").onclick = function () {
+      $("bl-hint").textContent = "正在刷：拉列表、读字幕、挑、下载、做分镜…（一分钟内）";
+      request("bili/scroll", "POST", {}).then(function (data) {
+        renderBiliResult(data);
+        $("bl-hint").textContent = "刷一轮要联网，几秒到一分钟。";
+      }).catch(function (e) {
+        $("bl-hint").textContent = "刷不动：" + e.message;
       });
     };
     $("tab-style").onclick = function () {
@@ -5345,6 +5429,65 @@
     $("sb-result").innerHTML = html;
   }
 
+  // ---- 刷 B 站 -------------------------------------------------------------
+  function renderBili(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    $("bl-enabled").checked = settings.enabled !== false;
+    $("bl-keywords").value = settings.keywords || "";
+    $("bl-candidates").value = settings.candidates || 6;
+    $("bl-sb").value = settings.storyboard_n || 0;
+    $("bl-min").value = settings.min_seconds || 60;
+    $("bl-max").value = settings.max_seconds || 1800;
+    $("bl-mb").value = settings.max_download_mb || 60;
+    $("bl-status").textContent = "已读 " + (data.seen || 0) + " 条";
+    $("bl-check").textContent = data.has_ffmpeg
+      ? "ffmpeg 就绪，能出分镜"
+      : "没找到 ffmpeg —— 能挑能写日报，但出不了分镜";
+  }
+
+  function loadBili() {
+    return request("bili", "GET").then(renderBili);
+  }
+
+  function renderBiliResult(data) {
+    data = data || {};
+    if (!data.ok) {
+      $("bl-hint").textContent = "这一轮失败：" + (data.error || "未知原因");
+      $("bl-list").innerHTML = "";
+      $("bl-images").innerHTML = "";
+      $("bl-report").textContent = data.error || "";
+      return;
+    }
+    $("bl-day").textContent = data.day || "";
+    var items = data.items || [];
+    $("bl-list").innerHTML = items.length ? items.map(function (item) {
+      var reasons = (item.reasons || []).map(function (reason) {
+        return "<div class='small muted' style='margin-left:12px'>· " + esc(reason) + "</div>";
+      }).join("");
+      return "<div style='margin-bottom:12px'>" +
+        "<div class='row'><b>" + esc(item.bvid || "") + "</b>" +
+        "<span class='small muted'>" + esc(item.title || "") + "</span></div>" +
+        "<div class='small muted'>" + esc(item.up || "") +
+        "｜" + (item.duration || 0) + " 秒｜打分 " + (item.score || 0) +
+        "｜<a href='" + esc(item.url || "#") + "' target='_blank' rel='noreferrer'>打开</a></div>" +
+        reasons +
+        (item.storyboard ? "<div class='small'>分镜：" + esc(item.storyboard) + "</div>" : "") +
+        "</div>";
+    }).join("") : "<div class='small muted'>今天没有值得推的。</div>";
+    var images = data.images || [];
+    $("bl-images").innerHTML = images.map(function (row) {
+      return "<div style='margin-bottom:10px'><div class='small muted'>" +
+        esc(row.bvid || "") + "</div>" +
+        "<img src='" + row.image + "' style='max-width:100%;border-radius:8px;margin-top:4px'></div>";
+    }).join("");
+    $("bl-report").textContent = data.report || "";
+    var errors = data.errors || [];
+    if (errors.length) {
+      $("bl-hint").textContent = "这一轮有 " + errors.length + " 个小问题：" + errors.slice(0, 2).join("；");
+    }
+  }
+
   // ---- 今天 / 模仿 / 邮箱 -------------------------------------------------
   function renderDaily(data) {
     data = data || {};
@@ -5468,7 +5611,8 @@
       images: "view-images", persona: "view-persona", split: "view-split",
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
-      imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard"
+      imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
+      bili: "view-bili"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

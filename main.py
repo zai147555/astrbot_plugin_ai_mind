@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 刷 B 站（分区最新 + 字幕 + 直链）—— 跟分镜合到一条链上
+    from .mind import bili as bili_engine
+except ImportError:  # pragma: no cover
+    from mind import bili as bili_engine  # type: ignore[no-redef]
+
 try:  # 视频分镜（ffmpeg 宫格图 + 时间码清单）
     from .mind import storyboard as storyboard_engine
 except ImportError:  # pragma: no cover
@@ -458,6 +463,7 @@ DEBUG_HELP = "\n".join([
     "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
     "#邮件　她的邮箱：状态 / 看 [N] / 发 <正文> / 测试",
     "#分镜 [文件或链接]　把视频切成宫格图 + 时间码清单",
+    "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
     "调试模式里插件完全让路：不注入情绪 / 记忆 / 身份，不分段，不记记忆。",
@@ -828,6 +834,12 @@ class AIMindPlugin(Star):
         )
         self.storyboard_settings = storyboard_engine.load_settings(
             Path(self.data_dir) / "storyboard.json"
+        )
+        self.bili_settings = bili_engine.load_settings(
+            Path(self.data_dir) / "bili.json"
+        )
+        self.bili_seen = bili_engine.SeenStore(
+            Path(self.data_dir) / "bili_seen.json"
         )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
@@ -2698,6 +2710,11 @@ class AIMindPlugin(Star):
             ("storyboard", self._api_storyboard, "视频分镜设置与自检"),
             ("storyboard/save", self._api_storyboard_save, "保存分镜设置"),
             ("storyboard/build", self._api_storyboard_build, "跑一次分镜"),
+            ("bili", self._api_bili, "刷B站设置与已读"),
+            ("bili/save", self._api_bili_save, "保存刷B站设置"),
+            ("bili/scroll", self._api_bili_scroll, "刷一轮"),
+            ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
+            ("bili/clear", self._api_bili_clear, "清空已读记录"),
         ]
 
     def _register_web_apis(self) -> None:
@@ -4684,6 +4701,8 @@ class AIMindPlugin(Star):
                 return await self._debug_mail(text)
             if word.split()[0] in ("分镜", "storyboard", "sb"):
                 return await self._debug_storyboard(event, text)
+            if word.split()[0] in ("刷b站", "刷b", "bili"):
+                return await self._debug_bili(event, text)
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
@@ -4737,6 +4756,152 @@ class AIMindPlugin(Star):
             for line in imitate_engine.describe(self.imitate.profile(uid))[:4]:
                 out.append("    · " + line)
         return "\n".join(out)
+
+    # -- 刷 B 站（与分镜合并） ----------------------------------------------
+    def _bili_enrich(self, item: dict[str, Any]) -> dict[str, Any]:
+        """补 cid / 字幕：先看字，再决定要不要花 token 取帧。"""
+        row = dict(item)
+        bvid = str(row.get("bvid") or "")
+        if not bvid:
+            return row
+        if not row.get("cid"):
+            detail, err = bili_engine.fetch_view(bvid)
+            if not err and detail:
+                merged = dict(row)
+                for key in ("cid", "duration", "view", "up", "desc", "title"):
+                    if detail.get(key):
+                        merged[key] = detail[key]
+                row = merged
+        text, lines, lang = bili_engine.fetch_subtitle(bvid, int(row.get("cid") or 0))
+        if text:
+            row["subtitle"] = text
+            row["subtitle_lines"] = lines
+            row["subtitle_lang"] = lang
+        return row
+
+    def _bili_scroll(self, limit: int = 0) -> dict[str, Any]:
+        """刷一轮：发现 → 看字 → 挑 → 值得的做分镜 → 日报。永不抛异常。"""
+        conf = self.bili_settings
+        if not conf.enabled:
+            return {"ok": False, "error": "刷B站被关掉了（data/bili.json）", "items": []}
+        want = max(1, min(20, int(limit or conf.candidates)))
+        errors: list[str] = []
+        candidates: list[dict[str, Any]] = []
+        per_region = max(2, min(8, (want + len(conf.rids) - 1) // max(1, len(conf.rids)) + 1))
+        for rid in conf.rids:
+            rows, err = bili_engine.fetch_region(rid, per_region)
+            if err:
+                errors.append("分区 %s：%s" % (rid, err))
+                continue
+            candidates.extend(rows)
+            if len(candidates) >= want * 3:
+                break
+        # 同一条可能挂在好几个分区下：按 BV 号去重，否则会重复打分、重复下载
+        unique: list[dict[str, Any]] = []
+        seen_bv: set[str] = set()
+        for row in candidates:
+            bvid = str(row.get("bvid") or "")
+            if not bvid or bvid in seen_bv:
+                continue
+            seen_bv.add(bvid)
+            unique.append(row)
+        candidates = unique
+        if not candidates:
+            return {
+                "ok": False,
+                "error": "一条都没拉到。" + ("；".join(errors[:2]) if errors else ""),
+                "items": [],
+            }
+
+        enriched: list[dict[str, Any]] = []
+        for row in candidates[: max(want * 2, 8)]:
+            try:
+                enriched.append(self._bili_enrich(row))
+            except Exception as exc:  # noqa: BLE001 - 单条失败不影响整轮
+                errors.append("%s：%s" % (row.get("bvid"), exc))
+
+        picked = bili_engine.pick(enriched, conf, self.bili_seen)
+        sheets: list[dict[str, Any]] = []
+        workdir = Path(self.data_dir) / "bili"
+        workdir.mkdir(parents=True, exist_ok=True)
+
+        for index, item in enumerate(picked):
+            if index >= max(0, int(conf.storyboard_n)):
+                break
+            bvid = str(item.get("bvid") or "")
+            cid = int(item.get("cid") or 0)
+            url, size, err = bili_engine.pick_stream(bvid, cid)
+            if err or not url:
+                errors.append("%s 取直链失败：%s" % (bvid, err or "空地址"))
+                continue
+            local = workdir / (bvid + ".mp4")
+            ok, err = bili_engine.download(
+                url, local, conf.max_download_mb * 1024 * 1024
+            )
+            if not ok:
+                errors.append("%s 下载失败：%s" % (bvid, err))
+                continue
+            result = self._storyboard_build(str(local))
+            if not result.get("ok"):
+                errors.append("%s 分镜失败：%s" % (bvid, result.get("error")))
+                continue
+            item["storyboard"] = str(result.get("summary") or "")
+            sheets.append({
+                "bvid": bvid,
+                "title": item.get("title"),
+                "summary": result.get("summary"),
+                "images": [str(sheet.get("image")) for sheet in result.get("sheets") or []],
+            })
+
+        for item in picked:
+            try:
+                self.bili_seen.mark(str(item.get("bvid") or ""))
+            except Exception:  # noqa: BLE001
+                pass
+
+        day = time.strftime("%Y-%m-%d")
+        report = bili_engine.build_report(day, picked)
+        try:
+            (workdir / ("报告-%s.md" % day)).write_text(report, encoding="utf-8")
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "day": day,
+            "report": report,
+            "items": picked,
+            "sheets": sheets,
+            "errors": errors,
+            "report_path": str(workdir / ("报告-%s.md" % day)),
+        }
+
+    async def _debug_bili(self, event: AstrMessageEvent, text: str) -> str:
+        parts = text.lstrip("#").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        limit = 0
+        if arg.isdigit():
+            limit = int(arg)
+        result = await asyncio.to_thread(self._bili_scroll, limit)
+        if not result.get("ok"):
+            return "刷B站失败：" + str(result.get("error") or "未知原因")
+        for sheet in result.get("sheets") or []:
+            for image in sheet.get("images") or []:
+                path = Path(str(image))
+                if path.is_file() and Comp is not None:
+                    try:
+                        await self.context.send_message(event.unified_msg_origin, [
+                            Comp.Plain("分镜 · " + str(sheet.get("bvid") or "")),
+                            Comp.Image.fromFileSystem(str(path)),
+                        ])
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"[ai_mind] 发送 B 站分镜图失败：{exc}")
+                        break
+        lines = [str(result.get("report") or "").strip()]
+        errors = result.get("errors") or []
+        if errors:
+            lines.append("")
+            lines.append("（%d 个小问题：%s）" % (len(errors), "；".join(errors[:3])))
+        return "\n".join(line for line in lines if line is not None)
 
     # -- 视频分镜 -----------------------------------------------------------
     def _storyboard_workdir(self) -> Path:
@@ -5646,6 +5811,137 @@ class AIMindPlugin(Star):
             "images": images,
             "settings": self.storyboard_settings.to_dict(),
         })
+
+    # -- 面板：刷 B 站 ------------------------------------------------------
+    @staticmethod
+    def _images_payload(paths) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index, item in enumerate(paths or [], 1):
+            path = Path(str(item))
+            if not path.is_file():
+                continue
+            try:
+                blob = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            rows.append({"i": index, "image": "data:image/png;base64," + blob})
+        return rows
+
+    def _bili_payload(self) -> dict[str, Any]:
+        return {
+            "settings": self.bili_settings.to_dict(),
+            "seen": self.bili_seen.count(),
+            "storyboard": self.storyboard_settings.to_dict(),
+            "has_ffmpeg": bool(storyboard_engine.find_tools(
+                self.storyboard_settings.ffmpeg_path,
+                self.storyboard_settings.ffprobe_path,
+            ).get("ok")),
+        }
+
+    async def _api_bili(self) -> Any:
+        return json_response(self._bili_payload())
+
+    async def _api_bili_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        conf = self.bili_settings
+        if "enabled" in payload:
+            conf.enabled = bool(payload.get("enabled"))
+        if payload.get("keywords") is not None:
+            conf.keywords = str(payload.get("keywords") or "").strip()
+        merged = conf.to_dict()
+        for key in ("candidates", "storyboard_n", "min_seconds", "max_seconds", "max_download_mb"):
+            if payload.get(key) is not None:
+                merged[key] = payload.get(key)
+        conf = bili_engine.BiliSettings.from_dict(merged)
+        self.bili_settings = conf
+        ok = bili_engine.save_settings(Path(self.data_dir) / "bili.json", conf)
+        data = self._bili_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入刷B站设置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_bili_scroll(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        try:
+            limit = int(payload.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        result = await self._mail_call(self._bili_scroll, limit)
+        images: list[dict[str, Any]] = []
+        for sheet in result.get("sheets") or []:
+            for row in self._images_payload(sheet.get("images") or []):
+                row["bvid"] = sheet.get("bvid")
+                row["title"] = sheet.get("title")
+                images.append(row)
+        return json_response({
+            "ok": bool(result.get("ok")),
+            "error": result.get("error", ""),
+            "day": result.get("day", ""),
+            "report": result.get("report", ""),
+            "items": [
+                {key: item.get(key) for key in
+                 ("bvid", "title", "up", "duration", "view", "url", "score",
+                  "reasons", "storyboard", "subtitle")}
+                for item in (result.get("items") or [])
+            ],
+            "images": images,
+            "errors": result.get("errors") or [],
+            "seen": self.bili_seen.count(),
+        })
+
+    def _bili_one_storyboard(self, bvid: str) -> dict[str, Any]:
+        """单条视频的分镜（面板上那个按钮）。"""
+        detail, err = bili_engine.fetch_view(bvid)
+        if err or not detail:
+            return {"ok": False, "error": err or "没有这条视频"}
+        conf = self.bili_settings
+        url, _size, err = bili_engine.pick_stream(bvid, int(detail.get("cid") or 0))
+        if err or not url:
+            return {"ok": False, "error": err or "没有可下载的直链"}
+        workdir = Path(self.data_dir) / "bili"
+        workdir.mkdir(parents=True, exist_ok=True)
+        local = workdir / (bvid + ".mp4")
+        ok, err = bili_engine.download(url, local, conf.max_download_mb * 1024 * 1024)
+        if not ok:
+            return {"ok": False, "error": err}
+        result = self._storyboard_build(str(local))
+        result["bvid"] = bvid
+        result["title"] = detail.get("title", "")
+        return result
+
+    async def _api_bili_storyboard(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        bvid = str(payload.get("bvid") or "").strip()
+        if not bvid:
+            return json_response({"ok": False, "error": "先给一个 BV 号"})
+        result = await self._mail_call(self._bili_one_storyboard, bvid)
+        images: list[dict[str, Any]] = []
+        for sheet in result.get("sheets") or []:
+            for row in self._images_payload([sheet.get("image")]):
+                row["from"] = sheet.get("from")
+                row["to"] = sheet.get("to")
+                images.append(row)
+        return json_response({
+            "ok": bool(result.get("ok")),
+            "error": result.get("error", ""),
+            "hint": result.get("hint", ""),
+            "bvid": bvid,
+            "title": result.get("title", ""),
+            "summary": result.get("summary", ""),
+            "manifest": result.get("manifest", ""),
+            "images": images,
+        })
+
+    async def _api_bili_clear(self) -> Any:
+        removed = self.bili_seen.clear()
+        data = self._bili_payload()
+        data["removed"] = removed
+        return json_response(data)
 
     async def _api_style(self) -> Any:
         params = await self._params()
