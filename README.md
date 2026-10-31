@@ -252,6 +252,11 @@ node tests/panel_check.mjs                 # 面板结构与传输层 9 项
 python3 audit_buttons.py                   # 面板按钮绑定审计
 ```
 
+- **界面**：无构建步骤的单文件面板，设计令牌化（浅色 `#f5f5f3`/`#fcfcfb`、深色 `#0b0b0a`/`#151515`/`#1a1a19`/`#20201e`）；
+  不用边框、靠 1%~3% 明度分层与 inset 描边；输入框聚焦用双圈阴影咬合；深色字重整体 −40；
+  外圆角 = 内圆角 + 内边距；数字锁等宽；正文 `text-wrap: pretty`；
+  折叠用 Grid `0fr→1fr`；拖拽过阻尼、点赞欠阻尼；复制对勾 2.5 秒自动淡出；
+  长文件名中间省略保留后缀；列表支持「跳至最新」。中文输入法选字中的回车一律拦掉。
 - **数据文件**（都在插件数据目录）：`mind.db`、`emotion_state.json`、
   `knowledge.json`、`mail.json`、`bili.json` + `bili_seen.json`、`storyboard.json`（+ `storyboard/cache`）、
   `imitate.json`、`delivery.json`、`market.json` + `market_history.json`、`imagegen.json`（+ `imagegen/out`）、
