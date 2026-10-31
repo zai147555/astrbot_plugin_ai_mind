@@ -4615,6 +4615,19 @@ class AIMindPlugin(Star):
             + "｜分段 " + ("开" if self.splitter.enabled else "关")
             + "｜防抖 " + ("开" if self.settings.debounce.enabled else "关"),
         ]
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        try:
+            slot = _schedule.today(time.time())
+            out.append(
+                "日程：" + str(slot.get("date") or "") + "｜"
+                + str(slot.get("note") or "").rstrip("。")
+                + "｜现在在：" + str(slot.get("activity") or "")
+            )
+        except Exception as exc:  # noqa: BLE001 - 日程算不出来不该让 #状态 挂掉
+            out.append("日程算不出来：" + str(exc))
         session = self.engine.sessions.get(key)
         if session is None:
             out.append("情绪状态：还没建（在这个会话说一句就会建）")

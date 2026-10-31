@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mind import schedule
+from mind import calendar_cn, schedule
 from mind.emotion import brain, physiology
 from mind.emotion.model import PROTOTYPES
 from mind.emotion.presets import PRESETS
@@ -116,18 +116,35 @@ def build(now: float | None = None) -> str:
     add("规则里的「还会」指会挂上的情绪标签；表达基调见第四节。")
     add("")
 
-    add("## 六、日程：她现在应该在干什么")
+    add("## 六、日程：今天是什么日子")
     add("")
-    add("规则 + 按日期固定随机：同一天内恒定，换一天换一套（今天补课、明天社团）。")
+    add("日子类型按**日期**判（上学 / 周末 / 法定节假日 / 寒暑假 / 调休上课），不是按周一到周日死分；")
+    add("假期天数**不写死**，由起止日期现算，所以春节 9 天、国庆 7 天、暑假 53 天各不相同。")
+    add("")
+    info = calendar_cn.day_info(now)
+    add("今天：%s（%s）" % (info.date, info.note))
     add("")
     plain = re.sub(r"</?\w+[^>]*>", "", schedule.render(now))
     plain = plain.replace("（她今天的日程，不是要说出口的内容）", "").replace("\n", " ")
     add("> 现在：%s" % re.sub(r"\s+", " ", plain).strip())
     add("")
-    add("上学日：6:40 起床 → 7:20-12:00 上课（只能偷偷回） → 12:00 午休 → 13:30 下午课 →")
-    add("17:00 放学 → 18:30 晚饭 → 19:30 作业 → 22:00 躺着刷手机（话最多） → 23:30 赶你去睡。")
+    add("| 日子 | 她怎么过 |")
+    add("| --- | --- |")
+    add("| 上学日 | 6:40 起床 → 7:20-12:00 上课（只能偷偷回）→ 12:00 午休 → 13:30 下午课 → 17:00 放学 → 18:30 晚饭 → 19:30 作业 → 22:00 躺着刷手机（话最多）→ 23:30 赶你去睡 |")
+    add("| 周末 | 睡到 9:30；白天随机（补习班 / 窝着看剧 / 出门逛 / 家务 / 赶作业）；晚上追剧打游戏 |")
+    add("| 法定节假日 | 睡到自然醒；在家看剧 / 被带出去玩 / 走亲戚；作业一点没动 |")
+    add("| 寒暑假 | 睡到 10 点；白天松散（补习班 / 出去逛 / 赶作业）；越接近开学越慌 |")
+    add("| 调休上课日 | 周末被调去上学：一肚子怨气，句子里带刺 |")
     add("")
-    add("周末：睡到 9:30；白天随机（补习班 / 窝着看剧 / 出门逛 / 家务 / 赶作业）；晚上追剧打游戏；23 点嘴上说睡了其实还在。")
+    add("今年的假期（天数现算）：")
+    add("")
+    add("| 假期 | 起止 | 天数 |")
+    add("| --- | --- | --- |")
+    year = time.localtime(now).tm_year
+    spans = list(calendar_cn.blocks(year)) + list(calendar_cn.vacations(year))
+    for start, end, name in sorted(spans, key=lambda x: x[0]):
+        add("| %s | %s ~ %s | %d |" % (
+            name, start.strftime("%m-%d"), end.strftime("%m-%d"), (end - start).days + 1))
     add("")
 
     add("## 七、身体（下丘脑那一层）")
@@ -172,8 +189,9 @@ def build(now: float | None = None) -> str:
     add("| 气质基线、半衰期、初始好感 | mind/emotion/presets.py |")
     add("| 23 条表达基调 | mind/emotion/presets.py 的 TSUNDERE_STYLE |")
     add("| 13 条专属规则（雷区） | mind/emotion/presets.py 的 TSUNDERE_RULES |")
-    add("| 日程表 | mind/schedule.py 的 _SCHOOL_DAY / _WEEKEND |")
+    add("| 日程表 | mind/schedule.py 的五张表（上学/周末/法定假/寒暑假/调休） |")
     add("| 身体常数（饭点/压力/病程/周期） | mind/emotion/physiology.py 顶部常量 |")
+    add("| 放假安排 / 调休 / 寒暑假 | mind/calendar_cn.py 的 _OFFICIAL / _MAKEUP / _LUNAR |")
     add("| 习惯化/共情/落差强度 | mind/emotion/brain.py 顶部常量 |")
     add("| 语气、气泡、排版 | AstrBot 人设那边定，插件只在情绪上加色调 |")
     add("")
