@@ -157,17 +157,82 @@ class EngineWiringTest(unittest.TestCase):
         from mind.emotion.model import PAD
 
         workdir = tempfile.mkdtemp(prefix="mind_body_")
-        engine = eng.EmotionEngine(eng.Settings(), workdir)
-        session = engine.resolve("ok", at(9))
-        session.emotion = PAD.of(0.30, 0.40, 0.20)
-        session.body = ph.Body(energy=0.85, hunger=0.15, stress=0.1, last_update=at(9))
-        session.last_tick = at(9)
-        moment = at(9)
-        for _ in range(4):           # 只到 11:00，还是精神好的时候
-            moment += 1800
-            session.tick(moment, engine.settings)
-        offset = ph.pad_offset(session.body)
-        # 情绪本来就会按半衰期回落，所以不能断言「还是正数」；
-        # 真正的不变量是：健康时**身体偏移接近 0**，没有额外往下拖。
-        self.assertGreater(offset.p, -0.05, "上午身体不该有负面偏移")
-        self.assertAlmostEqual(offset.a, 0.0, delta=0.1)
+        # 这条只测「身体物理」，把生理周期关掉 —— 否则它会随真实日期漂：
+        # 今天恰好是经前的话，身体偏移就不是 0，测试自己会不稳。
+        original = ph.CYCLE_ENABLED
+        ph.CYCLE_ENABLED = False
+        try:
+            engine = eng.EmotionEngine(eng.Settings(), workdir)
+            session = engine.resolve("ok", at(9))
+            session.emotion = PAD.of(0.30, 0.40, 0.20)
+            session.body = ph.Body(energy=0.85, hunger=0.15, stress=0.1, last_update=at(9))
+            session.last_tick = at(9)
+            moment = at(9)
+            for _ in range(4):           # 只到 11:00，还是精神好的时候
+                moment += 1800
+                session.tick(moment, engine.settings)
+            offset = ph.pad_offset(session.body)
+            # 情绪本来就会按半衰期回落，所以不能断言「还是正数」；
+            # 真正的不变量是：健康时身体偏移接近 0，没有额外往下拖。
+            self.assertGreater(offset.p, -0.05, "上午身体不该有负面偏移")
+            self.assertAlmostEqual(offset.a, 0.0, delta=0.1)
+        finally:
+            ph.CYCLE_ENABLED = original
+
+class CycleTest(unittest.TestCase):
+    """生理周期：按时间算，同一天永远一样；经期确实会累、会难受。"""
+
+    def test_phases(self) -> None:
+        self.assertEqual(ph.cycle_phase(1), "经期")
+        self.assertEqual(ph.cycle_phase(ph.PERIOD_DAYS), "经期")
+        self.assertEqual(ph.cycle_phase(ph.PERIOD_DAYS + 1), "经期后")
+        self.assertEqual(ph.cycle_phase(14), "排卵期")
+        self.assertEqual(ph.cycle_phase(26), "经前")
+
+    def test_day_wraps_and_is_deterministic(self) -> None:
+        anchor = ph.CYCLE_ANCHOR
+        self.assertEqual(ph.cycle_day(anchor), 1)
+        self.assertEqual(ph.cycle_day(anchor + 27 * 86400), 28)
+        self.assertEqual(ph.cycle_day(anchor + 28 * 86400), 1, "满一轮回到第 1 天")
+        self.assertEqual(ph.cycle_day(anchor + 3 * 86400), ph.cycle_day(anchor + 3 * 86400),
+                         "同一时刻必须算出同一天（不能随机跳）")
+
+    def test_period_lowers_energy_and_mood(self) -> None:
+        now = ph.CYCLE_ANCHOR + 86400          # 第 2 天 = 经期
+        body = ph.Body(energy=0.9, hunger=0.1, stress=0.0, last_update=now - 3600)
+        ph.evolve(body, now, allow_illness=False)
+        self.assertEqual(body.cycle_phase, "经期")
+        offset = ph.pad_offset(body)
+        self.assertLess(offset.p, -0.05, "经期该明显不舒服")
+        self.assertLess(offset.d, -0.05, "掌控感也会掉")
+        self.assertIn("生理期", ph.describe(body))
+
+    def test_pms_is_edgy(self) -> None:
+        now = ph.CYCLE_ANCHOR + 25 * 86400       # 第 26 天 = 经前
+        body = ph.Body(energy=0.7, hunger=0.2, stress=0.1, last_update=now - 3600)
+        ph.evolve(body, now, allow_illness=False)
+        self.assertEqual(body.cycle_phase, "经前")
+        offset = ph.pad_offset(body)
+        self.assertLess(offset.p, 0.0)
+        self.assertGreater(offset.a, 0.0, "经前是烦躁，唤醒往上")
+
+    def test_energy_ceiling_drops_during_period(self) -> None:
+        anchor = ph.CYCLE_ANCHOR
+        period_now = anchor + 86400              # 经期
+        calm_now = anchor + 8 * 86400            # 经期后（第 9 天）
+        during = ph.Body(energy=0.95, hunger=0.1, stress=0.0, last_update=period_now - 3 * 3600)
+        after = ph.Body(energy=0.95, hunger=0.1, stress=0.0, last_update=calm_now - 3 * 3600)
+        ph.evolve(during, period_now, allow_illness=False)
+        ph.evolve(after, calm_now, allow_illness=False)
+        self.assertLess(during.energy, after.energy, "经期能调动的精力上限更低")
+
+    def test_can_be_disabled(self) -> None:
+        original = ph.CYCLE_ENABLED
+        try:
+            ph.CYCLE_ENABLED = False
+            self.assertEqual(ph.cycle_phase(1), "")
+            body = ph.Body(energy=0.8, last_update=0.0)
+            ph.evolve(body, ph.CYCLE_ANCHOR + 86400, allow_illness=False)
+            self.assertEqual(body.cycle_phase, "", "关掉之后不该有任何周期影响")
+        finally:
+            ph.CYCLE_ENABLED = original

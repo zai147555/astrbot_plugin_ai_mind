@@ -31,6 +31,17 @@ STRESS_HALF_LIFE = 2.0
 #: 病了多久才自己好（小时）
 ILLNESS_HOURS = (6.0, 20.0)
 
+# ---- 生理周期 ----
+#: 是否启用（关掉就完全不影响任何东西）
+CYCLE_ENABLED = True
+#: 一轮多少天
+CYCLE_LENGTH = 28
+#: 经期几天
+PERIOD_DAYS = 5
+#: 起算日（固定值）：从这一天开始算，所以同一天算出来永远一样，
+#: 重启、换会话都不会跳。真要改起算日就改这一个数。
+CYCLE_ANCHOR = 1767225600.0      # 2026-01-01 00:00 UTC
+
 
 @dataclass
 class Body:
@@ -44,6 +55,9 @@ class Body:
     illness_kind: str = ""
     illness_until: float = 0.0
     last_update: float = 0.0
+    #: 周期第几天 / 相位（都是按时间算出来的派生值，不参与手写配置）
+    cycle_day: int = 0
+    cycle_phase: str = ""
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -163,12 +177,25 @@ def evolve(
     hours = dt / 3600.0
     body.last_update = now
 
+    # 0) 生理周期：纯按时间算，同一天永远一样
+    if CYCLE_ENABLED:
+        body.cycle_day = cycle_day(now)
+        body.cycle_phase = cycle_phase(body.cycle_day)
+    else:
+        body.cycle_day = 0
+        body.cycle_phase = ""
+
     # 1) 能量：朝「这个点该有的精力」靠拢；病中上限压低
     target = circadian_energy(now)
     if body.illness > 0:
         target *= max(0.35, 1.0 - body.illness * 0.6)
     # 吃得少也会没力气
     target *= max(0.55, 1.0 - body.hunger * 0.45)
+    # 经期/经前：身体能调动的上限确实低一些（不是矫情，是真实的）
+    if body.cycle_phase == "经期":
+        target *= 0.84
+    elif body.cycle_phase == "经前":
+        target *= 0.93
     rate = 0.55 if target > body.energy else 0.28
     body.energy += (target - body.energy) * clamp(hours * rate, 0.0, 1.0)
 
@@ -208,6 +235,33 @@ def evolve(
     return events
 
 
+def cycle_day(now: float, anchor: float = CYCLE_ANCHOR,
+              length: int = CYCLE_LENGTH) -> int:
+    """今天是周期第几天（1 起算）。纯按时间算，不存状态。"""
+    span = max(1, int(length))
+    days = int((now - anchor) // 86400.0)
+    return days % span + 1
+
+
+def cycle_phase(day: int, length: int = CYCLE_LENGTH) -> str:
+    """周期相位：经期 / 经期后 / 排卵期 / 经前 / 平稳。"""
+    if not CYCLE_ENABLED:
+        return ""
+    if 1 <= day <= PERIOD_DAYS:
+        return "经期"
+    span = max(1, int(length))
+    if PERIOD_DAYS < day <= span - 5:
+        middle = span // 2
+        if abs(day - middle) <= 1:
+            return "排卵期"
+        if day <= middle:
+            return "经期后"
+        return "平稳"
+    if day > span - 5:
+        return "经前"
+    return "平稳"
+
+
 def pad_offset(body: Body) -> PAD:
     """身体给情绪的那一层偏移。
 
@@ -221,6 +275,17 @@ def pad_offset(body: Body) -> PAD:
     hunger = max(0.0, body.hunger - 0.45)
     stress = max(0.0, body.stress - 0.25)
     illness = body.illness
+    # 周期：经期是「不舒服 + 没力气」，经前是「烦躁」
+    period = 1.0 if body.cycle_phase == "经期" else 0.0
+    pms = 1.0 if body.cycle_phase == "经前" else 0.0
+    p = -0.30 * energy_gap - 0.22 * hunger - 0.26 * stress - 0.45 * illness
+    p += -0.12 * period - 0.10 * pms
+    a = -0.18 * energy_gap + 0.16 * hunger + 0.20 * stress - 0.10 * illness
+    a += 0.06 * period + 0.12 * pms
+    d = -0.10 * energy_gap - 0.06 * hunger - 0.22 * stress - 0.34 * illness
+    d += -0.14 * period - 0.08 * pms
+    return PAD.of(clamp(p, -1.0, 1.0), clamp(a, -1.0, 1.0), clamp(d, -1.0, 1.0))
+
 
     p = -0.30 * energy_gap - 0.22 * hunger - 0.26 * stress - 0.45 * illness
     a = -0.18 * energy_gap + 0.16 * hunger + 0.20 * stress - 0.10 * illness
@@ -248,6 +313,10 @@ def describe(body: Body) -> str:
         parts.append("绷得太紧了，一点就炸")
     elif body.stress > 0.5:
         parts.append("心里有点紧")
+    if body.cycle_phase == "经期":
+        parts.append("生理期第 " + str(body.cycle_day) + " 天：肚子坠着难受、腰酸，人容易累")
+    elif body.cycle_phase == "经前":
+        parts.append("快到日子了：这几天容易烦躁，也容易馋")
     if not parts:
         return ""
     return "身体：" + "；".join(parts)
