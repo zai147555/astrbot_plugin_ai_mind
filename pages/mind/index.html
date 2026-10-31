@@ -293,7 +293,9 @@
   @media (min-width: 900px) {
     #view-emotion, #view-manage, #view-memory, #view-images,
     #view-persona, #view-split, #view-debounce, #view-humanize,
-    #view-style, #view-prompts, #view-theory, #view-wizard {
+    #view-style, #view-prompts, #view-theory, #view-wizard,
+    #view-imitate, #view-mail, #view-storyboard, #view-bili,
+    #view-knowledge, #view-imagegen, #view-market, #view-sticker {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 14px;
@@ -304,11 +306,16 @@
     #view-emotion > .card, #view-manage > .card, #view-memory > .card,
     #view-images > .card, #view-persona > .card, #view-split > .card,
     #view-debounce > .card, #view-humanize > .card, #view-style > .card,
-    #view-prompts > .card, #view-theory > .card, #view-wizard > .card {
+    #view-prompts > .card, #view-theory > .card, #view-wizard > .card,
+    #view-imitate > .card, #view-mail > .card, #view-storyboard > .card,
+    #view-bili > .card, #view-knowledge > .card, #view-imagegen > .card,
+    #view-market > .card, #view-sticker > .card {
       margin-bottom: 0;
     }
   }
   body.simple-mode .tabs button[data-adv="1"] { display: none; }
+  #tab-more { display: none; }
+  body.simple-mode #tab-more { display: block; }
 
   /* ===================== 窄屏 ===================== */
   @media (max-width: 640px) {
@@ -422,18 +429,19 @@
     <button id="tab-persona">人格定制</button>
     <button id="tab-imitate">模仿</button>
     <button id="tab-mail">邮箱</button>
-    <button id="tab-storyboard" data-adv="1">分镜</button>
-    <button id="tab-bili" data-adv="1">刷B站</button>
-    <button id="tab-knowledge" data-adv="1">知识</button>
-    <button id="tab-imagegen" data-adv="1">画图</button>
-    <button id="tab-market" data-adv="1">市场</button>
-    <button id="tab-sticker" data-adv="1">表情</button>
+    <button id="tab-storyboard">分镜</button>
+    <button id="tab-bili">刷B站</button>
+    <button id="tab-knowledge">知识</button>
+    <button id="tab-imagegen">画图</button>
+    <button id="tab-market">市场</button>
+    <button id="tab-sticker">表情</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
     <button id="tab-theory" data-adv="1">理论</button>
     <button id="tab-style">表达</button>
     <button id="tab-prompts" data-adv="1">提示词</button>
+    <button id="tab-more" title="切到专家模式，看全部页签">更多 ▸</button>
   </div>
 
   <!-- ================= 上手（傻瓜模式） ================= -->
@@ -3090,6 +3098,11 @@
       setView("wizard");
       loadWizard().catch(function (e) { toast("自检失败：" + e.message); });
       loadSettings().catch(function (e) { toast("加载设置失败：" + e.message); });
+    };
+    $("tab-more").onclick = function () {
+      applyPanelMode("expert");
+      request("wizard/mode", "POST", { mode: "expert" }).catch(function () {});
+      toast("已切到专家模式");
     };
     $("mode-btn").onclick = function () {
       var next = state.panelMode === "simple" ? "expert" : "simple";
