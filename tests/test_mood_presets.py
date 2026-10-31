@@ -44,3 +44,20 @@ class MoodPresetSyncTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class EmojiUniquenessTest(unittest.TestCase):
+    """每种心情一个专属 emoji：撞了在面板和图例里就分不清。"""
+
+    def test_emoji_are_unique(self) -> None:
+        import collections
+
+        counter = collections.Counter(proto.emoji for proto in em.PROTOTYPES)
+        dupes = {emoji: count for emoji, count in counter.items() if count > 1}
+        self.assertEqual(
+            dupes, {},
+            "这些 emoji 被多种心情共用：" + str(dupes),
+        )
+
+    def test_prototype_count(self) -> None:
+        self.assertGreaterEqual(len(em.PROTOTYPES), 40, "心情至少 40 种")
