@@ -381,6 +381,7 @@
     <button id="tab-mail">邮箱</button>
     <button id="tab-storyboard" data-adv="1">分镜</button>
     <button id="tab-bili" data-adv="1">刷B站</button>
+    <button id="tab-knowledge" data-adv="1">知识</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -1406,6 +1407,26 @@
       </div>
       <div id="sb-result" style="margin-top:12px"></div>
     </div>
+
+    <div class="card">
+      <div class="row"><h3 style="margin-right:8px">动图逐帧</h3>
+        <span class="small muted">GIF / 动态 WebP → 均匀采样 + 编号时间</span></div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
+        <input id="an-path" placeholder="动图文件的完整路径" style="flex:1;min-width:240px">
+        <button class="primary small" id="an-build">摊开</button>
+      </div>
+      <div id="an-result" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><h3 style="margin-right:8px">听一段音频</h3>
+        <span class="small muted">响度 / 动态 / 峰值 → 一句结论 + 频谱图</span></div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
+        <input id="sc-path" placeholder="音频文件路径（mp3 / flac / wav / m4a）" style="flex:1;min-width:240px">
+        <button class="primary small" id="sc-go">听一下</button>
+      </div>
+      <div id="sc-result" style="margin-top:10px"></div>
+    </div>
   </div>
 
   <div id="view-bili" style="display:none">
@@ -1459,6 +1480,53 @@
       <div class="row"><h3 style="margin-right:8px">日报</h3>
         <span class="small muted">同时写到 data/bili/报告-日期.md</span></div>
       <pre class="small" id="bl-report" style="white-space:pre-wrap;margin-top:8px;max-height:360px;overflow:auto"></pre>
+    </div>
+  </div>
+
+  <div id="view-knowledge" style="display:none">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>知识树</h3>
+        <span class="small muted">按会话激活的结构化知识，模型改件要你批准</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        和「长期记忆」不同：记忆是从聊天里捞的碎片，这里是你自己整理的结构（本群规矩、插件怎么用）。
+        挂到某个会话上，她说话时才带这份知识。
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
+        <label class="small muted">新建 <input id="kb-name" placeholder="例如：本群规矩" style="width:200px"></label>
+        <button class="primary small" id="kb-create">建一棵</button>
+        <button class="ghost small" id="kb-reload">刷新</button>
+        <span class="grow"></span>
+        <span class="small muted" id="kb-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>树</h3>
+        <span class="small muted" id="kb-session"></span>
+      </div>
+      <div id="kb-list" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><h3 style="margin-right:8px">往树上加一条</h3>
+        <span class="small muted">标题短一点，内容一句话说清</span></div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
+        <label class="small muted">树 <select id="kb-tree"></select></label>
+        <label class="small muted">标题 <input id="kb-title" style="width:180px"></label>
+        <label class="small muted">内容 <input id="kb-content" style="width:300px"></label>
+        <button class="primary small" id="kb-add">加上去</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>待审</h3>
+        <span class="small muted" id="kb-pending-note"></span>
+      </div>
+      <div id="kb-pending" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -2932,6 +3000,55 @@
         $("bl-hint").textContent = "刷一轮要联网，几秒到一分钟。";
       }).catch(function (e) {
         $("bl-hint").textContent = "刷不动：" + e.message;
+      });
+    };
+    $("tab-knowledge").onclick = function () {
+      setView("knowledge");
+      loadKnowledge().catch(function (e) { toast("加载知识树失败：" + e.message); });
+    };
+    $("kb-reload").onclick = function () {
+      loadKnowledge().then(function () { toast("已刷新"); })
+        .catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("kb-create").onclick = function () {
+      var name = ($("kb-name").value || "").trim();
+      if (!name) { toast("先填个树名"); return; }
+      request("knowledge/tree", "POST", {
+        action: "create", name: name, session: state.session
+      }).then(function (data) {
+        $("kb-name").value = "";
+        renderKnowledge(data);
+        toast("建好了");
+      }).catch(function (e) { toast("建失败：" + e.message); });
+    };
+    $("kb-add").onclick = function () {
+      request("knowledge/tree", "POST", {
+        action: "add",
+        tree: $("kb-tree").value,
+        title: $("kb-title").value,
+        content: $("kb-content").value,
+        session: state.session
+      }).then(function (data) {
+        $("kb-title").value = "";
+        $("kb-content").value = "";
+        renderKnowledge(data);
+        toast("加上去了");
+      }).catch(function (e) { toast("加失败：" + e.message); });
+    };
+    $("an-build").onclick = function () {
+      var path = ($("an-path").value || "").trim();
+      if (!path) { toast("先填动图路径"); return; }
+      $("an-result").innerHTML = "<div class='small muted'>正在解帧…</div>";
+      request("animation", "POST", { path: path }).then(renderMaterial).catch(function (e) {
+        $("an-result").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
+      });
+    };
+    $("sc-go").onclick = function () {
+      var path = ($("sc-path").value || "").trim();
+      if (!path) { toast("先填音频路径"); return; }
+      $("sc-result").innerHTML = "<div class='small muted'>正在听…（长歌要几十秒）</div>";
+      request("soundcheck", "POST", { path: path }).then(renderSound).catch(function (e) {
+        $("sc-result").innerHTML = "<div class='small'>失败：" + esc(e.message) + "</div>";
       });
     };
     $("tab-style").onclick = function () {
@@ -5463,6 +5580,95 @@
     $("sb-result").innerHTML = html;
   }
 
+  // ---- 知识树 / 动图 / 音检 -----------------------------------------------
+  function renderKnowledge(data) {
+    data = data || {};
+    var trees = data.trees || [];
+    var stats = data.stats || {};
+    $("kb-status").textContent = (stats.trees || 0) + " 棵｜" + (stats.nodes || 0) +
+      " 个节点｜待审 " + (stats.pending || 0);
+    $("kb-session").textContent = "当前会话：" + (data.session || "（未选）");
+    $("kb-tree").innerHTML = trees.map(function (tree) {
+      return "<option value='" + esc(tree.name) + "'>" + esc(tree.name) + "</option>";
+    }).join("");
+    $("kb-list").innerHTML = trees.length ? trees.map(function (tree) {
+      return "<div style='margin-bottom:12px'>" +
+        "<div class='row'><label class='small'><input type='checkbox' data-kb-active='" +
+        esc(tree.name) + "'" + (tree.active ? " checked" : "") + "> " +
+        "<b>" + esc(tree.name) + "</b>（" + tree.nodes + " 个节点）</label>" +
+        "<span class='grow'></span></div>" +
+        (tree.outline ? "<pre class='small' style='white-space:pre-wrap;margin:6px 0 0 18px max-height:160px;overflow:auto'>" +
+          esc(tree.outline) + "</pre>" : "") +
+        "</div>";
+    }).join("") : "<div class='small muted'>还没有知识树。</div>";
+    Array.prototype.forEach.call($("kb-list").querySelectorAll("[data-kb-active]"), function (box) {
+      box.onchange = function () {
+        request("knowledge/active", "POST", {
+          tree: box.getAttribute("data-kb-active"),
+          on: box.checked,
+          session: state.session
+        }).then(renderKnowledge)
+          .catch(function (e) { toast("切换失败：" + e.message); });
+      };
+    });
+    var pending = data.pending || [];
+    $("kb-pending-note").textContent = pending.length ? pending.length + " 条" : "没有";
+    $("kb-pending").innerHTML = pending.length ? pending.map(function (edit) {
+      return "<div style='margin-bottom:10px'>" +
+        "<div class='small'><b>" + esc(edit.tree) + " / " + esc(edit.node) + "</b> " +
+        "<span class='muted'>" + esc(edit.id) + "</span></div>" +
+        "<div class='small muted'>" + esc(edit.title || "") + " " + esc(edit.content || "") + "</div>" +
+        "<div class='row' style='margin-top:4px'>" +
+        "<button class='primary small' data-kb-ok='" + esc(edit.id) + "'>批准</button>" +
+        "<button class='ghost small' data-kb-no='" + esc(edit.id) + "'>丢弃</button></div></div>";
+    }).join("") : "<div class='small muted'>没有待审改动。</div>";
+    function review(id, approve) {
+      request("knowledge/review", "POST", {
+        id: id, approve: approve, session: state.session
+      }).then(renderKnowledge).then(function () { toast(approve ? "已批准" : "已丢弃"); })
+        .catch(function (e) { toast("操作失败：" + e.message); });
+    }
+    Array.prototype.forEach.call($("kb-pending").querySelectorAll("[data-kb-ok]"), function (btn) {
+      btn.onclick = function () { review(btn.getAttribute("data-kb-ok"), true); };
+    });
+    Array.prototype.forEach.call($("kb-pending").querySelectorAll("[data-kb-no]"), function (btn) {
+      btn.onclick = function () { review(btn.getAttribute("data-kb-no"), false); };
+    });
+  }
+
+  function loadKnowledge() {
+    return request("knowledge", "GET", null, { session: state.session || "" })
+      .then(renderKnowledge);
+  }
+
+  function renderMaterial(data) {
+    data = data || {};
+    if (!data.ok) {
+      $("an-result").innerHTML = "<div class='small'>失败：" + esc(data.error || "未知原因") + "</div>";
+      return;
+    }
+    var images = (data.images || []).map(function (row) {
+      return "<img src='" + row.image + "' style='max-width:100%;border-radius:8px;margin-top:6px'>";
+    }).join("");
+    $("an-result").innerHTML = "<div class='small'>" + esc(data.summary || "") + "</div>" +
+      images + "<pre class='small' style='white-space:pre-wrap;margin-top:8px'>" +
+      esc(data.manifest || "") + "</pre>";
+  }
+
+  function renderSound(data) {
+    data = data || {};
+    if (!data.ok) {
+      $("sc-result").innerHTML = "<div class='small'>" + esc(data.text || data.error || "听不了") +
+        (data.hint ? "<br><span class='muted'>" + esc(data.hint) + "</span>" : "") + "</div>";
+      return;
+    }
+    var images = (data.images || []).map(function (row) {
+      return "<img src='" + row.image + "' style='max-width:100%;border-radius:8px;margin-top:6px'>";
+    }).join("");
+    $("sc-result").innerHTML = "<pre class='small' style='white-space:pre-wrap'>" +
+      esc(data.text || "") + "</pre>" + images;
+  }
+
   // ---- 刷 B 站 -------------------------------------------------------------
   function renderBili(data) {
     data = data || {};
@@ -5651,7 +5857,7 @@
       theory: "view-theory", humanize: "view-humanize", prompts: "view-prompts",
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
       imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
-      bili: "view-bili"
+      bili: "view-bili", knowledge: "view-knowledge"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);

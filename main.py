@@ -276,6 +276,21 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 知识树（按会话激活的结构化知识，模型改件待审）
+    from .mind import knowledge as knowledge_engine
+except ImportError:  # pragma: no cover
+    from mind import knowledge as knowledge_engine  # type: ignore[no-redef]
+
+try:  # 动图逐帧（GIF / 动态 WebP → 带时间的帧序列）
+    from .mind import animation as animation_engine
+except ImportError:  # pragma: no cover
+    from mind import animation as animation_engine  # type: ignore[no-redef]
+
+try:  # 听音频（响度 / 动态 / 峰值 → 一句人话）
+    from .mind import soundcheck as soundcheck_engine
+except ImportError:  # pragma: no cover
+    from mind import soundcheck as soundcheck_engine  # type: ignore[no-redef]
+
 try:  # 结果投递：群里发指令 → 大块结果走私聊
     from .mind import delivery as delivery_engine
 except ImportError:  # pragma: no cover
@@ -469,6 +484,9 @@ DEBUG_HELP = "\n".join([
     "#邮件　她的邮箱：状态 / 看 [N] / 发 <正文> / 测试",
     "#分镜 [文件或链接]　把视频切成宫格图 + 时间码清单",
     "#分镜放大 <格号>　把某一格再放大看（用上一次的分镜）",
+    "#动图 <文件>　GIF/动态WebP 摊成带时间的帧序列",
+    "#听歌 <文件>　响度/动态/峰值 + 一句结论",
+    "#知识　知识树：列表 / 学 <名> / 开|关 <名> / 加 <名> <标题> <内容> / 待审 / 批|否 <id>",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -854,6 +872,7 @@ class AIMindPlugin(Star):
         self.delivery_settings = delivery_engine.load_settings(
             Path(self.data_dir) / "delivery.json"
         )
+        self.knowledge = knowledge_engine.load(Path(self.data_dir) / "knowledge.json")
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -1587,6 +1606,15 @@ class AIMindPlugin(Star):
             _slot = _schedule.render(time.time())
             if _slot:
                 req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _slot).strip()
+
+            # ---------- 知识树（只注入这个会话激活的） ----------
+            try:
+                _kb = self._knowledge_block(session_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 知识注入失败：{exc}")
+                _kb = ""
+            if _kb:
+                req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _kb).strip()
 
             # ---------- 情绪 ----------
             self._diag["turns"] += 1
@@ -2731,6 +2759,12 @@ class AIMindPlugin(Star):
             ("bili/scroll", self._api_bili_scroll, "刷一轮"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
+            ("knowledge", self._api_knowledge, "知识树"),
+            ("knowledge/tree", self._api_knowledge_tree, "建树 / 加节点"),
+            ("knowledge/active", self._api_knowledge_active, "给会话挂上/摘掉"),
+            ("knowledge/review", self._api_knowledge_review, "批准/丢弃模型改动"),
+            ("animation", self._api_animation, "动图逐帧"),
+            ("soundcheck", self._api_soundcheck, "听音频"),
         ]
 
     def _register_web_apis(self) -> None:
@@ -4721,6 +4755,12 @@ class AIMindPlugin(Star):
                 return await self._debug_storyboard(event, text)
             if word.split()[0] in ("刷b站", "刷b", "bili"):
                 return await self._debug_bili(event, text)
+            if word.split()[0] in ("知识", "kb"):
+                return self._debug_knowledge(event, text)
+            if word.split()[0] in ("动图", "gif"):
+                return await self._debug_animation(event, text)
+            if word.split()[0] in ("听歌", "音频", "soundcheck"):
+                return await self._debug_soundcheck(event, text)
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
@@ -5011,6 +5051,139 @@ class AIMindPlugin(Star):
         for sheet in result.get("sheets") or []:
             images.extend(str(item) for item in (sheet.get("images") or []))
         return await self._emit_bulk(event, text, images, "今天的 B 站日报")
+
+    # -- 知识树 -------------------------------------------------------------
+    def _knowledge_save(self) -> bool:
+        return knowledge_engine.save(
+            Path(self.data_dir) / "knowledge.json", self.knowledge
+        )
+
+    def _knowledge_block(self, session_key: str) -> str:
+        return knowledge_engine.render_active(self.knowledge, session_key)
+
+    def _debug_knowledge(self, event: AstrMessageEvent, text: str) -> str:
+        session = str(event.unified_msg_origin or "")
+        parts = text.lstrip("#").strip().split(None, 4)
+        args = parts[1:]
+        kb = self.knowledge
+
+        if not args:
+            rows = ["知识树：%d 棵，%d 个节点，待审 %d 条"
+                    % (len(kb.trees), sum(len(tree.nodes) for tree in kb.trees),
+                       len(kb.pending))]
+            active = [tree.name for tree in kb.active_trees(session)]
+            rows.append("本会话激活：" + ("、".join(active) if active else "（没有）"))
+            for tree in kb.trees:
+                mark = "*" if tree.id in (kb.active.get(session) or []) else " "
+                rows.append(" %s %s（%d 个节点）" % (mark, tree.name, len(tree.nodes)))
+            if not kb.trees:
+                rows.append("还没有知识树。发 #知识 学 本群规矩 建一棵。")
+            rows.append("")
+            rows.append("#知识 开|关 <名>　给本会话挂上/摘掉")
+            rows.append("#知识 加 <树名> <标题> <内容>　往树上加一条")
+            rows.append("#知识 待审 / #知识 批|否 <id>　模型提的改动")
+            return "\n".join(rows)
+
+        head = args[0].lower()
+        rest = args[1:]
+        if head in ("学", "new", "建"):
+            name = " ".join(rest).strip()
+            if not name:
+                return "用法：#知识 学 <名字>"
+            tree = kb.add_tree(name)
+            self._knowledge_save()
+            return "建好了：%s。发 #知识 开 %s 给本会话挂上。" % (tree.name, tree.name)
+        if head in ("开", "on", "激活"):
+            name = " ".join(rest).strip()
+            tree = kb.by_name(name)
+            if tree is None:
+                return "没有这棵树：" + (name or "（空）")
+            ok = kb.activate(session, tree.id)
+            self._knowledge_save()
+            return ("已给本会话挂上：" + tree.name) if ok else "已经挂着了：" + tree.name
+        if head in ("关", "off", "摘"):
+            name = " ".join(rest).strip()
+            tree = kb.by_name(name)
+            if tree is None:
+                return "没有这棵树：" + (name or "（空）")
+            ok = kb.deactivate(session, tree.id)
+            self._knowledge_save()
+            return ("已摘掉：" + tree.name) if ok else "本来就没挂：" + tree.name
+        if head in ("加", "add"):
+            if len(args) < 4:
+                return "用法：#知识 加 <树名> <标题> <内容>"
+            tree = kb.by_name(args[1])
+            if tree is None:
+                return "没有这棵树：" + args[1]
+            node = kb.add_node(tree, args[2], args[3])
+            if node is None:
+                return "这棵树满了（%d 个节点）" % knowledge_engine.MAX_NODES
+            self._knowledge_save()
+            return "已加到「%s」：%s" % (tree.name, node.title)
+        if head in ("待审", "pending", "审"):
+            if not kb.pending:
+                return "没有待审的改动。"
+            rows = ["待审 %d 条：" % len(kb.pending)]
+            for edit in kb.pending:
+                tree = kb.tree(edit.tree_id)
+                node = tree.get(edit.node_id) if tree else None
+                rows.append("  %s｜%s / %s｜%s"
+                            % (edit.id, tree.name if tree else "?",
+                               node.title if node else "?",
+                               (edit.content or edit.title or "")[:40]))
+            rows.append("批准：#知识 批 <id>　丢弃：#知识 否 <id>")
+            return "\n".join(rows)
+        if head in ("批", "approve"):
+            if not rest:
+                return "用法：#知识 批 <id>"
+            ok = kb.approve(rest[0])
+            self._knowledge_save()
+            return "已批准并生效。" if ok else "没找到这条待审（或节点已不在）。"
+        if head in ("否", "reject"):
+            if not rest:
+                return "用法：#知识 否 <id>"
+            ok = kb.reject(rest[0])
+            self._knowledge_save()
+            return "已丢弃。" if ok else "没找到这条待审。"
+        return "不认识的用法。发 #知识 看说明。"
+
+    async def _debug_animation(self, event: AstrMessageEvent, text: str) -> str:
+        parts = text.lstrip("#").strip().split(None, 1)
+        path = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
+        if not path:
+            return "用法：#动图 <GIF 或动态 WebP 的路径>"
+        result = await asyncio.to_thread(animation_engine.build, path)
+        if not result.get("ok"):
+            return "看不了动图：" + str(result.get("error") or "未知原因")
+        return await self._emit_bulk(
+            event, str(result.get("manifest") or ""), [str(result.get("image") or "")], "动图"
+        )
+
+    async def _debug_soundcheck(self, event: AstrMessageEvent, text: str) -> str:
+        parts = text.lstrip("#").strip().split(None, 1)
+        path = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
+        if not path:
+            return "用法：#听歌 <音频文件路径>"
+        conf = self.storyboard_settings
+        result = await asyncio.to_thread(
+            soundcheck_engine.analyze, path, conf.ffmpeg_path, conf.ffprobe_path
+        )
+        images: list[str] = []
+        if result.get("ok"):
+            try:
+                workdir = Path(self.data_dir) / "soundcheck"
+                workdir.mkdir(parents=True, exist_ok=True)
+                out = workdir / "spectrum.png"
+                if soundcheck_engine.spectrum(
+                    path, out, ffmpeg_hint=conf.ffmpeg_path,
+                    ffprobe_hint=conf.ffprobe_path,
+                ):
+                    images.append(str(out))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 画频谱失败：{exc}")
+        return await self._emit_bulk(
+            event, soundcheck_engine.report(result), images, "音频"
+        )
 
     # -- 结果投递（群里 → 指令 QQ 私聊） -----------------------------------
     def _delivery_save(self) -> str:
@@ -6195,6 +6368,157 @@ class AIMindPlugin(Star):
         data = self._bili_payload()
         data["removed"] = removed
         return json_response(data)
+
+    # -- 面板：知识树 / 动图 / 听音频 ---------------------------------------
+    def _knowledge_payload(self, session: str = "") -> dict[str, Any]:
+        kb = self.knowledge
+        session = str(session or "")
+        active = set(kb.active.get(session) or [])
+        return {
+            "session": session,
+            "stats": knowledge_engine.summarize(kb),
+            "trees": [
+                {
+                    "id": tree.id, "name": tree.name, "nodes": len(tree.nodes),
+                    "active": tree.id in active,
+                    "updated": tree.updated,
+                    "outline": knowledge_engine.render_tree(tree, 1200),
+                }
+                for tree in kb.trees
+            ],
+            "pending": [
+                {
+                    "id": edit.id,
+                    "tree": (kb.tree(edit.tree_id).name if kb.tree(edit.tree_id) else "?"),
+                    "node": (kb.tree(edit.tree_id).get(edit.node_id).title
+                             if kb.tree(edit.tree_id) and kb.tree(edit.tree_id).get(edit.node_id)
+                             else edit.node_id),
+                    "title": edit.title,
+                    "content": edit.content,
+                    "note": edit.note,
+                    "created": edit.created,
+                }
+                for edit in kb.pending
+            ],
+        }
+
+    async def _api_knowledge(self) -> Any:
+        params = await self._params()
+        return json_response(self._knowledge_payload(str((params or {}).get("session") or "")))
+
+    async def _api_knowledge_tree(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        kb = self.knowledge
+        action = str(payload.get("action") or "create").strip().lower()
+        if action == "create":
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                return error_response("树名不能为空")
+            if kb.by_name(name) is not None:
+                return error_response("已经有这棵树了")
+            kb.add_tree(name)
+        elif action == "add":
+            tree = kb.by_name(str(payload.get("tree") or ""))
+            if tree is None:
+                return error_response("没有这棵树")
+            node = kb.add_node(
+                tree, str(payload.get("title") or ""), str(payload.get("content") or ""),
+                parent=str(payload.get("parent") or ""),
+            )
+            if node is None:
+                return error_response("这棵树满了")
+        elif action == "activate":
+            tree = kb.by_name(str(payload.get("tree") or ""))
+            session = str(payload.get("session") or "")
+            if tree is None or not session:
+                return error_response("缺树或会话")
+            kb.activate(session, tree.id)
+        elif action == "deactivate":
+            tree = kb.by_name(str(payload.get("tree") or ""))
+            session = str(payload.get("session") or "")
+            if tree is None or not session:
+                return error_response("缺树或会话")
+            kb.deactivate(session, tree.id)
+        else:
+            return error_response("不认识的动作：" + action)
+        if not self._knowledge_save():
+            return error_response("写 knowledge.json 失败，详细原因见日志")
+        return json_response(self._knowledge_payload(str(payload.get("session") or "")))
+
+    async def _api_knowledge_active(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        tree = self.knowledge.by_name(str(payload.get("tree") or ""))
+        session = str(payload.get("session") or "")
+        if tree is None or not session:
+            return error_response("缺树或会话")
+        if bool(payload.get("on")):
+            self.knowledge.activate(session, tree.id)
+        else:
+            self.knowledge.deactivate(session, tree.id)
+        if not self._knowledge_save():
+            return error_response("写 knowledge.json 失败")
+        return json_response(self._knowledge_payload(session))
+
+    async def _api_knowledge_review(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        edit_id = str(payload.get("id") or "")
+        approve = bool(payload.get("approve"))
+        ok = (self.knowledge.approve(edit_id) if approve else self.knowledge.reject(edit_id))
+        self._knowledge_save()
+        data = self._knowledge_payload(str(payload.get("session") or ""))
+        data["done"] = ok
+        return json_response(data)
+
+    async def _api_animation(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            return json_response({"ok": False, "error": "先填一个动图路径"})
+        conf = self.storyboard_settings
+        result = await self._mail_call(
+            animation_engine.build, path, animation_engine.DEFAULT_FRAMES, None,
+            conf.annotate, conf.font_path, conf.ffmpeg_path, conf.ffprobe_path,
+        )
+        images = self._images_payload([result.get("image")]) if result.get("ok") else []
+        return json_response({
+            "ok": bool(result.get("ok")),
+            "error": result.get("error", ""),
+            "summary": result.get("summary", ""),
+            "manifest": result.get("manifest", ""),
+            "images": images,
+        })
+
+    async def _api_soundcheck(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            return json_response({"ok": False, "error": "先填一个音频路径"})
+        conf = self.storyboard_settings
+        result = await self._mail_call(
+            soundcheck_engine.analyze, path, conf.ffmpeg_path, conf.ffprobe_path
+        )
+        images: list[dict[str, Any]] = []
+        if result.get("ok"):
+            try:
+                workdir = Path(self.data_dir) / "soundcheck"
+                workdir.mkdir(parents=True, exist_ok=True)
+                out = workdir / "spectrum.png"
+                if soundcheck_engine.spectrum(
+                    path, out, ffmpeg_hint=conf.ffmpeg_path,
+                    ffprobe_hint=conf.ffprobe_path,
+                ):
+                    images = self._images_payload([out])
+            except OSError:
+                images = []
+        result["images"] = images
+        result["text"] = soundcheck_engine.report(result)
+        return json_response(result)
 
     async def _api_style(self) -> Any:
         params = await self._params()

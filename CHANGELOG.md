@@ -8,6 +8,17 @@
 > 装一次 3.0.0，之后我改的东西仍然叫 3.0.0 —— 拿最新的 zip 就是最新的代码。
 
 ### 3.0.0 持续新增
+- **再适配三个上游插件**（都不加 Python 依赖，只要 ffmpeg）：
+  - **知识树**（`mind/knowledge.py`，移植 dsh-knowledge-canvas）：树/节点、按会话激活、
+    模型改件待审（批准才生效）、注入口径是「既定事实」；命令 `#知识 ...`，面板「知识」页。
+  - **动图逐帧**（`mind/animation.py`，移植 dsh-read-animation）：GIF/动态 WebP 解帧 →
+    均匀采样 → 编号+时间拼图；静态图会明确拒绝。命令 `#动图 <文件>`。
+  - **听音频**（`mind/soundcheck.py`，移植 dsh-soundcheck）：ebur128 + volumedetect 算
+    响度/动态/真峰值/电平，按流媒体标准给一句结论 + 频谱图。命令 `#听歌 <文件>`。
+  - 面板：新增「知识」页签、分镜页加「动图逐帧」「听一段音频」两张卡，按钮 155 → 163。
+  - 新增 tests/test_knowledge.py（19 条）+ tests/test_soundcheck.py（18 条）+
+    tests/test_animation.py（15 条）+ tests/test_knowledge_plugin.py（16 条）。
+
 - **结果投递到指令 QQ 私聊**（新模块 `mind/delivery.py`）：
   - 群里执行 `#分镜` / `#分镜放大` / `#刷B站` / `#邮件 看` 时，图和大段文字发到
     **发指令那个 QQ** 的私聊（`platform:FriendMessage:<QQ>`），群里只回一句「已经发到你私聊了」；

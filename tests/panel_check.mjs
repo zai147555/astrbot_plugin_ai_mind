@@ -183,6 +183,9 @@ const KNOWN_ROUTES = [
   PLUGIN + "/storyboard", PLUGIN + "/storyboard/save",
   PLUGIN + "/bili", PLUGIN + "/bili/save", PLUGIN + "/bili/scroll",
   PLUGIN + "/bili/storyboard", PLUGIN + "/bili/clear",
+  PLUGIN + "/knowledge", PLUGIN + "/knowledge/tree",
+  PLUGIN + "/knowledge/active", PLUGIN + "/knowledge/review",
+  PLUGIN + "/animation", PLUGIN + "/soundcheck",
   PLUGIN + "/storyboard/build",
 ];
 const SESSIONS_OK = { sessions: [{ key: "s1", label: "私聊 · 1", group: false, samples: 3 }], stats: {} };
