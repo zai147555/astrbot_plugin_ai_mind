@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 结果投递：群里发指令 → 大块结果走私聊
+    from .mind import delivery as delivery_engine
+except ImportError:  # pragma: no cover
+    from mind import delivery as delivery_engine  # type: ignore[no-redef]
+
 try:  # 刷 B 站（分区最新 + 字幕 + 直链）—— 跟分镜合到一条链上
     from .mind import bili as bili_engine
 except ImportError:  # pragma: no cover
@@ -846,6 +851,9 @@ class AIMindPlugin(Star):
         self._last_storyboard: dict[str, Any] = {}
         #: 每天那轮报告发回哪儿（主人在私聊里说过话就记下来）
         self._bili_target: str = ""
+        self.delivery_settings = delivery_engine.load_settings(
+            Path(self.data_dir) / "delivery.json"
+        )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -4993,24 +5001,103 @@ class AIMindPlugin(Star):
         result = await self._bili_comments(result)
         if not result.get("ok"):
             return "刷B站失败：" + str(result.get("error") or "未知原因")
-        for sheet in result.get("sheets") or []:
-            for image in sheet.get("images") or []:
-                path = Path(str(image))
-                if path.is_file() and Comp is not None:
-                    try:
-                        await self.context.send_message(event.unified_msg_origin, [
-                            Comp.Plain("分镜 · " + str(sheet.get("bvid") or "")),
-                            Comp.Image.fromFileSystem(str(path)),
-                        ])
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(f"[ai_mind] 发送 B 站分镜图失败：{exc}")
-                        break
         lines = [str(result.get("report") or "").strip()]
         errors = result.get("errors") or []
         if errors:
             lines.append("")
             lines.append("（%d 个小问题：%s）" % (len(errors), "；".join(errors[:3])))
-        return "\n".join(line for line in lines if line is not None)
+        text = "\n".join(line for line in lines if line is not None)
+        images: list[str] = []
+        for sheet in result.get("sheets") or []:
+            images.extend(str(item) for item in (sheet.get("images") or []))
+        return await self._emit_bulk(event, text, images, "今天的 B 站日报")
+
+    # -- 结果投递（群里 → 指令 QQ 私聊） -----------------------------------
+    def _delivery_save(self) -> str:
+        ok = delivery_engine.save_settings(
+            Path(self.data_dir) / "delivery.json", self.delivery_settings
+        )
+        return "" if ok else "（投递设置没写进磁盘）"
+
+    def _private_target(self, event: AstrMessageEvent) -> str:
+        platform = ""
+        try:
+            platform = str(event.get_platform_name() or "")
+        except Exception:  # noqa: BLE001
+            platform = ""
+        return delivery_engine.private_umo(
+            str(event.unified_msg_origin or ""), str(event.get_sender_id() or ""), platform
+        )
+
+    async def _emit_bulk(self, event: AstrMessageEvent, text: str,
+                         images: list[str] | None = None,
+                         label: str = "") -> str:
+        """大块结果：群里发指令就发到指令那个 QQ 的私聊，私聊就原地给。
+
+        返回**群里该说的话**：原地发时返回原文；改走私聊时返回一句提示。
+        """
+        umo = str(event.unified_msg_origin or "")
+        want_private = (
+            self.delivery_settings.bulk_to_private
+            and delivery_engine.is_group(umo)
+            and Comp is not None
+        )
+        if not want_private:
+            await self._send_chains(umo, text, images, label)
+            return text
+        target = self._private_target(event)
+        if not target:
+            await self._send_chains(umo, text, images, label)
+            return text
+        sent = 0
+        chains: list[tuple[str, list[Any]]] = []
+        head = (label or "结果") + "："
+        chains.append((target, [Comp.Plain(text)]))
+        for index, path in enumerate(images or [], 1):
+            item = Path(str(path))
+            if not item.is_file():
+                continue
+            chains.append((target, [Comp.Plain("%s第 %d 张" % (head, index)),
+                                    Comp.Image.fromFileSystem(str(item))]))
+        for where, chain in chains:
+            try:
+                await self.context.send_message(where, chain)
+                sent += 1
+            except Exception as exc:  # noqa: BLE001 - 私聊发不出去就退回群里
+                logger.warning(f"[ai_mind] 发私聊失败：{exc}")
+                break
+        if not sent:
+            await self._send_chains(umo, text, images, label)
+            return text
+        return "已经发到你私聊了（%d 条）。" % sent
+
+    async def _send_chains(self, umo: str, text: str, images: list[str] | None = None,
+                           label: str = "") -> int:
+        """在原地把文字和图片发出去。"""
+        if Comp is None:
+            return 0
+        sent = 0
+        head = (label or "结果") + "："
+        try:
+            await self.context.send_message(umo, [Comp.Plain(text)])
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 发送结果失败：{exc}")
+            return sent
+        for index, path in enumerate(images or [], 1):
+            item = Path(str(path))
+            if not item.is_file():
+                continue
+            try:
+                await self.context.send_message(umo, [
+                    Comp.Plain("%s第 %d 张" % (head, index)),
+                    Comp.Image.fromFileSystem(str(item)),
+                ])
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 发送图片失败：{exc}")
+                break
+        return sent
 
     # -- 视频分镜 -----------------------------------------------------------
     def _storyboard_workdir(self) -> Path:
@@ -5120,19 +5207,13 @@ class AIMindPlugin(Star):
         if not result.get("ok"):
             return "放大失败：" + str(result.get("error") or "未知原因")
         image = Path(str(result.get("image") or ""))
-        if image.is_file() and Comp is not None:
-            try:
-                await self.context.send_message(event.unified_msg_origin, [
-                    Comp.Plain("第 %d 格放大（%d 帧）" % (int(result.get("cell") or 0),
-                                                        int(result.get("frames") or 0))),
-                    Comp.Image.fromFileSystem(str(image)),
-                ])
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"[ai_mind] 发送放大图失败：{exc}")
         lines = list(result.get("lines") or [])
         if result.get("text"):
             lines.append("这一格的台词：" + str(result["text"])[:200])
-        return "\n".join(lines) or "放大完成。"
+        text = "\n".join(lines) or "放大完成。"
+        return await self._emit_bulk(
+            event, text, [str(image)] if image.is_file() else [], "放大"
+        )
 
     async def _debug_storyboard(self, event: AstrMessageEvent, text: str) -> str:
         conf = self.storyboard_settings
@@ -5153,8 +5234,11 @@ class AIMindPlugin(Star):
             return "\n".join(out)
         result = await asyncio.to_thread(self._storyboard_build, arg) \
             if hasattr(asyncio, "to_thread") else self._storyboard_build(arg)
-        await self._send_storyboard_images(event, result)
-        return self._storyboard_text(result)
+        text = self._storyboard_text(result)
+        if not result.get("ok"):
+            return text
+        images = [str(sheet.get("image")) for sheet in result.get("sheets") or []]
+        return await self._emit_bulk(event, text, images, "分镜")
 
     # -- 她的邮箱 -----------------------------------------------------------
     @staticmethod
@@ -5206,7 +5290,7 @@ class AIMindPlugin(Star):
                        item.date[:31] or "时间不明",
                        ("\n   " + item.snippet) if item.snippet else "")
                 )
-            return "\n".join(lines)
+            return await self._emit_bulk(event, "\n".join(lines), [], "收件箱")
         if head in ("发", "send"):
             body = " ".join(args[1:]).strip()
             if not body:
@@ -5898,6 +5982,7 @@ class AIMindPlugin(Star):
         report = storyboard_engine.selfcheck(conf.ffmpeg_path, conf.ffprobe_path)
         return {
             "settings": conf.to_dict(),
+            "delivery": self.delivery_settings.to_dict(),
             "selfcheck": report,
             "needs": [
                 {"key": key, "label": tier["label"], "w": tier["w"], "h": tier["h"],
@@ -5929,6 +6014,9 @@ class AIMindPlugin(Star):
                 conf.max_download_mb = max(1, min(2048, int(payload["max_download_mb"])))
             except (TypeError, ValueError):
                 pass
+        if "bulk_to_private" in payload:
+            self.delivery_settings.bulk_to_private = bool(payload.get("bulk_to_private"))
+            self._delivery_save()
         ok = storyboard_engine.save_settings(
             Path(self.data_dir) / "storyboard.json", conf
         )
@@ -5990,6 +6078,7 @@ class AIMindPlugin(Star):
     def _bili_payload(self) -> dict[str, Any]:
         return {
             "settings": self.bili_settings.to_dict(),
+            "delivery": self.delivery_settings.to_dict(),
             "seen": self.bili_seen.count(),
             "storyboard": self.storyboard_settings.to_dict(),
             "has_ffmpeg": bool(storyboard_engine.find_tools(
@@ -6016,6 +6105,9 @@ class AIMindPlugin(Star):
                 merged[key] = payload.get(key)
         conf = bili_engine.BiliSettings.from_dict(merged)
         self.bili_settings = conf
+        if "bulk_to_private" in payload:
+            self.delivery_settings.bulk_to_private = bool(payload.get("bulk_to_private"))
+            self._delivery_save()
         ok = bili_engine.save_settings(Path(self.data_dir) / "bili.json", conf)
         data = self._bili_payload()
         data["saved"] = ok

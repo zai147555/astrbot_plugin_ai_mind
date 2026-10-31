@@ -1381,6 +1381,7 @@
         <label class="small" title="把序号和时间码烧在每格左上角，模型才能引用第 5 格"><input type="checkbox" id="sb-annotate"> 烧编号+时间码</label>
         <label class="small" title="宫格图下面贴一条音频波形，与画面同时间轴"><input type="checkbox" id="sb-audio"> 音频波形带</label>
         <label class="small" title="同一文件第二次直接命中缓存"><input type="checkbox" id="sb-cache"> 命中缓存</label>
+        <label class="small" title="群里发指令时，图和大段文字发到发指令那个 QQ 的私聊"><input type="checkbox" id="sb-private"> 结果发指令QQ私聊</label>
       </div>
       <div style="margin-top:10px">
         <div class="small muted">外挂转写（可选）：填你装好的命令，用 {input} 和 {output} 占位，输出 srt</div>
@@ -1431,7 +1432,8 @@
       </div>
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
         <label class="small" title="有关键词就先走 B 站搜索（WBI 签名），搜不到再逛分区"><input type="checkbox" id="bl-search"> 用关键词搜索</label>
-        <label class="small" title="让模型给每条写一句话（失败就用电字幕摘录）"><input type="checkbox" id="bl-one"> 每条一句话</label>
+        <label class="small" title="让模型给每条写一句话（失败就用字幕摘录）"><input type="checkbox" id="bl-one"> 每条一句话</label>
+        <label class="small" title="群里发指令时，日报和分镜图发到发指令那个 QQ 的私聊"><input type="checkbox" id="bl-private"> 结果发指令QQ私聊</label>
       </div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="bl-save">保存</button>
@@ -2868,6 +2870,7 @@
         ffprobe_path: $("sb-ffprobe").value,
         font_path: $("sb-font").value,
         asr_command: $("sb-asr").value,
+        bulk_to_private: $("sb-private").checked,
         annotate: $("sb-annotate").checked,
         audio_bar: $("sb-audio").checked,
         cache: $("sb-cache").checked,
@@ -2907,7 +2910,8 @@
         max_download_mb: Number($("bl-mb").value) || 60,
         daily_hour: Number($("bl-daily").value),
         use_search: $("bl-search").checked,
-        one_liner: $("bl-one").checked
+        one_liner: $("bl-one").checked,
+        bulk_to_private: $("bl-private").checked
       }).then(function (data) { renderBili(data); toast("已保存"); })
         .catch(function (e) { toast("保存失败：" + e.message); });
     };
@@ -5420,6 +5424,8 @@
     $("sb-annotate").checked = settings.annotate !== false;
     $("sb-audio").checked = settings.audio_bar !== false;
     $("sb-cache").checked = settings.cache !== false;
+    var delivery = data.delivery || {};
+    $("sb-private").checked = delivery.bulk_to_private !== false;
     var needs = data.needs || [];
     $("sb-need").innerHTML = needs.map(function (item) {
       return "<option value='" + item.key + "'" +
@@ -5471,6 +5477,8 @@
     $("bl-daily").value = (settings.daily_hour === undefined ? -1 : settings.daily_hour);
     $("bl-search").checked = settings.use_search !== false;
     $("bl-one").checked = settings.one_liner !== false;
+    var blDelivery = data.delivery || {};
+    $("bl-private").checked = blDelivery.bulk_to_private !== false;
     $("bl-status").textContent = "已读 " + (data.seen || 0) + " 条";
     $("bl-check").textContent = data.has_ffmpeg
       ? "ffmpeg 就绪，能出分镜"
