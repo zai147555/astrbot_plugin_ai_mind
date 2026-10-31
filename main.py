@@ -276,6 +276,11 @@ try:  # 模仿指定 QQ 的说话习惯（采集 + 指纹 + 注入参考）
 except ImportError:  # pragma: no cover
     from mind import imitate as imitate_engine  # type: ignore[no-redef]
 
+try:  # 她的邮箱（smtplib / imaplib，授权码只从 data/mail.json 读）
+    from .mind import mailbox as mail_engine
+except ImportError:  # pragma: no cover
+    from mind import mailbox as mail_engine  # type: ignore[no-redef]
+
 try:  # 提示词仓库（注入给模型的原话都从这里取）
     from .mind import prompts as prompt_engine
 except ImportError:  # pragma: no cover
@@ -441,6 +446,7 @@ DEBUG_HELP = "\n".join([
     "#抽取　立刻把攒着的对话送去抽记忆",
     "#工具　工具闸门的开关与名单",
     "#模仿　学谁说话：状态 / 学 <QQ> / 停 <QQ> / 清空 / 开 / 关",
+    "#邮件　她的邮箱：状态 / 看 [N] / 发 <正文> / 测试",
     "#帮助　这份清单",
     "",
     "调试模式里插件完全让路：不注入情绪 / 记忆 / 身份，不分段，不记记忆。",
@@ -805,6 +811,9 @@ class AIMindPlugin(Star):
         self.imitate = imitate_engine.ImitateStore(self.store, logger)
         self.imitate_settings = imitate_engine.load_settings(
             Path(self.data_dir) / "imitate.json"
+        )
+        self.mail = mail_engine.Mailbox(
+            mail_engine.load_config(Path(self.data_dir) / "mail.json"), logger
         )
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
@@ -4645,6 +4654,8 @@ class AIMindPlugin(Star):
                 return await self._debug_tts()
             if word.split()[0] in ("模仿", "imitate"):
                 return self._debug_imitate(text)
+            if word.split()[0] in ("邮件", "mail", "邮箱"):
+                return await self._debug_mail(text)
         except Exception as exc:  # noqa: BLE001 - 调试命令出错要说出来，不能静默
             return f"调试命令出错：{type(exc).__name__}: {exc}"
         return "不认识的调试命令。发 #帮助 看有哪些。"
@@ -4698,6 +4709,74 @@ class AIMindPlugin(Star):
             for line in imitate_engine.describe(self.imitate.profile(uid))[:4]:
                 out.append("    · " + line)
         return "\n".join(out)
+
+    # -- 她的邮箱 -----------------------------------------------------------
+    @staticmethod
+    async def _mail_call(func, *args, **kwargs):
+        """邮件是阻塞 IO，扔到线程里跑，别卡住事件循环。"""
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except AttributeError:  # pragma: no cover - 老 Python 没有 to_thread
+            return func(*args, **kwargs)
+
+    def _mail_report(self) -> str:
+        conf = self.mail.config
+        if not conf.enabled or not conf.address:
+            return ("邮箱：还没配。\n"
+                    "在 data/mail.json 里填 address（邮箱地址）、password（SMTP 授权码，"
+                    "不是登录密码）、owner（她发信默认发给谁），enabled 改 true。\n"
+                    "服务器地址留空会按域名自动猜（qq / 163 / 126 / gmail / outlook / sina）。")
+        out = [
+            "邮箱：" + conf.address
+            + ("" if conf.password else "（还缺授权码）")
+            + "｜发信 " + (conf.smtp_host or "没填")
+            + "｜收信 " + (conf.imap_host or "没填"),
+            "默认收件人：" + (conf.owner or conf.address),
+        ]
+        return "\n".join(out)
+
+    async def _debug_mail(self, text: str) -> str:
+        parts = text.lstrip("#").strip().split(None, 2)
+        args = parts[1:]
+        if args and args[0].lower() in ("mail", "邮箱"):
+            args = args[1:]
+        if not args:
+            return self._mail_report()
+        head = args[0].lower()
+        if head in ("看", "收", "list", "inbox"):
+            limit = 3
+            if len(args) > 1 and str(args[1]).strip().isdigit():
+                limit = max(1, min(20, int(str(args[1]).strip())))
+            items, err = await self._mail_call(self.mail.recent, limit)
+            if err:
+                return "收信失败：" + err
+            if not items:
+                return "收件箱是空的（或者最近没有新邮件）。"
+            lines = ["最近 %d 封：" % len(items)]
+            for index, item in enumerate(items, 1):
+                lines.append(
+                    "%d. %s\n   %s｜%s%s"
+                    % (index, item.subject, item.sender,
+                       item.date[:31] or "时间不明",
+                       ("\n   " + item.snippet) if item.snippet else "")
+                )
+            return "\n".join(lines)
+        if head in ("发", "send"):
+            body = " ".join(args[1:]).strip()
+            if not body:
+                return "用法：#邮件 发 <正文>（发到 data/mail.json 里的 owner）"
+            subject = body.splitlines()[0][:24] or "来自她"
+            ok, message = await self._mail_call(self.mail.send, subject, body)
+            return ("✅ " if ok else "❌ ") + message
+        if head in ("测试", "test"):
+            ok, message = await self._mail_call(
+                self.mail.send, "测试邮件", "这是一封测试邮件，说明邮箱配好了。"
+            )
+            return ("✅ " if ok else "❌ ") + message
+        return ("用法：#邮件　　看状态\n"
+                "#邮件 看 [N]　　看最近 N 封（会联网）\n"
+                "#邮件 发 <正文>　　发到 owner\n"
+                "#邮件 测试　　发一封测试信")
 
     def _debug_imitate(self, text: str) -> str:
         conf = self.imitate_settings
@@ -4794,6 +4873,17 @@ class AIMindPlugin(Star):
                sum(len(v) for v in self._buffers.values()))
         )
         out.append("工具闸门：" + ("开" if self.settings.guard.block_tools else "关"))
+        try:
+            conf_mail = self.mail.config
+            if conf_mail.enabled and conf_mail.address:
+                out.append(
+                    "邮件：" + conf_mail.address
+                    + ("" if conf_mail.password else "（缺授权码）")
+                )
+            else:
+                out.append("邮件：没配（data/mail.json）")
+        except Exception as exc:  # noqa: BLE001
+            out.append("邮件状态读不出来：" + str(exc))
         try:
             conf = self.imitate_settings
             learned = self.imitate.count(str(event.get_sender_id() or ""))
