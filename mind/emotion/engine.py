@@ -260,8 +260,7 @@ class SessionMood:
     history: list[MoodEvent] = field(default_factory=list)
     #: 身体状态（昼夜节律/能量/饥饿/压力/疾病）
     body: physiology.Body = field(default_factory=physiology.Body)
-    #: 上一次身体给情绪的偏移：用来算「这轮身体变了多少」，避免每 tick 反复叠加
-    body_offset: PAD = field(default_factory=PAD)
+
 
     # -- 时间演化 -----------------------------------------------------------
     def tick(self, now: float, settings: Settings) -> None:
@@ -274,7 +273,17 @@ class SessionMood:
             return
         # 时钟回拨 / 极端跳变时，不让情绪被"算飞"
         dt = min(dt, 30 * 86400.0)
-        self.emotion = self.emotion.decay_toward(settings.baseline, settings.emotion_half_life, dt)
+        # ---- 身体 ----
+        # 先推进身体，再让**情绪朝「基线 + 身体偏移」这个目标衰减**。
+        # 注意：不能做成「一次性加一点偏移」—— 那点偏移会被情绪衰减直接冲掉，
+        # 熬夜到天亮情绪还是 0。身体是持续施压的滤镜，必须改衰减目标。
+        try:
+            physiology.evolve(self.body, now)
+            body_offset = physiology.pad_offset(self.body)
+        except Exception:  # noqa: BLE001 - 身体算不出来不能影响聊天
+            body_offset = PAD()
+        target = (PAD.from_any(settings.baseline) + body_offset).limit(1.0)
+        self.emotion = self.emotion.decay_toward(target, settings.emotion_half_life, dt)
         self.mood = self.mood.decay_toward(settings.baseline, settings.mood_half_life, dt)
         if settings.affinity_decay_days > 0:
             half_life = settings.affinity_decay_days * 86400.0
@@ -285,18 +294,6 @@ class SessionMood:
                     relation.affinity = decay_scalar(relation.affinity, 0.0, half_life, dt)
         self.last_tick = now
 
-        # ---- 身体 ----
-        # 身体独立演化，只把「变化量」折算进情绪（不是覆盖）：
-        # 困了/饿了/病了是慢慢把人往下推，而不是一下子换个人。
-        try:
-            physiology.evolve(self.body, now)
-            offset = physiology.pad_offset(self.body)
-            delta = (offset - self.body_offset) * 0.6
-            if abs(delta.p) + abs(delta.a) + abs(delta.d) > 1e-4:
-                self.emotion = (self.emotion + delta).limit(1.0)
-            self.body_offset = offset
-        except Exception:  # noqa: BLE001 - 身体算不出来不能影响聊天
-            pass
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self, history_size: int) -> dict[str, Any]:

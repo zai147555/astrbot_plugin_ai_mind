@@ -118,3 +118,56 @@ class DescribeTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class EngineWiringTest(unittest.TestCase):
+    """接线：身体必须真的把情绪拖过去，而不是只改一句提示词。
+
+    这里踩过一个坑：一开始做成「每次 tick 加一点身体偏移」，
+    结果那点偏移被情绪衰减直接冲掉 —— 熬到天亮情绪还是 0。
+    正确做法是让身体改「衰减目标」（基线 + 身体偏移）。"""
+
+    def test_staying_up_all_night_drags_emotion_down(self) -> None:
+        import tempfile
+
+        from mind.emotion import engine as eng
+        from mind.emotion.model import PAD
+
+        workdir = tempfile.mkdtemp(prefix="mind_body_")
+        engine = eng.EmotionEngine(eng.Settings(), workdir)
+        session = engine.resolve("wire", at(9))
+        session.emotion = PAD.of(0.20, 0.30, 0.10)
+        session.body = ph.Body(energy=0.85, hunger=0.15, stress=0.1, last_update=at(9))
+        session.last_tick = at(9)
+
+        moment = at(9)
+        for _ in range(38):          # 09:00 → 次日 04:00，每半小时 tick
+            moment += 1800
+            session.tick(moment, engine.settings)
+
+        self.assertLess(session.emotion.p, -0.10, "熬通宵该明显不高兴")
+        self.assertLess(session.body.energy, 0.35, "力气的确耗下去了")
+        offset = ph.pad_offset(session.body)
+        self.assertAlmostEqual(session.emotion.p, offset.p, places=1,
+                               msg="情绪该收敛到「基线 + 身体偏移」")
+
+    def test_healthy_body_keeps_emotion_before_midnight(self) -> None:
+        import tempfile
+
+        from mind.emotion import engine as eng
+        from mind.emotion.model import PAD
+
+        workdir = tempfile.mkdtemp(prefix="mind_body_")
+        engine = eng.EmotionEngine(eng.Settings(), workdir)
+        session = engine.resolve("ok", at(9))
+        session.emotion = PAD.of(0.30, 0.40, 0.20)
+        session.body = ph.Body(energy=0.85, hunger=0.15, stress=0.1, last_update=at(9))
+        session.last_tick = at(9)
+        moment = at(9)
+        for _ in range(4):           # 只到 11:00，还是精神好的时候
+            moment += 1800
+            session.tick(moment, engine.settings)
+        offset = ph.pad_offset(session.body)
+        # 情绪本来就会按半衰期回落，所以不能断言「还是正数」；
+        # 真正的不变量是：健康时**身体偏移接近 0**，没有额外往下拖。
+        self.assertGreater(offset.p, -0.05, "上午身体不该有负面偏移")
+        self.assertAlmostEqual(offset.a, 0.0, delta=0.1)
