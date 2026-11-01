@@ -277,6 +277,178 @@ class PluginMailTest(PluginHarness, unittest.TestCase):
         self.run_async(scenario())
 
 
+class FriendsTest(unittest.TestCase):
+    def test_parse_lines(self) -> None:
+        rows = mb.parse_friends(["小明, a@b.com", "小刚 a@b.cn", "x@y.com", "坏行"])
+        self.assertEqual([row["name"] for row in rows], ["小明", "小刚", "x"])
+        self.assertEqual(rows[0]["address"], "a@b.com")
+
+    def test_dedupe_by_address(self) -> None:
+        rows = mb.parse_friends(["小明, A@B.com", "小明，a@b.com"])
+        self.assertEqual(len(rows), 1)
+
+    def test_dict_rows(self) -> None:
+        rows = mb.parse_friends([{"name": "小美", "address": "m@m.com"}])
+        self.assertEqual(rows[0], {"name": "小美", "address": "m@m.com"})
+
+    def test_cap(self) -> None:
+        rows = mb.parse_friends(["u%d, u%d@x.com" % (i, i) for i in range(60)])
+        self.assertEqual(len(rows), mb.MAX_FRIENDS)
+
+    def test_friend_named(self) -> None:
+        conf = mb.MailConfig(friends=mb.parse_friends(["小明, a@b.com"]))
+        self.assertIsNotNone(conf.friend_named("小明"))
+        self.assertIsNotNone(conf.friend_named("a@b.com"))
+        self.assertIsNone(conf.friend_named("小刚"))
+
+    def test_parse_letter(self) -> None:
+        got = mb.parse_letter("关于今天\n\n正文第一句\n第二句")
+        self.assertEqual(got["subject"], "关于今天")
+        self.assertIn("正文第一句", got["body"])
+
+    def test_parse_letter_without_subject(self) -> None:
+        got = mb.parse_letter("今天没什么事，就随便说说。")
+        self.assertEqual(got["subject"], "来自她")
+        self.assertIn("随便说说", got["body"])
+
+    def test_parse_letter_empty(self) -> None:
+        self.assertEqual(mb.parse_letter(""), {"subject": "来自她", "body": ""})
+
+    def test_config_roundtrip_friends(self) -> None:
+        conf = mb.MailConfig(friends=mb.parse_friends(["小明, a@b.com"]),
+                             auto_enabled=True, auto_hour=9, auto_daily=2)
+        again = mb.MailConfig.from_dict(conf.to_dict())
+        self.assertEqual(again.friends, conf.friends)
+        self.assertTrue(again.auto_enabled)
+        self.assertEqual(again.auto_hour, 9)
+        self.assertEqual(again.auto_daily, 2)
+
+
+class PluginFriendsTest(PluginHarness, unittest.TestCase):
+    def _configured(self, plugin, **over) -> None:
+        base = dict(enabled=True, address="her@qq.com", password="授权码",
+                    owner="boss@qq.com",
+                    friends=mb.parse_friends(["小明, a@b.com"]))
+        base.update(over)
+        plugin.mail = mb.Mailbox(_config(**base))
+
+    def test_save_friends_and_auto(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            data = (await self.api(plugin, "mail/save", body={
+                "address": "her@qq.com", "password": "授权码",
+                "friends": ["小明, a@b.com", "小刚 b@c.com"],
+                "auto_enabled": True, "auto_hour": 8, "auto_daily": 2,
+            }))["data"]
+            self.assertEqual(len(data["friends"]), 2)
+            self.assertTrue(data["auto_enabled"])
+            self.assertEqual(data["auto_hour"], 8)
+            self.assertEqual(data["auto_daily"], 2)
+
+        self.run_async(scenario())
+
+    def test_friends_command(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin)
+            text = await plugin._debug_mail("#邮件 好友")
+            self.assertIn("小明", text)
+            self.assertIn("a@b.com", text)
+
+        self.run_async(scenario())
+
+    def test_friends_command_empty(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin, friends=[])
+            text = await plugin._debug_mail("#邮件 好友")
+            self.assertIn("空的", text)
+
+        self.run_async(scenario())
+
+    def test_write_friend_sends_and_logs(self) -> None:
+        async def scenario() -> None:
+            FakeSMTP.instances = []
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin)
+            self.provider.response = "关于今天\n\n下 午 很 热 ， 我 没 出 门 。"
+            with mock.patch.object(mb.smtplib, "SMTP_SSL", FakeSMTP):
+                text = await plugin._debug_mail("#邮件 给 小明")
+            self.assertIn("寄给", text)
+            mail = FakeSMTP.instances[-1].sent[-1]
+            self.assertEqual(mail["To"], "a@b.com")
+            self.assertIn("下午很热", mail.get_content())
+            log = plugin._mail_log(5)
+            self.assertEqual(len(log), 1)
+            self.assertTrue(log[0]["ok"])
+
+        self.run_async(scenario())
+
+    def test_write_unknown_friend(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin)
+            text = await plugin._debug_mail("#邮件 给 不存在")
+            self.assertIn("没有", text)
+
+        self.run_async(scenario())
+
+    def test_auto_tick_sends_once_a_day(self) -> None:
+        async def scenario() -> None:
+            FakeSMTP.instances = []
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin, auto_enabled=True, auto_hour=0, auto_daily=1)
+            self.provider.response = "自动的一封\n\n今天也没什么。"
+            with mock.patch.object(mb.smtplib, "SMTP_SSL", FakeSMTP):
+                await plugin._mail_auto_tick()
+                await plugin._mail_auto_tick()
+            self.assertEqual(len(FakeSMTP.instances), 1, "一天只该发一封")
+            self.assertEqual(len(plugin._mail_log(5)), 1)
+
+        self.run_async(scenario())
+
+    def test_auto_tick_off_does_nothing(self) -> None:
+        async def scenario() -> None:
+            FakeSMTP.instances = []
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin, auto_enabled=False)
+            await plugin._mail_auto_tick()
+            self.assertEqual(FakeSMTP.instances, [])
+
+        self.run_async(scenario())
+
+    def test_auto_tick_needs_friends(self) -> None:
+        async def scenario() -> None:
+            FakeSMTP.instances = []
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin, auto_enabled=True, auto_hour=0, friends=[])
+            await plugin._mail_auto_tick()
+            self.assertEqual(FakeSMTP.instances, [])
+
+        self.run_async(scenario())
+
+    def test_api_write_and_log(self) -> None:
+        async def scenario() -> None:
+            FakeSMTP.instances = []
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            self._configured(plugin)
+            self.provider.response = "面板的一封\n\n你好。"
+            with mock.patch.object(mb.smtplib, "SMTP_SSL", FakeSMTP):
+                data = (await self.api(plugin, "mail/write", body={"name": "小明"}))["data"]
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["letter"]["subject"], "面板的一封")
+            self.assertEqual(len(data["log"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

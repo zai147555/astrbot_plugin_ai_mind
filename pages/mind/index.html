@@ -3830,6 +3830,29 @@ var qrcode = function() {
         <span class="small muted" id="ml-send-status"></span>
       </div>
     </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>好友与自动写信</h3>
+        <span class="small muted">只写给她认识的人，名单由你定</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        一行一个：<b>称呼, 邮箱</b>。自动写信默认关；开了就是她到点自己写、自己寄，每天有上限，只发名单里的人。
+      </div>
+      <textarea id="ml-friends" placeholder="小明, xiaoming@qq.com" style="width:100%;min-height:80px;margin-top:8px"></textarea>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="ml-auto"> 自己写信</label>
+        <label class="small muted">每天最多 <input id="ml-auto-daily" type="number" min="0" max="5" style="width:64px"> 封</label>
+        <label class="small muted"><input id="ml-auto-hour" type="number" min="-1" max="23" style="width:64px"> 点后开始</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <select id="ml-friend-pick"></select>
+        <button class="primary small" id="ml-write">让她写一封并寄出</button>
+        <span class="grow"></span>
+        <span class="small muted" id="ml-write-status"></span>
+      </div>
+      <div id="ml-log" style="margin-top:10px"></div>
+    </div>
   </div>
 
   <div id="view-storyboard" style="display:none">
@@ -5739,12 +5762,34 @@ var qrcode = function() {
         owner: $("ml-owner").value,
         password: $("ml-password").value,
         smtp_host: $("ml-smtp").value,
-        imap_host: $("ml-imap").value
+        imap_host: $("ml-imap").value,
+        friends: ($("ml-friends").value || "").split("\n").filter(function (line) {
+          return line.trim();
+        }),
+        auto_enabled: $("ml-auto").checked,
+        auto_hour: Number($("ml-auto-hour").value),
+        auto_daily: Number($("ml-auto-daily").value)
       }).then(function (data) {
         $("ml-password").value = "";
         renderMail(data);
         toast("已保存");
       }).catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("ml-write").onclick = function () {
+      var name = $("ml-friend-pick").value;
+      if (!name) { toast("先在好友名单里加人并保存"); return; }
+      var btn = $("ml-write");
+      btn.disabled = true;
+      $("ml-write-status").textContent = "正在写…";
+      request("mail/write", "POST", { name: name }).then(function (data) {
+        btn.disabled = false;
+        $("ml-write-status").textContent = data.ok ? "寄出去了" : (data.message || "没寄出去");
+        renderMail(data);
+        toast(data.ok ? "已寄出" : ("失败：" + (data.message || "")));
+      }).catch(function (e) {
+        btn.disabled = false;
+        $("ml-write-status").textContent = "失败：" + e.message;
+      });
     };
     $("ml-reload").onclick = function () {
       loadMail().then(function () { toast("已刷新"); })
@@ -9373,6 +9418,43 @@ var qrcode = function() {
     $("ml-hint").textContent = data.address
       ? "授权码不在这里显示；要改就填新的，留空表示不动。"
       : "QQ 邮箱：网页版 → 设置 → 账号 → 开启 IMAP/SMTP → 生成授权码，把那串填到「授权码」。";
+    var friends = data.friends || [];
+    $("ml-friends").value = friends.map(function (item) {
+      return (item.name || "") + ", " + (item.address || "");
+    }).join("\n");
+    $("ml-auto").checked = data.auto_enabled === true;
+    $("ml-auto-daily").value = data.auto_daily === undefined ? 1 : data.auto_daily;
+    $("ml-auto-hour").value = data.auto_hour === undefined ? -1 : data.auto_hour;
+    $("ml-friend-pick").innerHTML = friends.length
+      ? friends.map(function (item) {
+          return "<option value='" + esc(item.name || "") + "'>" +
+            esc(item.name || item.address || "") + "</option>";
+        }).join("")
+      : "<option value=''>（先加好友）</option>";
+    renderMailLog(data.log || []);
+  }
+
+  function renderMailLog(rows) {
+    var box = $("ml-log");
+    if (!box) return;
+    if (!rows.length) {
+      box.innerHTML = "<div class='small muted'>还没寄过信。</div>";
+      return;
+    }
+    box.innerHTML = rows.slice().reverse().map(function (row) {
+      var stamp = "";
+      if (row.at) {
+        var when = new Date(row.at * 1000);
+        stamp = (when.getMonth() + 1) + "月" + when.getDate() + "日 " +
+          qzPad2(when.getHours()) + ":" + qzPad2(when.getMinutes());
+      }
+      return "<div class='small' style='margin-bottom:6px'>" +
+        (row.ok ? "✅" : "❌") + " " + esc(row.name || row.to || "") +
+        "　<b>" + esc(row.subject || "") + "</b>" +
+        "<span class='muted'>　" + esc(stamp) + "</span>" +
+        (row.error ? "<div class='muted'>" + esc(row.error) + "</div>" : "") +
+        "</div>";
+    }).join("");
   }
 
   function loadMail() {

@@ -912,6 +912,8 @@ class AIMindPlugin(Star):
         self.mail = mail_engine.Mailbox(
             mail_engine.load_config(Path(self.data_dir) / "mail.json"), logger
         )
+        #: 发出去的邮件记一份（面板可见；失败也记，方便排查）
+        self._mail_sent_path = Path(self.data_dir) / "mail" / "sent_log.json"
         self.storyboard_settings = storyboard_engine.load_settings(
             Path(self.data_dir) / "storyboard.json"
         )
@@ -1127,6 +1129,7 @@ class AIMindPlugin(Star):
                 self._debounce_gc()
                 await self._bili_daily_tick()
                 await self._qzone_daily_tick()
+                await self._mail_auto_tick()
                 self._evolve_tick += 1
                 if self._evolve_tick >= 20:
                     self._evolve_tick = 0
@@ -2913,6 +2916,7 @@ class AIMindPlugin(Star):
             ("mail/inbox", self._api_mail_inbox, "读收件箱"),
             ("mail/send", self._api_mail_send, "发一封邮件"),
             ("mail/test", self._api_mail_test, "发测试邮件"),
+            ("mail/write", self._api_mail_write, "让她给好友写一封并寄出"),
             ("daily", self._api_daily, "今天是什么日子"),
             ("storyboard", self._api_storyboard, "视频分镜设置与自检"),
             ("storyboard/save", self._api_storyboard_save, "保存分镜设置"),
@@ -6546,6 +6550,125 @@ class AIMindPlugin(Star):
         ]
         return "\n".join(out)
 
+    # -- 好友名单 / 自己写信 -------------------------------------------------
+    def _mail_log(self, limit: int = 10) -> list[dict[str, Any]]:
+        try:
+            rows = json.loads(self._mail_sent_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows[-max(1, min(50, int(limit))):] if isinstance(row, dict)]
+
+    def _mail_log_add(self, entry: dict[str, Any]) -> None:
+        rows = self._mail_log(50)
+        rows.append(entry)
+        try:
+            self._mail_sent_path.parent.mkdir(parents=True, exist_ok=True)
+            self._mail_sent_path.write_text(
+                json.dumps(rows[-50:], ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.debug(f"[ai_mind] 记发信日志失败：{exc}")
+
+    async def _mail_compose(self, friend: dict[str, str]) -> dict[str, str]:
+        """让模型给这个好友写一封信。写不出来就返回空 body。"""
+        provider = await self._qzone_provider()
+        if provider is None:
+            return {"subject": "", "body": "", "error": "没有可用的模型"}
+        name = str(friend.get("name") or "朋友")
+        system = (
+            "你是杜可怡，14 岁，嘴硬心软、有点别扭。现在给一个朋友写一封短短的电子邮件。\n"
+            "规矩：第一行只写主题（20 字以内，不加「主题：」）；空一行后写正文，150~300 字；\n"
+            "像跟熟人说话，不排比、不总结升华、不用 emoji 连发；中文和中文之间不要空格；\n"
+            "不写真名、学校、住址、生日、电话；不提你是 AI。"
+        )
+        prompt = "收信人：%s\n今天：%s\n写一封吧。" % (name, qzone_engine.day_text())
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=system), timeout=90
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"subject": "", "body": "", "error": "写信失败：" + str(exc)[:120]}
+        letter = mail_engine.parse_letter(getattr(response, "completion_text", "") or "")
+        if not letter.get("body", "").strip():
+            return {"subject": "", "body": "", "error": "模型没写出正文"}
+        return letter
+
+    async def _mail_write_friend(self, friend: dict[str, str],
+                                 notify: bool = False) -> dict[str, Any]:
+        """写一封 + 寄出去，并把结果记进日志。"""
+        conf = self.mail.config
+        if not conf.ready_for_send():
+            return {"ok": False, "error": "邮箱还没配好（address / password / SMTP）"}
+        address = str(friend.get("address") or "")
+        if "@" not in address:
+            return {"ok": False, "error": "这个好友没有合法邮箱"}
+        letter = await self._mail_compose(friend)
+        if not letter.get("body"):
+            return {"ok": False, "error": letter.get("error") or "没写出正文"}
+        ok, message = await self._mail_call(
+            self.mail.send, letter["subject"], letter["body"], address
+        )
+        self._mail_log_add({
+            "at": time.time(), "to": address, "name": friend.get("name") or "",
+            "subject": letter["subject"], "ok": bool(ok),
+            "error": "" if ok else str(message)[:200],
+        })
+        if ok and notify:
+            target = str(getattr(self, "_bili_target", "") or "")
+            if target and Comp is not None:
+                try:
+                    await self.context.send_message(target, [
+                        Comp.Plain("她给 %s 寄了一封信：%s"
+                                   % (friend.get("name") or address, letter["subject"]))
+                    ])
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"ok": bool(ok), "message": message, "subject": letter["subject"],
+                "body": letter["body"], "to": address,
+                "name": friend.get("name") or ""}
+
+    async def _mail_auto_tick(self) -> None:
+        """到点自己写一封给好友（默认关；只发给名单里的人，每天有上限）。"""
+        conf = self.mail.config
+        if not (conf.enabled and conf.auto_enabled and conf.auto_daily > 0 and conf.friends):
+            return
+        if not conf.ready_for_send():
+            return
+        state_path = Path(self.data_dir) / "mail" / "auto_state.json"
+        today = time.strftime("%Y-%m-%d")
+        state: dict[str, Any] = {}
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        count = int(state.get("count") or 0) if state.get("day") == today else 0
+        if count >= conf.auto_daily:
+            return
+        now = time.localtime()
+        if conf.auto_hour < 0 or now.tm_hour < int(conf.auto_hour):
+            return
+        if float(state.get("last_at") or 0) > time.time() - 1800:
+            return
+        friend = conf.friends[count % len(conf.friends)]
+        result = await self._mail_write_friend(friend, notify=True)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({
+                "day": today,
+                "count": count + (1 if result.get("ok") else 0),
+                "last_at": time.time(),
+            }), encoding="utf-8")
+        except OSError:
+            pass
+        if result.get("ok"):
+            logger.info("[ai_mind] 自己给好友寄了一封信：" + str(friend.get("name") or ""))
+        else:
+            logger.warning("[ai_mind] 自动写信失败：" + str(result.get("error") or ""))
+
     async def _debug_mail(self, text: str) -> str:
         parts = text.lstrip("#").strip().split(None, 2)
         args = parts[1:]
@@ -6579,6 +6702,29 @@ class AIMindPlugin(Star):
             subject = body.splitlines()[0][:24] or "来自她"
             ok, message = await self._mail_call(self.mail.send, subject, body)
             return ("✅ " if ok else "❌ ") + message
+        if head in ("好友", "friends", "名单"):
+            conf = self.mail.config
+            if not conf.friends:
+                return "好友名单是空的。面板「邮箱」页加一行：小明, xiaoming@qq.com"
+            lines = ["好友名单（%d 人）：" % len(conf.friends)]
+            for item in conf.friends:
+                lines.append("· %s <%s>" % (item.get("name") or "?", item.get("address") or ""))
+            auto = "开" if conf.auto_enabled else "关"
+            lines.append("自己写信：%s（每天最多 %d 封，%02d 点后）"
+                         % (auto, conf.auto_daily, max(0, conf.auto_hour)))
+            return chr(10).join(lines)
+        if head in ("给", "to", "friend"):
+            rest = " ".join(args[1:]).strip()
+            if not rest:
+                return "用法：#邮件 给 <好友名>（她来写，寄给名单里的人）"
+            friend = self.mail.config.friend_named(rest)
+            if friend is None:
+                return "名单里没有「%s」。先发 #邮件 好友 看有哪些人。" % rest
+            result = await self._mail_write_friend(friend, notify=False)
+            if not result.get("ok"):
+                return "没寄出去：" + str(result.get("error") or "")
+            return ("寄给 %s 了：%s" % (result.get("name") or result.get("to") or "",
+                                       result.get("subject") or ""))
         if head in ("测试", "test"):
             ok, message = await self._mail_call(
                 self.mail.send, "测试邮件", "这是一封测试邮件，说明邮箱配好了。"
@@ -7171,7 +7317,9 @@ class AIMindPlugin(Star):
         return json_response(data)
 
     async def _api_mail(self) -> Any:
-        return json_response(self.mail.status())
+        data = self.mail.status()
+        data["log"] = self._mail_log(12)
+        return json_response(data)
 
     async def _api_mail_save(self) -> Any:
         body = await self._read_body()
@@ -7187,6 +7335,20 @@ class AIMindPlugin(Star):
             conf.password = ""
         if payload.get("owner") is not None:
             conf.owner = str(payload.get("owner") or "").strip()
+        if "friends" in payload:
+            conf.friends = mail_engine.parse_friends(payload.get("friends"))
+        if "auto_enabled" in payload:
+            conf.auto_enabled = bool(payload.get("auto_enabled"))
+        if payload.get("auto_hour") is not None:
+            try:
+                conf.auto_hour = max(-1, min(23, int(payload.get("auto_hour"))))
+            except (TypeError, ValueError):
+                pass
+        if payload.get("auto_daily") is not None:
+            try:
+                conf.auto_daily = max(0, min(5, int(payload.get("auto_daily"))))
+            except (TypeError, ValueError):
+                pass
         if "enabled" in payload:
             conf.enabled = bool(payload.get("enabled"))
         if payload.get("smtp_host") is not None:
@@ -7235,8 +7397,31 @@ class AIMindPlugin(Star):
         subject = str(payload.get("subject") or "").strip()
         if not subject:
             subject = content.splitlines()[0][:24] or "来自她"
-        ok, message = await self._mail_call(self.mail.send, subject, content)
+        target = ""
+        name = str(payload.get("to_name") or "").strip()
+        if name:
+            friend = self.mail.config.friend_named(name)
+            if friend is None:
+                return json_response({"ok": False, "message": "名单里没有「%s」" % name})
+            target = friend.get("address") or ""
+        ok, message = await self._mail_call(self.mail.send, subject, content, target)
         return json_response({"ok": ok, "message": message})
+
+    async def _api_mail_write(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        friend = self.mail.config.friend_named(str(payload.get("name") or ""))
+        if friend is None:
+            return json_response({"ok": False, "message": "名单里没有这个人"})
+        result = await self._mail_write_friend(friend)
+        data = self.mail.status()
+        data["log"] = self._mail_log(12)
+        data.update({"ok": bool(result.get("ok")),
+                     "message": str(result.get("message") or ""),
+                     "letter": {"subject": result.get("subject") or "",
+                                "body": result.get("body") or ""}})
+        return json_response(data)
 
     async def _api_mail_test(self) -> Any:
         ok, message = await self._mail_call(

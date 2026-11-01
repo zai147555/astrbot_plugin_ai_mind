@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import email
 import imaplib
+import re
 import json
 import smtplib
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.header import decode_header
 from email.message import EmailMessage
 from email.utils import formatdate, parseaddr
@@ -47,6 +48,68 @@ SERVERS: dict[str, tuple[str, int, str, int]] = {
 MAX_SUBJECT = 120
 MAX_BODY = 4000
 TIMEOUT = 20
+#: 好友名单上限（防止把邮箱当群发器用）
+MAX_FRIENDS = 30
+
+
+def parse_friends(raw: Any) -> list[dict[str, str]]:
+    """把面板里的一行行好友解析成 [{name, address}]。
+
+    接受 "小明, a@b.com"、"小明 a@b.com"、{"name","address"}，也接受只有邮箱。
+    只留格式对、地址不重复的（大小写算同一个）。
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    items = raw if isinstance(raw, list) else []
+    for item in items:
+        name = address = ""
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            address = str(item.get("address") or "").strip()
+        else:
+            text = str(item or "").strip()
+            for sep in ("，", ",", ";", "；", "|", "\t", " "):
+                if sep in text:
+                    head, _, tail = text.partition(sep)
+                    if "@" in tail:
+                        name, address = head.strip(), tail.strip()
+                        break
+            if not address and "@" in text:
+                address = text
+        address = address.strip().strip("<>").strip()
+        if "@" not in address or address.count("@") != 1:
+            continue
+        key = address.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": (name or address.split("@")[0])[:20], "address": address[:120]})
+        if len(out) >= MAX_FRIENDS:
+            break
+    return out
+
+
+def parse_letter(raw: str) -> dict[str, str]:
+    """把模型写的信解析成 {subject, body}：第一行当主题，其余当正文。"""
+    text = str(raw or "").strip()
+    for fence in ("```",):
+        if text.startswith(fence):
+            text = text.strip(fence).strip()
+    lines = text.splitlines()
+    subject = ""
+    body = text
+    if lines:
+        first = lines[0].strip()
+        for prefix in ("主题：", "主题:", "Subject:", "subject:", "标题：", "标题:"):
+            if first.startswith(prefix):
+                first = first[len(prefix):].strip()
+        if len(first) <= 40 and not first.endswith(("。", "！", "？")):
+            subject = first.strip("《》\"' ")[:40]
+            body = "\n".join(lines[1:]).strip() or text
+    cjk = r"[\u4e00-\u9fff\u3000-\u303f\uff01\uff0c\uff1a\uff1b\uff1f]"
+    body = re.sub("(?<=%s)[ \\t]+(?=%s)" % (cjk, cjk), "", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return {"subject": subject or "来自她", "body": body[:MAX_BODY]}
 
 
 def guess_servers(address: str) -> tuple[str, int, str, int]:
@@ -67,6 +130,12 @@ class MailConfig:
     imap_host: str = ""
     imap_port: int = 0
     imap_ssl: bool = True
+    #: 好友名单：[{name, address}]，只有名单里的人能收她自动写的信
+    friends: list[dict[str, str]] = field(default_factory=list)
+    #: 她自己写信给好友（默认关；开了才会到点自己写、自己发）
+    auto_enabled: bool = False
+    auto_hour: int = -1
+    auto_daily: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +149,10 @@ class MailConfig:
             "imap_host": self.imap_host,
             "imap_port": int(self.imap_port or 0),
             "imap_ssl": bool(self.imap_ssl),
+            "friends": [dict(item) for item in self.friends],
+            "auto_enabled": bool(self.auto_enabled),
+            "auto_hour": int(self.auto_hour),
+            "auto_daily": int(self.auto_daily),
         }
 
     def filled(self) -> "MailConfig":
@@ -96,6 +169,10 @@ class MailConfig:
             imap_host=self.imap_host or imap_host,
             imap_port=int(self.imap_port or imap_port),
             imap_ssl=bool(self.imap_ssl),
+            friends=[dict(item) for item in self.friends],
+            auto_enabled=bool(self.auto_enabled),
+            auto_hour=int(self.auto_hour),
+            auto_daily=int(self.auto_daily),
         )
 
     @staticmethod
@@ -120,6 +197,10 @@ class MailConfig:
             imap_host=str(raw.get("imap_host") or "").strip(),
             imap_port=imap_port,
             imap_ssl=bool(raw.get("imap_ssl", True)),
+            friends=parse_friends(raw.get("friends")),
+            auto_enabled=bool(raw.get("auto_enabled", False)),
+            auto_hour=max(-1, min(23, int(raw.get("auto_hour", -1) or -1))),
+            auto_daily=max(0, min(5, int(raw.get("auto_daily", 1) or 1))),
         )
 
     def masked(self) -> dict[str, Any]:
@@ -131,7 +212,24 @@ class MailConfig:
             "owner": self.owner,
             "smtp": self.smtp_host,
             "imap": self.imap_host,
+            "friends": [dict(item) for item in self.friends],
+            "auto_enabled": bool(self.auto_enabled),
+            "auto_hour": int(self.auto_hour),
+            "auto_daily": int(self.auto_daily),
         }
+
+    def friend_named(self, name: str) -> dict[str, str] | None:
+        """按名字/地址找好友（名字支持包含匹配）。"""
+        key = str(name or "").strip()
+        if not key:
+            return None
+        for item in self.friends:
+            if key.lower() in (item.get("name") or "").lower():
+                return item
+        for item in self.friends:
+            if key.lower() == (item.get("address") or "").lower():
+                return item
+        return None
 
     def ready_for_send(self) -> bool:
         return bool(self.enabled and self.address and self.password and self.smtp_host)
