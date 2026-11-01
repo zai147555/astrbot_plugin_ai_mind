@@ -5155,6 +5155,7 @@ class AIMindPlugin(Star):
         try:
             result = await asyncio.to_thread(self._bili_scroll, 0)
             result = await self._bili_comments(result)
+            self._bili_save_last(self._bili_payload_from_result(result))
             state.parent.mkdir(parents=True, exist_ok=True)
             state.write_text(
                 json.dumps({"at": time.time(), "ok": bool(result.get("ok"))},
@@ -5356,6 +5357,7 @@ class AIMindPlugin(Star):
             limit = int(arg)
         result = await asyncio.to_thread(self._bili_scroll, limit)
         result = await self._bili_comments(result)
+        self._bili_save_last(self._bili_payload_from_result(result))
         if not result.get("ok"):
             return "刷B站失败：" + str(result.get("error") or "未知原因")
         lines = [str(result.get("report") or "").strip()]
@@ -7445,6 +7447,40 @@ class AIMindPlugin(Star):
             rows.append({"i": index, "image": "data:image/png;base64," + blob})
         return rows
 
+    def _bili_state_file(self) -> Path:
+        return Path(self.data_dir) / "bili" / "last_run.json"
+
+    def _bili_save_last(self, payload: dict[str, Any]) -> None:
+        """把这一轮结果落盘：面板关掉、插件重启后「今天挑的/日报」还在。"""
+        try:
+            folder = Path(self.data_dir) / "bili"
+            folder.mkdir(parents=True, exist_ok=True)
+            blob = dict(payload)
+            blob.pop("images", None)    # base64 太大，重新打开时按 image_paths 重建
+            blob["saved_at"] = time.time()
+            self._bili_state_file().write_text(
+                json.dumps(blob, ensure_ascii=False), encoding="utf-8"
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            logger.debug(f"[ai_mind] 记刷站结果失败：{exc}")
+
+    def _bili_last_result(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self._bili_state_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if not data.get("images"):
+            images: list[dict[str, Any]] = []
+            for row in data.get("image_paths") or []:
+                for item in self._images_payload([row.get("path")]):
+                    item["bvid"] = row.get("bvid")
+                    item["title"] = row.get("title")
+                    images.append(item)
+            data["images"] = images
+        return data
+
     def _bili_payload(self) -> dict[str, Any]:
         return {
             "settings": self.bili_settings.masked(),
@@ -7452,6 +7488,7 @@ class AIMindPlugin(Star):
             "seen": self.bili_seen.count(),
             "storyboard": self.storyboard_settings.to_dict(),
             "has_ffmpeg": bool(self._ffmpeg_tools().get("ok")),
+            "last": self._bili_last_result(),
         }
 
     async def _api_bili(self) -> Any:
@@ -7509,6 +7546,12 @@ class AIMindPlugin(Star):
                 for item in (result.get("items") or [])
             ],
             "images": images,
+            "image_paths": [
+                {"path": str(path), "bvid": sheet.get("bvid"),
+                 "title": sheet.get("title")}
+                for sheet in (result.get("sheets") or [])
+                for path in (sheet.get("images") or [])
+            ],
             "errors": result.get("errors") or [],
             "seen": self.bili_seen.count(),
         }
@@ -7518,7 +7561,9 @@ class AIMindPlugin(Star):
         try:
             result = await asyncio.to_thread(self._bili_scroll, limit)
             result = await self._bili_comments(result)
-            job.done(self._bili_payload_from_result(result))
+            payload = self._bili_payload_from_result(result)
+            self._bili_save_last(payload)
+            job.done(payload)
         except Exception as exc:  # noqa: BLE001 - 后台任务失败要说给前端
             logger.warning(f"[ai_mind] 后台刷站失败：{exc}")
             job.fail(str(exc))
@@ -7556,27 +7601,9 @@ class AIMindPlugin(Star):
             limit = 0
         result = await self._mail_call(self._bili_scroll, limit)
         result = await self._bili_comments(result)
-        images: list[dict[str, Any]] = []
-        for sheet in result.get("sheets") or []:
-            for row in self._images_payload(sheet.get("images") or []):
-                row["bvid"] = sheet.get("bvid")
-                row["title"] = sheet.get("title")
-                images.append(row)
-        return json_response({
-            "ok": bool(result.get("ok")),
-            "error": result.get("error", ""),
-            "day": result.get("day", ""),
-            "report": result.get("report", ""),
-            "items": [
-                {key: item.get(key) for key in
-                 ("bvid", "title", "up", "duration", "view", "url", "score",
-                  "reasons", "storyboard", "subtitle")}
-                for item in (result.get("items") or [])
-            ],
-            "images": images,
-            "errors": result.get("errors") or [],
-            "seen": self.bili_seen.count(),
-        })
+        payload = self._bili_payload_from_result(result)
+        self._bili_save_last(payload)
+        return json_response(payload)
 
     def _bili_one_storyboard(self, bvid: str) -> dict[str, Any]:
         """单条视频的分镜（面板上那个按钮）。"""

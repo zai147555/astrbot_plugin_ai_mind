@@ -2,7 +2,9 @@
 """观看历史：解析、登录门槛、刷站优先用它、命令与接口。"""
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from mind import bili
@@ -160,6 +162,59 @@ class PluginHistoryTest(PluginHarness, unittest.TestCase):
                                       return_value=([], "")):
                 await self.module.asyncio.to_thread(plugin._bili_scroll, 3)
             history.assert_not_called()
+
+        self.run_async(scenario())
+
+    def test_last_run_persisted_and_reloaded(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            payload = plugin._bili_payload_from_result({
+                "ok": True, "day": "2026-11-01", "report": "今天挑了 1 条",
+                "items": [{"bvid": "BV1", "title": "关于鸣潮", "up": "UP",
+                           "duration": 120, "score": 9, "reasons": ["时长合适"]}],
+                "sheets": [], "errors": [],
+            })
+            plugin._bili_save_last(payload)
+            last = plugin._bili_payload()["last"]
+            self.assertTrue(last["ok"])
+            self.assertEqual(last["items"][0]["bvid"], "BV1")
+            self.assertIn("今天挑了", last["report"])
+            self.assertIn("saved_at", last)
+
+        self.run_async(scenario())
+
+    def test_last_run_failure_is_kept(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            payload = plugin._bili_payload_from_result(
+                {"ok": False, "error": "一条都没拉到。分区 0：超时", "items": []}
+            )
+            plugin._bili_save_last(payload)
+            last = plugin._bili_payload()["last"]
+            self.assertFalse(last["ok"])
+            self.assertIn("没拉到", last["error"])
+
+        self.run_async(scenario())
+
+    def test_last_run_rebuilds_images(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            with tempfile.TemporaryDirectory() as tmp:
+                image = Path(tmp) / "sheet.png"
+                image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"s" * 16)
+                payload = plugin._bili_payload_from_result({
+                    "ok": True, "day": "2026-11-01", "report": "x", "items": [],
+                    "sheets": [{"bvid": "BV1", "title": "t", "images": [str(image)]}],
+                    "errors": [],
+                })
+                plugin._bili_save_last(payload)
+                last = plugin._bili_payload()["last"]
+            self.assertTrue(last["images"])
+            self.assertTrue(last["images"][0]["image"].startswith("data:image"))
+            self.assertEqual(last["images"][0]["bvid"], "BV1")
 
         self.run_async(scenario())
 

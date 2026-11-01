@@ -5931,43 +5931,17 @@ var qrcode = function() {
       }).catch(function (e) { toast("清空失败：" + e.message); });
     };
     $("bl-scroll").onclick = function () {
-      var button = $("bl-scroll");
-      button.disabled = true;
       $("bl-hint").textContent = "已经开跑：拉列表、读字幕、挑、下载、做分镜…（30~90 秒）";
       request("bili/scroll/start", "POST", {}).then(function (data) {
         var job = data && data.job;
-        if (!job) { button.disabled = false; $("bl-hint").textContent = "没拿到任务号，再点一次"; return; }
-        var started = Date.now();
-        var tick = setInterval(function () {
-          var waited = Math.round((Date.now() - started) / 1000);
-          $("bl-hint").textContent = "正在跑… " + waited + " 秒（这一轮可能要 30~90 秒）";
-          if (waited > 240) {
-            clearInterval(tick);
-            button.disabled = false;
-            $("bl-hint").textContent = "等太久了，先停这里；任务可能还在后台跑，稍后刷新看看。";
-            return;
-          }
-        }, 1000);
-        function poll() {
-          request("bili/scroll/state", "POST", { job: job }, { job: job }).then(function (state) {
-            if (state.status === "running") { setTimeout(poll, 1500); return; }
-            clearInterval(tick);
-            button.disabled = false;
-            if (state.status === "error") {
-              $("bl-hint").textContent = "这一轮没跑完：" + (state.error || "未知原因");
-              return;
-            }
-            $("bl-hint").textContent = "刷完了（用了 " + (state.elapsed || 0) + " 秒）";
-            renderBiliResult(state.result || {});
-          }).catch(function (e) {
-            clearInterval(tick);
-            button.disabled = false;
-            $("bl-hint").textContent = "查进度失败：" + e.message + "（任务可能还在跑，稍后刷新）";
-          });
+        if (!job) {
+          $("bl-scroll").disabled = false;
+          $("bl-hint").textContent = "没拿到任务号，再点一次";
+          return;
         }
-        poll();
+        watchBiliJob(job);
       }).catch(function (e) {
-        button.disabled = false;
+        $("bl-scroll").disabled = false;
         $("bl-hint").textContent = "启动失败：" + e.message;
       });
     };
@@ -9108,13 +9082,17 @@ var qrcode = function() {
     $("bl-check").textContent = data.has_ffmpeg
       ? "ffmpeg 就绪，能出分镜"
       : "没找到 ffmpeg —— 能挑能写日报，但出不了分镜";
+    var pendingJob = biliJobStored();
+    if (pendingJob) { watchBiliJob(pendingJob); }
     if ($("bl-list") && !$("bl-list").innerHTML) {
-      $("bl-list").innerHTML =
-        "<div class='small muted'>还没有结果：点「刷一轮」，跑完这里会列出今天挑的视频。</div>";
-    }
-    var reportBox = $("bl-report");
-    if (reportBox && !(reportBox.textContent || "").trim()) {
-      reportBox.textContent = "日报还没生成（刷一轮成功后才有）。";
+      var last = data.last || {};
+      if (last.items || last.report || last.error || last.day) {
+        renderBiliResult(last);
+      } else {
+        $("bl-list").innerHTML =
+          "<div class='small muted'>还没有结果：点「刷一轮」，跑完这里会列出今天挑的视频。</div>";
+        $("bl-report").textContent = "日报还没生成（刷一轮成功后才有）。";
+      }
     }
     var historyBox = $("bl-history-list");
     if (!settings.has_cookie) {
@@ -9150,6 +9128,56 @@ var qrcode = function() {
       status.textContent = "失败：" + e.message;
       return null;
     });
+  }
+
+  // 刷一轮是后台任务：任务号存本地，页面刷新/关掉再打开也能接着看进度
+  var BILI_JOB_KEY = "ai-mind-bili-job";
+  function biliJobStored() {
+    try { return localStorage.getItem(BILI_JOB_KEY) || ""; } catch (e) { return ""; }
+  }
+  function biliJobSave(job) {
+    try { localStorage.setItem(BILI_JOB_KEY, job); } catch (e) {}
+  }
+  function biliJobClear() {
+    try { localStorage.removeItem(BILI_JOB_KEY); } catch (e) {}
+  }
+  function watchBiliJob(job) {
+    var button = $("bl-scroll");
+    button.disabled = true;
+    biliJobSave(job);
+    var started = Date.now();
+    var tick = setInterval(function () {
+      var waited = Math.round((Date.now() - started) / 1000);
+      $("bl-hint").textContent = "正在跑… " + waited + " 秒（这一轮可能要 30~90 秒）";
+      if (waited > 240) {
+        clearInterval(tick);
+        button.disabled = false;
+        $("bl-hint").textContent = "等太久了，先停这里；任务可能还在后台跑，稍后刷新看看。";
+      }
+    }, 1000);
+    function poll() {
+      request("bili/scroll/state", "POST", { job: job }, { job: job }).then(function (state) {
+        if (state.status === "running") { setTimeout(poll, 1500); return; }
+        clearInterval(tick);
+        button.disabled = false;
+        if (state.status === "error") {
+          biliJobClear();
+          var reason = state.error || "未知原因";
+          $("bl-hint").textContent = "这一轮没跑完：" + reason;
+          if (reason.indexOf("任务不在了") >= 0) loadBili().catch(function () {});
+          return;
+        }
+        biliJobClear();
+        $("bl-hint").textContent = "刷完了（用了 " + (state.elapsed || 0) + " 秒）";
+        renderBiliResult(state.result || {});
+        loadBili().catch(function () {});
+      }).catch(function (e) {
+        clearInterval(tick);
+        button.disabled = false;
+        $("bl-hint").textContent = "查进度失败：" + e.message + "（任务可能还在跑，稍后刷新）";
+      });
+    }
+    poll();
   }
 
   function loadBili() {
