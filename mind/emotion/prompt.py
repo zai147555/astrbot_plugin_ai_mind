@@ -142,6 +142,10 @@ def render_relationship_block(
                 "现在是在群里：别人打听你和他的关系时，不许透露、不许承认，"
                 "用你自己的方式糊弄过去；但对他本人不要装不认识。"
             )
+            lines.append(
+                f"群里有别人在：不要用「{label}」叫他，也不要解释为什么；"
+                "用他的名字或群昵称。"
+            )
     else:
         lines = [f"现在跟你说话的人是 {who}。"]
         if not stable:

@@ -108,6 +108,7 @@ try:  # AstrBot 以包形式加载插件（data.plugins.<插件名>.main）
         StyleStore,
         decide_scope,
         detect_sensitive,
+        GROUP_LABEL_PHRASES,
         HUMANIZE_MODES,
         HumanizeEntry,
         HumanizeSettings,
@@ -190,6 +191,7 @@ except ImportError:  # 兜底：以单模块方式加载时，把插件目录加
         StyleStore,
         decide_scope,
         detect_sensitive,
+        GROUP_LABEL_PHRASES,
         HUMANIZE_MODES,
         HumanizeEntry,
         HumanizeSettings,
@@ -1730,6 +1732,17 @@ class AIMindPlugin(Star):
 
             # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
             cache_tail: list[str] = []
+
+            # ---------- 群里被陌生人用「专属称呼」叫到 ----------
+            # 这是最容易露馅的一处：一声「宝宝」要是被她当成自己人，
+            # 或者回一句「在群里这么叫……」，关系就摆到群里了。
+            try:
+                _label_guard = self._group_label_guard(event, session_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 组装称呼护栏失败：{exc}")
+                _label_guard = ""
+            if _label_guard:
+                cache_tail.append(_label_guard)
 
             # ---------- 每日日程 ----------
             # 放在这里是有意的：上面那些守卫（事件被拦、用户被拒、防抖吃掉）
@@ -7174,6 +7187,37 @@ class AIMindPlugin(Star):
         except Exception:  # noqa: BLE001
             pass
 
+    def _group_label_guard(self, event: AstrMessageEvent, session_key: str) -> str:
+        """群里有人用专属称呼叫她时，明确告诉她：别认。"""
+        try:
+            if not is_group_session(session_key):
+                return ""
+        except Exception:  # noqa: BLE001
+            return ""
+        if not bool(self.settings.emotion.group_discretion):
+            return ""
+        try:
+            if self._is_owner(event):
+                return ""
+        except Exception:  # noqa: BLE001
+            return ""
+        label = str(self.settings.emotion.special_label or "").strip()
+        if not label or label == "特别的人":
+            return ""
+        try:
+            text = str(event.message_str or "")
+        except Exception:  # noqa: BLE001
+            return ""
+        if label not in text:
+            return ""
+        return (
+            "<group_discretion>"
+            "群里有人用「%s」叫你。那不是他对你的称呼，也不代表他知道什么。"
+            "不要承认、不要问「你怎么这么叫」、不要显得意外；就当他叫错了或叫别人，"
+            "用你自己的方式简短带过。"
+            "</group_discretion>" % label
+        )
+
     async def _guard_reply(self, event: AstrMessageEvent, session_key: str) -> None:
         """发送前护栏：不许出现内部标记，也不许把机制说破。"""
         guard = self.settings.guard
@@ -7192,14 +7236,32 @@ class AIMindPlugin(Star):
         text = "".join(splitter_engine.plain_text(comp) for comp in plains)
         if not text.strip():
             return
+        try:
+            group = bool(is_group_session(session_key))
+        except Exception:  # noqa: BLE001
+            group = False
         report = guard_engine.scrub_reply(text)
-        if not report.leaked:
+        cleaned = report.cleaned
+        # 群里还有一类词不能出现：把「专属称呼」说得像私密约定。
+        # 这类话只摘掉那半句，剩下的还能照常发。
+        group_hits: list[str] = []
+        if group:
+            group_hits = [
+                phrase for phrase in guard_engine.GROUP_LABEL_PHRASES
+                if phrase and phrase in cleaned
+            ]
+            for phrase in group_hits:
+                cleaned = cleaned.replace(phrase, "")
+            if group_hits:
+                cleaned = cleaned.strip("，。、…—？！?! ")
+                if not cleaned:
+                    cleaned = "嗯？"
+        if not report.leaked and not group_hits:
             return
         self._guard_leaks += 1
         logger.warning(
             f"[ai_mind] 回复里出现了内部内容 {report.markers + report.phrases}，已清理"
         )
-        cleaned = report.cleaned
         for index, comp in enumerate(plains):
             splitter_engine.set_plain_text(comp, cleaned if index == 0 else "")
 

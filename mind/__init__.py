@@ -59,6 +59,7 @@ from .images import (  # noqa: F401
 )
 from . import graph  # noqa: F401
 from . import guard  # noqa: F401
+from .guard import GROUP_LABEL_PHRASES  # noqa: F401
 from . import prompts  # noqa: F401
 from . import style  # noqa: F401
 from .style import STATUS_APPROVED, STATUS_PENDING, StyleExample, StyleStore
@@ -208,5 +209,6 @@ __all__ = [
     "theory_payload",
     "graph",
     "guard",
+    "GROUP_LABEL_PHRASES",
 ]
 

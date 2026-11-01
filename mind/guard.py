@@ -86,6 +86,14 @@ LEAK_PHRASES: tuple[str, ...] = (
     "插件告诉我", "后台告诉我", "我被注入了", "系统注入",
 )
 
+#: 群里被陌生人用「专属称呼」叫到时，绝不能出现的话（说了就等于承认有关系）
+GROUP_LABEL_PHRASES: tuple[str, ...] = (
+    "在群里这么叫", "在群里别这么叫", "群里这么叫", "别在群里叫",
+    "在群里叫不合适", "在群里不合适", "专属称呼", "专属的称呼",
+    "只有你能这么叫", "只有你可以这么叫", "这是我们的秘密",
+    "别让群里知道", "别让群里的人知道",
+)
+
 _COMPILED_CACHE: dict[str, re.Pattern[str]] = {}
 
 
@@ -322,6 +330,7 @@ __all__ = [
     "DEFAULT_RULES",
     "Hit",
     "INTERNAL_MARKERS",
+    "GROUP_LABEL_PHRASES",
     "LEAK_PHRASES",
     "LeakReport",
     "TOOL_BLACKLIST",
