@@ -1118,6 +1118,11 @@ class AIMindPlugin(Star):
             type(self)._LIVE = None
         self.store.close()
 
+    def _is_stale(self) -> bool:
+        """插件重载后，旧实例的钩子还在；它手里的配置/人格都是旧的，必须让路。"""
+        live = type(self)._LIVE
+        return live is not None and live is not self
+
     def _ensure_task(self) -> None:
         if self._task is not None and not self._task.done():
             return
@@ -1692,6 +1697,8 @@ class AIMindPlugin(Star):
         """请求 LLM 前：结算情绪 + 检索记忆，然后把两样注入这一轮。"""
         if not self.settings.enabled:
             return
+        if self._is_stale():
+            return
         if self.debug.is_active(event.unified_msg_origin):
             # 调试模式：插件完全让路 —— 不注入情绪 / 身份 / 记忆 / 语气，
             # 只在系统提示词末尾盖一条覆盖指令，把人格压下去。
@@ -2130,6 +2137,8 @@ class AIMindPlugin(Star):
     async def on_decorating_result(self, event: AstrMessageEvent) -> None:
         """消息发出前：摘掉情绪标记 + 记录这一轮对话。"""
         if not self.settings.enabled:
+            return
+        if self._is_stale():
             return
         if self.debug.is_active(event.unified_msg_origin):
             # 调试模式：不分段、不去 AI 味、不记记忆 —— 要的就是原文。
@@ -4933,6 +4942,8 @@ class AIMindPlugin(Star):
         """
         if not self.settings.enabled:
             return
+        if self._is_stale():
+            return
         try:
             key = event.unified_msg_origin
         except Exception:  # noqa: BLE001
@@ -5166,7 +5177,15 @@ class AIMindPlugin(Star):
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
             if word.split()[0] in ("表情", "sticker"):
+                parts = word.split()
+                if len(parts) > 1 and parts[1] in ("试", "test", "发"):
+                    sent = await self._send_sticker(event)
+                    if sent.get("ok"):
+                        return "发了张表情（#%d）。" % int(sent.get("id") or 0)
+                    return "没发出去：" + str(sent.get("error") or "未知原因")
                 return self._debug_sticker(text)
+            if word.split()[0] in ("群", "group", "本群"):
+                return self._debug_group(event)
             if word.split()[0] in ("知识", "kb"):
                 return self._debug_knowledge(event, text)
             if word.split()[0] in ("动图", "gif"):
@@ -5524,6 +5543,45 @@ class AIMindPlugin(Star):
                     out.append((url.rsplit("/", 1)[-1].split("?")[0] or "sticker.png", blob))
         return out
 
+    def _current_emotion(self, key: str) -> str:
+        try:
+            session = self.engine.sessions.get(key)
+            if session is None:
+                return ""
+            emotion = str(getattr(session, "emotion_hint", "") or "")
+            if emotion:
+                return emotion
+            from .mind.emotion.model import classify as _classify
+
+            return _classify(session.emotion).key
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def _send_sticker(self, event: AstrMessageEvent, emotion: str = "") -> dict[str, Any]:
+        """马上就发一张表情。返回 {ok, error}，失败原因要说人话。"""
+        if Comp is None:
+            return {"ok": False, "error": "当前平台不支持发图组件"}
+        key = str(getattr(event, "unified_msg_origin", "") or "")
+        item = self.stickers.pick(emotion or self._current_emotion(key),
+                                  self._sticker_recent.get(key, []))
+        if item is None:
+            stats = self.stickers.stats()
+            if stats["total"] <= 0:
+                return {"ok": False, "error": "表情库还是空的：先在群里让它收一会儿别人的表情"}
+            return {"ok": False, "error": "表情库里的文件都不在了（可能被清过）"}
+        if not Path(item.path).is_file():
+            return {"ok": False, "error": "这张表情的文件不在了：" + Path(item.path).name}
+        try:
+            await self.context.send_message(key, [Comp.Image.fromFileSystem(item.path)])
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "平台拒了：" + (str(exc) or type(exc).__name__)[:120]}
+        self.stickers.mark_used(item.id)
+        self._sticker_sent.setdefault(key, []).append(time.time())
+        recent = self._sticker_recent.setdefault(key, [])
+        recent.append(item.id)
+        del recent[:-8]
+        return {"ok": True, "error": "", "id": item.id}
+
     async def _maybe_sticker(self, event: AstrMessageEvent) -> str:
         """按她此刻的情绪，按概率补发一张表情。"""
         conf = self.sticker_settings
@@ -5537,36 +5595,54 @@ class AIMindPlugin(Star):
             return ""
         if random.random() > conf.chance:
             return ""
-        emotion = ""
-        try:
-            session = self.engine.sessions.get(key)
-            if session is not None:
-                emotion = str(getattr(session, "emotion_hint", "") or "")
-                if not emotion:
-                    from .mind.emotion.model import classify as _classify
-
-                    emotion = _classify(session.emotion).key
-        except Exception:  # noqa: BLE001
-            emotion = ""
-        item = self.stickers.pick(emotion, self._sticker_recent.get(key, []))
-        if item is None or not Path(item.path).is_file():
+        sent = await self._send_sticker(event, self._current_emotion(key))
+        if not sent.get("ok"):
+            logger.debug(f"[ai_mind] 表情没发出去：{sent.get('error')}")
             return ""
-        try:
-            await self.context.send_message(key, [Comp.Image.fromFileSystem(item.path)])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[ai_mind] 发送表情失败：{exc}")
-            return ""
-        self.stickers.mark_used(item.id)
-        stamps.append(now)
-        recent = self._sticker_recent.setdefault(key, [])
-        recent.append(item.id)
-        del recent[:-8]
-        return item.path
+        return "sticker"
 
     def _sticker_save(self) -> bool:
         return sticker_engine.save_settings(
             Path(self.data_dir) / "sticker.json", self.sticker_settings
         )
+
+    def _debug_group(self, event: AstrMessageEvent) -> str:
+        """一屏看完「为什么这个群里不对劲」。"""
+        key = str(getattr(event, "unified_msg_origin", "") or "")
+        group = key.split(":")[-1] if ":" in key else ""
+        try:
+            group_open = self.groupswitch.is_open(group)
+        except Exception:  # noqa: BLE001
+            group_open = True
+        emotion = self.settings.emotion
+        conf = self.sticker_settings
+        stats = self.stickers.stats()
+        preset = ""
+        try:
+            preset = self.engine.preset.key
+        except Exception:  # noqa: BLE001
+            preset = "?"
+        owners = "、".join(str(item) for item in (emotion.special_users or [])[:4]) or "没配"
+        lines = [
+            "会话：" + key,
+            "群开关：%s（总开关 %s）" % ("开" if group_open else "关",
+                                        "开" if self.groupswitch.all_open else "关"),
+            "人格：%s｜配置里写的是 %s" % (preset, emotion.preset_key or "（空）"),
+            "专属用户：" + owners,
+            "表情：%s｜库 %d 张（打过标 %d）｜概率 %.0f%%｜每小时 %d 张"
+            % ("开" if conf.enabled else "关", stats["total"], stats["tagged"],
+               conf.chance * 100, conf.per_hour),
+            "情绪注入：%s｜记忆注入：%s｜省 token：%s"
+            % ("开" if emotion.enabled else "关",
+               "开" if self.settings.memory.enabled else "关",
+               "开" if self.settings.cache_friendly else "关"),
+        ]
+        if not group_open:
+            lines.append("这个群被关掉了：发「开启本群」或面板里打开。")
+        if preset != (emotion.preset_key or preset):
+            lines.append("注意：运行中的人格和配置不一致，重启或去面板重新点一次该人格。")
+        lines.append("用法：#群（本群诊断）｜#表情 试（现在发一张表情）")
+        return chr(10).join(lines)
 
     def _debug_sticker(self, text: str) -> str:
         conf = self.sticker_settings
@@ -5583,6 +5659,8 @@ class AIMindPlugin(Star):
             conf.enabled = False
             self._sticker_save()
             return "表情包：关（已收的还在，随时能开回来）"
+        if head in ("试", "test", "发"):
+            return "这个要看一眼聊天窗口：让她现在发一张（不管概率和开关）。"
         if head in ("清", "clear"):
             removed = self.stickers.clear()
             return "清掉了 %d 张表情。" % removed

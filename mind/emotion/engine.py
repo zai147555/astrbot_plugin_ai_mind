@@ -421,7 +421,11 @@ class EmotionEngine:
         self.settings = settings
         self.logger = logger
         self.clock = clock
-        self.preset: Preset = PRESETS.get(settings.preset_key) or PRESETS["tsundere"]
+        # 注意：这里必须走 get_preset（内置 + 数据目录里的自定义预设），
+        # 只查 PRESETS 的话，用自定义人格的用户重启后会悄悄退回傲娇 ——
+        # 表现就是「换了人格，重启又变回旧的」。
+        self.preset_root = Path(data_dir)
+        self.preset: Preset = get_preset(settings.preset_key, self.preset_root)
         self.appraiser = self._build_appraiser(settings)
         self.store = JsonStore(Path(data_dir) / "emotion_state.json")
         self._sessions: dict[str, SessionMood] = {}
@@ -460,6 +464,13 @@ class EmotionEngine:
     def apply_settings(self, settings: Settings) -> None:
         """配置热更新：换掉基线与规则评估器，已有的情绪状态原样保留。"""
         self.settings = settings
+        # 面板上换了人格（包括自定义预设）也要跟着换，不用重启
+        try:
+            wanted = get_preset(getattr(settings, "preset_key", ""), self.preset_root)
+            if wanted is not None and wanted.key != self.preset.key:
+                self.preset = wanted
+        except Exception:  # noqa: BLE001 - 换人格失败不该影响情绪热更新
+            pass
         self.appraiser = self._build_appraiser(settings)
 
     def set_custom_rules(self, lines: Any) -> None:
