@@ -8535,14 +8535,14 @@ var qrcode = function() {
     var check = data.selfcheck || {};
     $("sb-status").textContent = settings.enabled === false ? "已关" : "已开";
     var setup = data.ffmpeg || {};
-    var source = { "bundled": "插件内置", "PATH": "系统 PATH", "settings": "设置里填的", "system": "系统目录" }[setup.source] || "";
+    var source = { "vendored": "插件自带", "bundled": "插件内置", "PATH": "系统 PATH", "settings": "设置里填的", "system": "系统目录" }[setup.source] || "";
     if (check.ok || setup.ok) {
       $("sb-check").innerHTML = "ffmpeg 就绪" + (source ? "（" + esc(source) + "）" : "") +
         "：" + esc(setup.version || check.version || "");
       $("sb-ffmpeg-status").textContent = "";
     } else {
       $("sb-check").innerHTML = "<span style='color:#e06'>ffmpeg 没找到</span> —— " +
-        "点下面「一键内置」自动装到插件目录（免管理员、不改 PATH）" +
+        "点下面「一键内置」自动装到插件目录（免管理员、不改 PATH；装一次以后都能用）" +
         (check.hint ? "；" + esc(check.hint) : "");
     }
   }

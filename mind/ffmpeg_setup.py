@@ -5,7 +5,7 @@
 让每个人自己下 zip、解压、加 PATH、重启，是这类功能最常见的卡点。
 这里做三件事：
 
-1. **先找**：设置里的路径 → data/bin → PATH → 常见安装位置（winget / scoop / choco / C:\ffmpeg）；
+1. **先找**：设置里的路径 → 插件自带（vendor/ffmpeg）→ data/bin → PATH → 常见安装位置；
 2. **找不到就下**：从镜像列表拉静态包，解出 ffmpeg / ffprobe 放进 data/bin（免管理员、不改 PATH）；
 3. **验一下**：跑 @ffmpeg -version@，能跑才算成功；失败就把原因原样带回面板。
 
@@ -31,10 +31,13 @@ MAX_BYTES = 220 * 1024 * 1024
 TIMEOUT = 600
 
 #: 按平台给几个源，按顺序试
-MIRRORS: dict[str, tuple[str, str]] = {
+MIRRORS: dict[str, tuple[str, ...]] = {
     "windows": (
+        # GitHub 加速代理放前面：国内直连 gyan.dev 常常只有几十 KB/s
+        "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://ghproxy.net/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
         "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
     ),
     "linux": (
         "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
@@ -82,12 +85,26 @@ def _extra_lookup_paths() -> list[str]:
     return [str(item) for item in rows] + globbed
 
 
+def vendor_dir(plugin_dir: Path | str | None = None) -> Path | None:
+    """插件自带 ffmpeg 的目录：<插件>/vendor/ffmpeg/<平台>。"""
+    if not plugin_dir:
+        return None
+    return Path(plugin_dir) / "vendor" / "ffmpeg" / current_platform()
+
+
 def locate(data_dir: Path | str | None = None,
-           hint: str = "") -> dict[str, Any]:
-    """按优先级找 ffmpeg/ffprobe，返回 {ok, ffmpeg, ffprobe, source}。"""
+           hint: str = "", plugin_dir: Path | str | None = None) -> dict[str, Any]:
+    """按优先级找 ffmpeg/ffprobe，返回 {ok, ffmpeg, ffprobe, source}。
+
+    顺序：设置里填的 → 插件自带 → data/bin → PATH → 常见安装位置。
+    """
     candidates: list[tuple[str, str]] = []
     if hint:
         candidates.append((hint, "settings"))
+    bundled = vendor_dir(plugin_dir)
+    if bundled is not None:
+        exe = "ffmpeg.exe" if current_platform() == "windows" else "ffmpeg"
+        candidates.append((str(bundled / exe), "vendored"))
     if data_dir:
         folder = bin_dir(data_dir)
         exe = "ffmpeg.exe" if current_platform() == "windows" else "ffmpeg"
@@ -114,6 +131,13 @@ def locate(data_dir: Path | str | None = None,
     return {"ok": False, "ffmpeg": "", "ffprobe": "", "source": ""}
 
 
+def _text(blob: Any) -> str:
+    """subprocess 的 stdout 可能是 bytes（传了 errors= 就是 str），统一成文本。"""
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", "replace")
+    return str(blob or "")
+
+
 def verify(ffmpeg: str) -> tuple[bool, str]:
     """真跑一下 -version，能跑才算装好了。"""
     if not ffmpeg:
@@ -124,8 +148,8 @@ def verify(ffmpeg: str) -> tuple[bool, str]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     if int(done.returncode or 0) != 0:
-        return False, (done.stderr or b"").decode("utf-8", "replace")[-200:] or "非零退出"
-    first = ((done.stdout or b"").decode("utf-8", "replace").splitlines() or [""])[0]
+        return False, _text(done.stderr)[-200:] or "非零退出"
+    first = (_text(done.stdout).splitlines() or [""])[0]
     return True, first[:120]
 
 
@@ -235,9 +259,10 @@ def install(data_dir: Path | str, url: str = "", timeout: int = TIMEOUT) -> dict
     }
 
 
-def status(data_dir: Path | str, hint: str = "") -> dict[str, Any]:
-    """面板自检：现在能不能用、用的是哪一个、是不是插件内置的。"""
-    found = locate(data_dir, hint)
+def status(data_dir: Path | str, hint: str = "",
+           plugin_dir: Path | str | None = None) -> dict[str, Any]:
+    """面板自检：现在能不能用、用的是哪一个、是不是插件自带的。"""
+    found = locate(data_dir, hint, plugin_dir)
     if not found.get("ok"):
         return {"ok": False, "message": "没找到 ffmpeg", "ffmpeg": "", "ffprobe": "",
                 "source": "", "version": "", "bundled": False}
@@ -249,12 +274,13 @@ def status(data_dir: Path | str, hint: str = "") -> dict[str, Any]:
         "ffprobe": found.get("ffprobe", ""),
         "source": found.get("source", ""),
         "version": version,
-        "bundled": found.get("source") == "bundled",
+        "bundled": found.get("source") in ("bundled", "vendored"),
     }
 
 
 __all__ = [
-    "MAX_BYTES", "MIRRORS", "current_platform", "bin_dir", "locate", "verify",
+    "MAX_BYTES", "MIRRORS", "current_platform", "bin_dir", "vendor_dir",
+    "locate", "verify", "_text",
     "install", "status",
 ]
 

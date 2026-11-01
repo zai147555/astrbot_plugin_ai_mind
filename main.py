@@ -30,6 +30,7 @@ import base64
 import json
 import os
 import sqlite3
+import threading
 import random
 import sys
 import time
@@ -840,6 +841,10 @@ class AIMindPlugin(Star):
         super().__init__(context)
         self.config = config if isinstance(config, dict) else {}
         self.data_dir = self._resolve_data_dir()
+        #: 插件自己的目录（自带 ffmpeg 在 vendor/ffmpeg 下）
+        self.plugin_dir = Path(__file__).resolve().parent
+        #: 装 ffmpeg 时避免两次下载同时跑
+        self._ffmpeg_lock = threading.Lock()
         # 面板上填的"专属用户 / 称呼"盖在配置之上（存在 data 目录里）
         self._relationship_data = self._load_relationship_overrides()
         self._humanize_data = self._load_humanize_overrides()
@@ -928,11 +933,10 @@ class AIMindPlugin(Star):
         # 启动时先自己找一遍 ffmpeg（含插件内置目录 / winget / scoop）
         try:
             _ff = ffmpeg_setup.status(
-                self.data_dir, self.storyboard_settings.ffmpeg_path
+                self.data_dir, self.storyboard_settings.ffmpeg_path, self.plugin_dir
             )
-            if _ff.get("ok") and not self.storyboard_settings.ffmpeg_path:
-                self.storyboard_settings.ffmpeg_path = str(_ff.get("ffmpeg") or "")
-                self.storyboard_settings.ffprobe_path = str(_ff.get("ffprobe") or "")
+            if _ff.get("ok"):
+                self._ffmpeg_remember(_ff)
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[ai_mind] 查找 ffmpeg 失败：{exc}")
         self.market_settings = market_engine.load_settings(
@@ -5865,6 +5869,7 @@ class AIMindPlugin(Star):
         path = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
         if not path:
             return "用法：#动图 <GIF 或动态 WebP 的路径>"
+        await self._mail_call(self.ensure_ffmpeg, False)
         result = await asyncio.to_thread(animation_engine.build, path)
         if not result.get("ok"):
             return "看不了动图：" + str(result.get("error") or "未知原因")
@@ -5877,6 +5882,7 @@ class AIMindPlugin(Star):
         path = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
         if not path:
             return "用法：#听歌 <音频文件路径>"
+        await self._mail_call(self.ensure_ffmpeg, False)
         conf = self.storyboard_settings
         result = await asyncio.to_thread(
             soundcheck_engine.analyze, path, conf.ffmpeg_path, conf.ffprobe_path
@@ -6002,6 +6008,13 @@ class AIMindPlugin(Star):
         target = str(source or "").strip()
         if not target:
             return {"ok": False, "error": "没给视频路径或链接", "hint": ""}
+        # 文件不存在这种错先让 build 自己报（别拿 ffmpeg 提示盖掉真问题）
+        if storyboard_engine.is_url(target) or Path(target).exists():
+            ready = self.ensure_ffmpeg(auto=False)
+            if not ready.get("ok"):
+                return {"ok": False,
+                        "error": "ffmpeg 没就绪：" + str(ready.get("message") or ""),
+                        "hint": "面板「分镜」页点「一键内置」，或把 ffmpeg 填进设置。"}
         if storyboard_engine.is_url(target):
             local = workdir / "download.mp4"
             ok, err = storyboard_engine.download(
@@ -6877,6 +6890,73 @@ class AIMindPlugin(Star):
             "spans": spans,
         })
 
+    # -- ffmpeg：插件自带优先，缺了自动装 -----------------------------------
+    def _ffmpeg_tools(self) -> dict[str, Any]:
+        conf = self.storyboard_settings
+        return storyboard_engine.find_tools(conf.ffmpeg_path, conf.ffprobe_path)
+
+    def _ffmpeg_status(self) -> dict[str, Any]:
+        conf = self.storyboard_settings
+        return ffmpeg_setup.status(self.data_dir, conf.ffmpeg_path, self.plugin_dir)
+
+    def _ffmpeg_remember(self, found: dict[str, Any]) -> None:
+        """把找到的 ffmpeg 写回设置，下次不用再找。"""
+        ffmpeg = str(found.get("ffmpeg") or "")
+        if not ffmpeg:
+            return
+        ffprobe = str(found.get("ffprobe") or "")
+        conf = self.storyboard_settings
+        if conf.ffmpeg_path == ffmpeg and conf.ffprobe_path == ffprobe:
+            return
+        conf.ffmpeg_path = ffmpeg
+        conf.ffprobe_path = ffprobe
+        try:
+            storyboard_engine.save_settings(
+                Path(self.data_dir) / "storyboard.json", conf
+            )
+        except OSError as exc:
+            logger.debug(f"[ai_mind] 记 ffmpeg 路径失败：{exc}")
+
+    def ensure_ffmpeg(self, auto: bool = True) -> dict[str, Any]:
+        """确保能干活：设置 → 插件自带 → data/bin → PATH。
+
+        auto=True 时才联网补装（只有面板「一键内置」会这么干；命令路径 auto=False，
+        避免用户随口一句 #分镜 卡在几十 MB 的下载上）。
+        同步函数，调用方自己扔线程（面板接口走 _mail_call，命令走 to_thread）。
+        """
+        found = ffmpeg_setup.locate(
+            self.data_dir, self.storyboard_settings.ffmpeg_path, self.plugin_dir
+        )
+        if found.get("ok"):
+            self._ffmpeg_remember(found)
+            return {"ok": True, "installed": False, "source": str(found.get("source") or ""),
+                    "path": str(found.get("ffmpeg") or ""), "message": ""}
+        if not auto:
+            return {"ok": False, "installed": False, "source": "", "path": "",
+                    "message": "没找到 ffmpeg"}
+        if not self._ffmpeg_lock.acquire(blocking=False):
+            return {"ok": False, "installed": False, "source": "", "path": "",
+                    "message": "正在装 ffmpeg，装完再试一次"}
+        try:
+            again = ffmpeg_setup.locate(
+                self.data_dir, self.storyboard_settings.ffmpeg_path, self.plugin_dir
+            )
+            if again.get("ok"):
+                self._ffmpeg_remember(again)
+                return {"ok": True, "installed": False,
+                        "source": str(again.get("source") or ""),
+                        "path": str(again.get("ffmpeg") or ""), "message": ""}
+            logger.info("[ai_mind] 没找到 ffmpeg，开始自动装（插件目录）")
+            result = ffmpeg_setup.install(self.data_dir)
+            if result.get("ok"):
+                self._ffmpeg_remember(result)
+            return {"ok": bool(result.get("ok")), "installed": True,
+                    "source": "bundled" if result.get("ok") else "",
+                    "path": str(result.get("ffmpeg") or ""),
+                    "message": str(result.get("message") or "")}
+        finally:
+            self._ffmpeg_lock.release()
+
     # -- 面板：视频分镜 -----------------------------------------------------
     def _storyboard_payload(self) -> dict[str, Any]:
         conf = self.storyboard_settings
@@ -6885,7 +6965,7 @@ class AIMindPlugin(Star):
             "settings": conf.to_dict(),
             "delivery": self.delivery_settings.to_dict(),
             "selfcheck": report,
-            "ffmpeg": ffmpeg_setup.status(self.data_dir, conf.ffmpeg_path),
+            "ffmpeg": self._ffmpeg_status(),
             "needs": [
                 {"key": key, "label": tier["label"], "w": tier["w"], "h": tier["h"],
                  "per_sheet": storyboard_engine.max_cells_for_need(key)}
@@ -6930,15 +7010,11 @@ class AIMindPlugin(Star):
 
     async def _api_storyboard_install_ffmpeg(self) -> Any:
         """一键把 ffmpeg 装进插件目录（data/bin），装完写进设置。"""
-        conf = self.storyboard_settings
-        result = await self._mail_call(ffmpeg_setup.install, self.data_dir)
-        if result.get("ok"):
-            conf.ffmpeg_path = str(result.get("ffmpeg") or "")
-            conf.ffprobe_path = str(result.get("ffprobe") or "")
-            storyboard_engine.save_settings(Path(self.data_dir) / "storyboard.json", conf)
+        result = await self._mail_call(self.ensure_ffmpeg, True)
         data = self._storyboard_payload()
         data["ok"] = bool(result.get("ok"))
         data["message"] = str(result.get("message") or "")
+        data["source"] = str(result.get("source") or "")
         return json_response(data)
 
     async def _api_storyboard_build(self) -> Any:
@@ -6996,10 +7072,7 @@ class AIMindPlugin(Star):
             "delivery": self.delivery_settings.to_dict(),
             "seen": self.bili_seen.count(),
             "storyboard": self.storyboard_settings.to_dict(),
-            "has_ffmpeg": bool(storyboard_engine.find_tools(
-                self.storyboard_settings.ffmpeg_path,
-                self.storyboard_settings.ffprobe_path,
-            ).get("ok")),
+            "has_ffmpeg": bool(self._ffmpeg_tools().get("ok")),
         }
 
     async def _api_bili(self) -> Any:
@@ -7654,6 +7727,7 @@ class AIMindPlugin(Star):
         path = str(payload.get("path") or "").strip()
         if not path:
             return json_response({"ok": False, "error": "先填一个动图路径"})
+        await self._mail_call(self.ensure_ffmpeg, False)
         conf = self.storyboard_settings
         result = await self._mail_call(
             animation_engine.build, path, animation_engine.DEFAULT_FRAMES, None,
@@ -7674,6 +7748,7 @@ class AIMindPlugin(Star):
         path = str(payload.get("path") or "").strip()
         if not path:
             return json_response({"ok": False, "error": "先填一个音频路径"})
+        await self._mail_call(self.ensure_ffmpeg, False)
         conf = self.storyboard_settings
         result = await self._mail_call(
             soundcheck_engine.analyze, path, conf.ffmpeg_path, conf.ffprobe_path

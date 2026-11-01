@@ -800,6 +800,13 @@ def ytdlp_path() -> str:
     return ""
 
 
+def _text(blob: Any) -> str:
+    """subprocess 输出可能是 bytes 也可能是 str（errors= 就是文本模式）。"""
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", "replace")
+    return str(blob or "")
+
+
 def download_with_ytdlp(url: str, out: Path | str, max_bytes: int = 60 * 1024 * 1024,
                         bin_path: str = "", timeout: int = 180) -> tuple[bool, str]:
     """用 yt-dlp 取流（限 480P、单文件），失败就把话说清楚。"""
@@ -822,7 +829,7 @@ def download_with_ytdlp(url: str, out: Path | str, max_bytes: int = 60 * 1024 * 
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, "yt-dlp 跑不起来：%s" % exc
     if int(done.returncode or 0) != 0:
-        tail = (done.stderr or b"").decode("utf-8", "replace")[-300:].strip()
+        tail = _text(done.stderr)[-300:].strip()
         return False, "yt-dlp 失败：" + (tail or "未知原因")
     if not target.exists():
         return False, "yt-dlp 说成功了但文件不在"

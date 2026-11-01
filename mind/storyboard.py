@@ -431,6 +431,13 @@ def transcribe(path: str | Path, command: str,
     return []
 
 
+def _text(blob: Any) -> str:
+    """subprocess 输出统一成文本（传了 errors= 就是 str，没传是 bytes）。"""
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", "replace")
+    return str(blob or "")
+
+
 def _run_command(command: str, timeout: int) -> tuple[int, str]:
     """跑一条带空格的命令行（转写器的参数经常带引号，所以走 shell）。"""
     try:
@@ -438,7 +445,7 @@ def _run_command(command: str, timeout: int) -> tuple[int, str]:
             command, shell=True, capture_output=True, timeout=timeout,
             check=False, errors="replace",
         )
-        return int(done.returncode or 0), (done.stderr or b"").decode("utf-8", "replace")[-400:]
+        return int(done.returncode or 0), _text(done.stderr)[-400:]
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, str(exc)
 
@@ -539,12 +546,22 @@ def build_evidence(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _vendored_dir() -> Path | None:
+    """插件自带的 ffmpeg 放在 <插件>/vendor/ffmpeg/<平台>/。"""
+    plat = "windows" if os.name == "nt" else "linux"
+    folder = Path(__file__).resolve().parent.parent / "vendor" / "ffmpeg" / plat
+    return folder if folder.is_dir() else None
+
+
 def find_tools(ffmpeg_hint: str = "", ffprobe_hint: str = "") -> dict[str, Any]:
     """找 ffmpeg / ffprobe。找不到也返回结构，让上层给一句人话。"""
     def pick(hint: str, name: str) -> str:
+        bundle = _vendored_dir()
         for candidate in (
             str(hint or "").strip(),
             str(os.environ.get(name.upper() + "_PATH") or "").strip(),
+            str(bundle / (name + ".exe")) if bundle else "",
+            str(bundle / name) if bundle else "",
         ):
             if candidate and Path(candidate).exists():
                 return candidate
@@ -554,13 +571,14 @@ def find_tools(ffmpeg_hint: str = "", ffprobe_hint: str = "") -> dict[str, Any]:
     ffmpeg = pick(ffmpeg_hint, "ffmpeg")
     ffprobe = pick(ffprobe_hint, "ffprobe")
     hint = ""
-    if not (ffmpeg and ffprobe):
+    if not ffmpeg:
         hint = (
-            "没找到 ffmpeg。Windows：去 ffmpeg.org 下 release 包，解压后把 bin 目录加进 PATH，"
-            "或在这里直接填 ffmpeg.exe 的完整路径；装完重启 AstrBot。"
+            "没找到 ffmpeg。面板「分镜」页点「一键内置」会自动装到插件目录（免管理员）；"
+            "也可以自己填 ffmpeg.exe 的路径，或把它放进 PATH；装完重启 AstrBot。"
         )
+    # 只要 ffmpeg 在就能干活：ffprobe 缺失时用 -i 的 stderr 兜底读元信息
     return {"ffmpeg": ffmpeg, "ffprobe": ffprobe,
-            "ok": bool(ffmpeg and ffprobe), "hint": hint}
+            "ok": bool(ffmpeg), "hint": hint}
 
 
 def _run(cmd: Sequence[str], timeout: int = FFMPEG_TIMEOUT) -> tuple[int, str]:
@@ -570,7 +588,7 @@ def _run(cmd: Sequence[str], timeout: int = FFMPEG_TIMEOUT) -> tuple[int, str]:
             list(cmd), capture_output=True, timeout=timeout,
             check=False, errors="replace",
         )
-        err = (done.stderr or b"").decode("utf-8", "replace")
+        err = _text(done.stderr)
         return int(done.returncode or 0), err[-800:]
     except FileNotFoundError as exc:
         return 127, str(exc)
@@ -586,6 +604,8 @@ def probe_video(path: str | Path, tools: dict[str, Any] | None = None) -> dict[s
     if not tools.get("ok"):
         raise ValueError(tools.get("hint") or "没有 ffmpeg")
     target = str(path)
+    if not tools.get("ffprobe"):
+        return _probe_with_ffmpeg(target, tools)
     cmd = [
         str(tools["ffprobe"]), "-v", "error", "-print_format", "json",
         "-show_format", "-show_streams", target,
@@ -599,10 +619,9 @@ def probe_video(path: str | Path, tools: dict[str, Any] | None = None) -> dict[s
     except subprocess.TimeoutExpired as exc:
         raise ValueError("ffprobe 超时（%d 秒）" % FFMPEG_TIMEOUT) from exc
     if int(done.returncode or 0) != 0:
-        raise ValueError("ffprobe 读不出来：" +
-                         (done.stderr or b"").decode("utf-8", "replace")[-300:].strip())
+        raise ValueError("ffprobe 读不出来：" + _text(done.stderr)[-300:].strip())
     try:
-        payload = json.loads((done.stdout or b"").decode("utf-8", "replace") or "{}")
+        payload = json.loads(_text(done.stdout) or "{}")
     except ValueError as exc:
         raise ValueError("ffprobe 输出不是 JSON") from exc
 
@@ -631,6 +650,41 @@ def probe_video(path: str | Path, tools: dict[str, Any] | None = None) -> dict[s
         "height": int(video.get("height") or 0),
         "fps": round(fps, 3),
     }
+
+
+def parse_ffmpeg_info(text: str) -> dict[str, Any]:
+    """从 @ffmpeg -i@ 的 stderr 里读时长/分辨率/fps（没有 ffprobe 时的兜底）。"""
+    import re as _re
+
+    blob = str(text or "")
+    duration = 0.0
+    match = _re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", blob)
+    if match:
+        duration = (int(match.group(1)) * 3600 + int(match.group(2)) * 60
+                    + float(match.group(3)))
+    width = height = 0
+    size = _re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", blob)
+    if size:
+        width, height = int(size.group(1)), int(size.group(2))
+    fps = 0.0
+    rate = _re.search(r"Video:.*?,\s*([\d.]+)\s*fps", blob)
+    if rate:
+        try:
+            fps = float(rate.group(1))
+        except ValueError:
+            fps = 0.0
+    return {"duration": round(duration, 3), "width": width, "height": height,
+            "fps": round(fps, 3)}
+
+
+def _probe_with_ffmpeg(target: str, tools: dict[str, Any]) -> dict[str, Any]:
+    """ffprobe 不在时，用 ffmpeg -i 的 stderr 读元信息。"""
+    code, err = _run([str(tools["ffmpeg"]), "-hide_banner", "-i", target], timeout=60)
+    info = parse_ffmpeg_info(err)
+    if not info.get("duration"):
+        raise ValueError("读不出片长（ffmpeg 也不认识这个文件？）")
+    info.update({"path": target, "name": Path(target).name})
+    return info
 
 
 def extract_frame(path: str | Path, at: float, out: str | Path,
@@ -821,8 +875,9 @@ def selfcheck(ffmpeg_hint: str = "", ffprobe_hint: str = "") -> dict[str, Any]:
                 timeout=20, check=False, errors="replace",
             )
             code = int(done.returncode or 0)
-            version = ((done.stdout or b"").decode("utf-8", "replace") or "").splitlines()[0][:120]
-        except (OSError, subprocess.TimeoutExpired, ValueError):
+            lines = (_text(done.stdout) or "").splitlines()
+            version = lines[0][:120] if lines else ""
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
             code = 1
     return {
         "ok": bool(tools.get("ok")) and bool(version),

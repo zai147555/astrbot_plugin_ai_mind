@@ -3,7 +3,7 @@
 > 给 AstrBot 里的 AI **一颗会波动的心、一份记得住人的记性、一张说得像人话的嘴**，
 > 外加一整套从 DSH 生态移植来的媒体与工具能力。
 
-AstrBot ≥ 4.5 ｜ 零第三方依赖（只用 Python 标准库 + 可选 ffmpeg）｜ 版本 v3.0.0.1 ｜ 测试 1217 条
+AstrBot ≥ 4.5 ｜ 零第三方依赖（只用 Python 标准库 + 自带 ffmpeg）｜ 版本 v3.0.0.1 ｜ 测试 1217 条
 
 ---
 
@@ -311,9 +311,12 @@ python3 audit_buttons.py                   # 面板按钮绑定审计
 
 ## 3.0.0.1 补充：内置 ffmpeg 与 B 站登录版
 
-**内置 ffmpeg**：面板「分镜」页多了「一键内置 ffmpeg」——插件自己下载静态包、解到
-`data/bin`（免管理员、不改 PATH）、跑一次 `-version` 校验后写进设置。
-启动时也会自动找：插件目录 → PATH → winget / scoop / choco / C:\ffmpeg。
+**自带 ffmpeg，用户不用装**：交付 zip 里带 `vendor/ffmpeg/windows/`（ffmpeg.exe + ffprobe.exe），
+解压插件就能用分镜 / 动图 / 听歌。启动时按这个顺序找：设置里填的 → **插件自带** → `data/bin`
+（面板「一键内置」下载的）→ 系统 PATH → winget / scoop / choco / C:\ffmpeg；找到就写回设置。
+自己重新打包二进制：`python3 scripts/fetch_ffmpeg.py`（支持 windows / linux，体积大所以不进 git）。
+没有 ffprobe 也能跑：用 `ffmpeg -i` 的 stderr 兜底读片长 / 分辨率 / fps。
+命令路径缺 ffmpeg 只报一句提示、不会卡下载；只有面板点「一键内置」才会联网补装。
 下载源可换（`mind/ffmpeg_setup.py` 顶部），失败会把原因原样带回面板。
 
 **B 站登录版**：面板「刷B站」可以粘贴浏览器 Cookie（只存本机、面板不回显）。
@@ -376,3 +379,4 @@ python3 audit_buttons.py                   # 面板按钮绑定审计
 - 命令 #在看 [N]：直接列最近在看什么；
 - 未登录时这一路自动跳过；不想让它读，把开关关掉即可。
 
+第三方组件与许可（含随包分发的 ffmpeg GPLv3 说明）：见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

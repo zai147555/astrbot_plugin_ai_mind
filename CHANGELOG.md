@@ -19,14 +19,12 @@
   所以分段、零空格、表情包规则一条都不用让路。语音侧单独清洗（去网址/markdown/括号动作/emoji，
   截 300 字）；只支持 QQ 群聊、平台不支持时静默跳过；冷却 8s / 按条或按概率 / 群白名单 / 指定音色
   都在面板「分段拟人」页；命令 #声聊 开|关 / 人物 / 用 <id> / 测试。
-'''
 - **被戳一下**（参考 poke_to_llm，MIT）：poke 通知 → 作用域/黑名单/双重冷却（个人+群）→
   走标准 LLM 链路接一句；管理员免冷却；面板「人格定制」顶部新增开关、冷却、黑名单、提示词。
 - **表情工具**：LLM 可主动 send_sticker / search_sticker（参考 stealer 的「LLM 主动选图」，
   AGPL 项目仅借鉴概念、代码独立实现）。
 - 参考了 stealer（AGPL）、AIQTalk（QQ 声聊通道，与输出规则冲突）、memewiki（仓库不可访问）三个项目，
   未并入的理由写进 README。
-'''
 - **B 站扫码登录**：面板「刷B站」新增「扫码登录」——走官方 qrcode 协议（generate + poll），
   二维码用内联的 MIT 库（qrcode-generator）画在 canvas 上，不联网、不经过第三方；
   每 2 秒轮询一次，成功后自动从 Set-Cookie 取 SESSDATA / bili_jct / DedeUserID 存进
@@ -35,6 +33,11 @@
 - **内置 ffmpeg**（新模块 mind/ffmpeg_setup.py）：面板「分镜」页一键下载静态包 → 解到
   data/bin（免管理员、不改 PATH）→ 校验 -version 后写进设置；启动时自动找插件目录 /
   PATH / winget / scoop / 常见安装位置。下载源可换，失败会把原因带回面板。
+- **ffmpeg 随插件自带，用户不用自己装**：交付 zip 里带 vendor/ffmpeg/windows/
+  （scripts/fetch_ffmpeg.py 生成），启动时按「设置 → 插件自带 → data/bin → PATH」的顺序找，
+  找到就把路径写回设置；**只有真正用分镜/动图/听歌时才需要它**，命令路径找不到不会卡下载，
+  只有面板「一键内置」才会联网补装。ffprobe 也缺时用 ffmpeg -i 的 stderr 兜底读片长/分辨率/fps。
+  顺带修了 verify()/selfcheck() 在文本模式下对 str 调 .decode() 的崩溃。
 - **B 站登录版**：面板「刷B站」可粘贴浏览器 Cookie（只存本机、面板不回显），登录后
   取高清直链（1080P 优先、失败自动降级）、字幕命中率更高；新增「校验登录」显示昵称与等级；
   Cookie 失效时链路自动退回匿名可用部分。

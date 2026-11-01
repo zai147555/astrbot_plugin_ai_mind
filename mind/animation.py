@@ -34,6 +34,12 @@ CELL_W = 320
 CELL_H = 180
 
 
+def _text(blob: Any) -> str:
+    from .storyboard import _text as convert
+
+    return convert(blob)
+
+
 def probe_animation(path: str | Path, tools: dict[str, Any] | None = None) -> dict[str, Any]:
     """动图有几帧、多长、多大。"""
     import json
@@ -42,6 +48,22 @@ def probe_animation(path: str | Path, tools: dict[str, Any] | None = None) -> di
     tools = tools or find_tools()
     if not tools.get("ok"):
         raise ValueError(tools.get("hint") or "没有 ffmpeg")
+    if not tools.get("ffprobe"):
+        from .storyboard import _probe_with_ffmpeg
+
+        try:
+            info = _probe_with_ffmpeg(str(path), tools)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        fps = float(info.get("fps") or 0.0)
+        duration = float(info.get("duration") or 0.0)
+        frames = int(round(duration * fps)) if (fps and duration) else 0
+        return {
+            "path": str(path), "name": Path(str(path)).name,
+            "codec": "", "frames": frames, "fps": round(fps, 3),
+            "duration": round(duration, 3), "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0),
+        }
     try:
         done = subprocess.run([
             str(tools["ffprobe"]), "-v", "error", "-print_format", "json",
@@ -50,9 +72,9 @@ def probe_animation(path: str | Path, tools: dict[str, Any] | None = None) -> di
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError("ffprobe 跑不起来：%s" % exc) from exc
     if int(done.returncode or 0) != 0:
-        raise ValueError("读不出来：" + (done.stderr or b"").decode("utf-8", "replace")[-200:])
+        raise ValueError("读不出来：" + _text(done.stderr)[-200:])
     try:
-        payload = json.loads((done.stdout or b"").decode("utf-8", "replace") or "{}")
+        payload = json.loads(_text(done.stdout) or "{}")
     except ValueError as exc:
         raise ValueError("ffprobe 输出不是 JSON") from exc
     streams = payload.get("streams") or []
