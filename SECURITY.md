@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 读文件 | 插件数据目录、用户显式给出的路径 | 分镜/动图/听音频读用户给的视频或音频路径；表情包读收到的图片 |
 | 写文件 | 插件数据目录 | `mind.db`、`emotion_state.json`、各类 `*.json` 设置、`stickers/`、`storyboard/`、`imagegen/out` |
-| 系统路径 | 仅 `data/bin` | 「一键内置 ffmpeg」会把静态包解到插件自己的数据目录，**不改 PATH、不要管理员** |
+| 系统路径 | 插件自带 `vendor/ffmpeg/`（只读）+ `data/bin` | 自带二进制随 zip 分发、解压即用；「一键内置」才会下载到 `data/bin`，**不改 PATH、不要管理员** |
 | 剪贴板/相册/通讯录 | ❌ 不碰 | —— |
 
 ## 网络：默认完全静默
@@ -29,7 +29,7 @@
 | 画图 | 用户配置的 OpenAI Images 兼容地址 | `#画` 或面板 |
 | 刷 B 站 | `api.bilibili.com` / `passport.bilibili.com` | `#刷B站` 或面板；登录凭据只存本机 |
 | 分镜/动图/听音频 | 用户给出的链接 | `#分镜` 等 |
-| ffmpeg 内置 | 公开静态包源 | 面板点「一键内置」 |
+| ffmpeg 补装 | gyan.dev / GitHub 加速代理（BtbN） | 仅面板点「一键内置」，命令路径不会自动下载 |
 
 没有任何遥测、没有后台上报、没有隐藏请求。
 
@@ -73,7 +73,7 @@
 ## 供应链
 
 - `requirements.txt` 为空：**只用 Python 标准库**；
-- 媒体能力可选依赖本机 `ffmpeg`，也可以用面板「一键内置」装到插件目录；
+- 媒体能力用的 `ffmpeg` **随交付 zip 自带**（`vendor/ffmpeg/windows/`，GPLv3，来源见 THIRD_PARTY_NOTICES.md），删掉它也可以用系统已装的；
 - 面板二维码用内联的 MIT 库（qrcode-generator，Kazuhiko Arase），来源与许可写在代码注释里；
 - 所有移植来源与许可见 README「上游与许可」。
 
