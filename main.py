@@ -6109,7 +6109,9 @@ class AIMindPlugin(Star):
 
     def _qzone_payload(self) -> dict[str, Any]:
         entries = [item.to_dict() for item in self.diaries.recent(30)]
-        wanted = [str(item.get("image") or "") for item in entries if item.get("image")]
+        # 配图只在时间线最上面几条带（base64 塞太多会把面板撑爆）
+        wanted = [str(item.get("image") or "") for item in entries[:8]
+                  if item.get("image")]
         images = {row.get("path"): row.get("image")
                   for row in self._images_payload(wanted)}
         for entry in entries:
