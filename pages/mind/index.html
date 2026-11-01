@@ -9104,10 +9104,18 @@ var qrcode = function() {
     $("bl-login-status").textContent = settings.has_cookie ? "已有凭据（不回显）" : "还没填凭据";
     var blDelivery = data.delivery || {};
     $("bl-private").checked = blDelivery.bulk_to_private !== false;
-    $("bl-status").textContent = "已读 " + (data.seen || 0) + " 条";
+    $("bl-status").textContent = "已推送 " + (data.seen || 0) + " 条（去重用）";
     $("bl-check").textContent = data.has_ffmpeg
       ? "ffmpeg 就绪，能出分镜"
       : "没找到 ffmpeg —— 能挑能写日报，但出不了分镜";
+    if ($("bl-list") && !$("bl-list").innerHTML) {
+      $("bl-list").innerHTML =
+        "<div class='small muted'>还没有结果：点「刷一轮」，跑完这里会列出今天挑的视频。</div>";
+    }
+    var reportBox = $("bl-report");
+    if (reportBox && !(reportBox.textContent || "").trim()) {
+      reportBox.textContent = "日报还没生成（刷一轮成功后才有）。";
+    }
     var historyBox = $("bl-history-list");
     if (!settings.has_cookie) {
       $("bl-history-status").textContent = "未登录：先扫码或粘 Cookie";
