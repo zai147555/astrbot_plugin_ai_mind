@@ -1164,6 +1164,7 @@ class AIMindPlugin(Star):
                 self._style_maintenance()
                 self._debounce_gc()
                 await self._bili_daily_tick()
+                await self._bili_history_tick()
                 await self._schedule_tick()
                 await self._qzone_daily_tick()
                 await self._mail_auto_tick()
@@ -5296,6 +5297,8 @@ class AIMindPlugin(Star):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
+            if word.split()[0] in ("看了", "viewed", "看过"):
+                return self._debug_viewed()
             if word.split()[0] in ("日程", "schedule"):
                 return await self._debug_schedule(text)
             if word.split()[0] in ("人格", "persona"):
@@ -5930,21 +5933,100 @@ class AIMindPlugin(Star):
         words = ("看了", "看过", "刷到", "刷了", "视频", "b站", "B站", "有什么好看", "推荐", "在看")
         if not any(word in text for word in words):
             return ""
+        lines = ["<recent_videos>"]
         last = self._bili_last_result()
-        items = last.get("items") or []
-        if not items:
-            return ""
-        lines = [
-            "<recent_videos>",
-            "（他问起你看过什么；这是你最近刷到的，挑一两条随口说，别念清单、别装没看过）",
-        ]
-        for row in items[:5]:
-            title = str(row.get("title") or "").strip()
-            up = str(row.get("up") or "").strip()
-            if not title:
-                continue
-            lines.append("· %s%s" % (title, ("（%s）" % up) if up else ""))
+        items = [row for row in (last.get("items") or []) if str(row.get("title") or "").strip()]
+        if items:
+            lines.append("（他问起你看过什么。这是你最近刷到的真实视频，"
+                         "至少点名一条标题，别念清单；要链接就给 url）")
+            for row in items[:6]:
+                title = str(row.get("title") or "").strip()
+                up = str(row.get("up") or "").strip()
+                url = str(row.get("url") or "").strip()
+                lines.append("· %s%s%s" % (title, ("（%s）" % up) if up else "",
+                                           ("  " + url) if url else ""))
+        else:
+            rows = self._bili_viewed()
+            if not rows:
+                return ""
+            lines.append("（他问起你最近在看什么。这是你 B 站账号的真实观看记录，"
+                         "至少点名一条标题和链接，别说『忘了』）")
+            for row in rows[:6]:
+                title = str(row.get("title") or "").strip()
+                if not title:
+                    continue
+                up = str(row.get("up") or "").strip()
+                progress = int(row.get("progress") or 0)
+                duration = max(1, int(row.get("duration") or 0))
+                percent = min(100, round(progress * 100.0 / duration)) if duration else 0
+                url = str(row.get("url") or "").strip()
+                lines.append("· %s%s%s%s" % (title, ("（%s）" % up) if up else "",
+                                             ("  看到 %d%%" % percent) if percent else "",
+                                             ("  " + url) if url else ""))
+        lines.append("绝不许编造清单里没有的视频，也不许说『忘了是哪个』。")
         lines.append("</recent_videos>")
+        return chr(10).join(lines)
+
+    # -- 观看历史缓存（分享用） ---------------------------------------------
+    def _bili_viewed_path(self) -> Path:
+        return Path(self.data_dir) / "bili" / "viewed_cache.json"
+
+    def _bili_viewed(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self._bili_viewed_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rows = data.get("rows") if isinstance(data, dict) else None
+        return [row for row in (rows or []) if isinstance(row, dict)]
+
+    async def _bili_history_tick(self) -> None:
+        """后台把「我最近在看」缓存下来：被问到时不用现拉网络。"""
+        conf = self.bili_settings
+        if not conf.enabled or not conf.cookie or not conf.use_history:
+            return
+        try:
+            data = json.loads(self._bili_viewed_path().read_text(encoding="utf-8"))
+            last = float(data.get("at") or 0)
+        except (OSError, ValueError):
+            last = 0.0
+        if last > time.time() - 1800:
+            return
+        rows, err = await self._mail_call(bili_engine.fetch_history, conf.cookie, 12)
+        if err or not rows:
+            return
+        blob = {
+            "at": time.time(),
+            "rows": [
+                {key: row.get(key) for key in
+                 ("bvid", "title", "up", "duration", "progress", "url")}
+                for row in rows[:12]
+            ],
+        }
+        try:
+            path = self._bili_viewed_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(blob, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            logger.debug(f"[ai_mind] 缓存观看历史失败：{exc}")
+
+    def _debug_viewed(self) -> str:
+        """#看了：她那句『我看了什么』到底能说出哪些。"""
+        last = [row for row in ((self._bili_last_result().get("items")) or [])
+                if str(row.get("title") or "").strip()]
+        viewed = self._bili_viewed()
+        lines = []
+        if last:
+            lines.append("最近刷到的（%d 条）：" % len(last))
+            for row in last[:6]:
+                lines.append("  · " + str(row.get("title") or ""))
+        if viewed:
+            lines.append("观看历史缓存（%d 条，%s）：" % (
+                len(viewed), time.strftime("%m-%d %H:%M", time.localtime()) if False else "已缓存"))
+            for row in viewed[:6]:
+                lines.append("  · " + str(row.get("title") or ""))
+        if not lines:
+            return ("她手里没有视频可分享：先刷一轮（面板「刷B站」→ 刷一轮），"
+                    "或登录后等后台把观看历史缓存下来（约 30 分钟一次）。")
         return chr(10).join(lines)
 
     def _debug_split(self, text: str) -> str:
