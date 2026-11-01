@@ -312,6 +312,11 @@ try:  # QQ 空间：日记 + 配图 + 说说
 except ImportError:  # pragma: no cover
     from mind import qzone as qzone_engine  # type: ignore[no-redef]
 
+try:  # 上下文压缩（聊长了只留要紧句）
+    from .mind import contextfit
+except ImportError:  # pragma: no cover
+    from mind import contextfit  # type: ignore[no-redef]
+
 try:  # 需求先搜市场（DSH 插件目录）
     from .mind import market as market_engine
 except ImportError:  # pragma: no cover
@@ -400,6 +405,9 @@ except ImportError:
         return {"status": "error", "message": message, "data": None}
 
 #: 一键推荐：新手照这个配就行（只写覆盖层，随时能还原）
+#: 人格锚点：这段话是所有人格/情绪的底座，放在最稳定的位置吃缓存
+PERSONA_ANCHOR_MARK = "<persona_anchor>"
+
 WIZARD_RECOMMENDED: dict[str, Any] = {
     "humanize": {"enabled": True, "mode": "check", "threshold": 65.0, "max_rounds": 2},
     "style": {"enabled": True, "auto_approve": False, "min_score": 78.0, "inject_count": 3},
@@ -1709,6 +1717,17 @@ class AIMindPlugin(Star):
                 self._bili_target = str(session_key)
             self._mark_llm(event)
 
+            # ---------- 人格锚点 ----------
+            # 身份和说话底线不随情绪、场合、谁在说话而变；放在最强前缀位，
+            # 既压住「跑偏」，也让前缀缓存一直命中。
+            try:
+                anchor = self._persona_anchor()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_mind] 人格锚点组装失败：{exc}")
+                anchor = ""
+            if anchor and PERSONA_ANCHOR_MARK not in (req.system_prompt or ""):
+                self._place_trusted(req, anchor)
+
             # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
             cache_tail: list[str] = []
 
@@ -1924,6 +1943,30 @@ class AIMindPlugin(Star):
                 elif gallery and IMAGES_MARKER not in (req.system_prompt or ""):
                     req.system_prompt = ((req.system_prompt or "") + "\n\n" + gallery).strip()
 
+            # ---------- 上下文压缩：聊太长只留要紧句 ----------
+            if self.settings.memory.context_enabled:
+                try:
+                    plan = contextfit.plan(
+                        req.contexts or [],
+                        max_turns=int(self.settings.memory.context_max_turns),
+                        keep_recent=int(self.settings.memory.context_keep_recent),
+                        keep_important=int(self.settings.memory.context_keep_important),
+                    )
+                except Exception as exc:  # noqa: BLE001 - 压缩失败就按原样聊
+                    logger.warning(f"[ai_mind] 压缩上下文失败：{exc}")
+                    plan = None
+                if plan and plan.get("dropped"):
+                    req.contexts = plan["contexts"]
+                    if plan.get("digest"):
+                        cache_tail.append(plan["digest"])
+                    self._diag["trimmed"] = (
+                        int(self._diag.get("trimmed") or 0) + int(plan.get("dropped") or 0)
+                    )
+                    self._diag["saved_tokens"] = (
+                        int(self._diag.get("saved_tokens") or 0)
+                        + int(plan.get("saved_tokens") or 0)
+                    )
+
             # ---------- 把每轮都变的内容贴到请求最后 ----------
             # 放这里而不是开头，是为了让前缀（persona + 历史）保持稳定，
             # 前缀缓存才命得中。
@@ -1933,6 +1976,18 @@ class AIMindPlugin(Star):
                     # 这个 AstrBot 版本不支持附加到用户消息：退回受信任位。
                     # 宁可少省点 token，也不能把情绪和记忆弄丢。
                     self._place_trusted(req, joined)
+            # 记个大概的注入量，面板「管理」页会显示（只估算，不精确）
+            try:
+                history = "".join(
+                    str((row.get("content") if isinstance(row, dict) else "") or "")
+                    for row in (req.contexts or [])
+                )
+                self._diag["last_tokens"] = contextfit.estimate_tokens(
+                    (req.system_prompt or "") + history + "".join(cache_tail)
+                )
+                self._diag["last_chars"] = len(req.system_prompt or "") + len(history)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001 - 钩子里的异常绝不能打断对话
             logger.error(f"[ai_mind] 注入失败：{exc}", exc_info=True)
 
@@ -1943,6 +1998,28 @@ class AIMindPlugin(Star):
         except Exception:  # noqa: BLE001
             text = ""
         return (text or "").strip() or fallback
+
+    def _persona_anchor(self) -> str:
+        """人格底座：身份、说话底线、危机覆盖。任何情绪都不能盖掉它。"""
+        name = str(self.settings.emotion.bot_name or "").strip()
+        note = ""
+        try:
+            note = (self.engine.preset.style_note or "").strip()
+        except Exception:  # noqa: BLE001
+            note = ""
+        lines = [
+            PERSONA_ANCHOR_MARK,
+            "你是%s。这个身份不因情绪、场合、谁在说话而改变。" % (name or "她"),
+            "说话底线（任何时候都成立）：",
+            "1. 一次最多 3 条消息，每条要短；中文和中文之间不要空格；",
+            "2. 不用客服腔、不写总结段、不排比、不写「作为…」这种句子；",
+            "3. 出现自伤/轻生信号时，立刻放下口癖和玩笑，认真回应；",
+            "4. 群里不点破你和用户的关系，不透露真名、学校、住址、生日。",
+        ]
+        if note:
+            lines.append("人格设定里的味道（优先遵守）：" + note)
+        lines.append("</persona_anchor>")
+        return chr(10).join(lines)
 
     def _emotion_rules_block(self) -> str:
         """规则块 + 预设里那段自由文本的说话风格。"""
@@ -4671,6 +4748,23 @@ class AIMindPlugin(Star):
                 "guard": bool(self.settings.guard.enabled),
             },
             "recommended": WIZARD_RECOMMENDED,
+            "auto_learn": {
+                "memory": bool(self.settings.memory.enabled),
+                "style": bool(self.settings.style.enabled),
+                "humanize": bool(self.settings.humanize.enabled),
+                "sticker": bool(self.sticker_settings.collect),
+            },
+            "context": {
+                "enabled": bool(self.settings.memory.context_enabled),
+                "max_turns": int(self.settings.memory.context_max_turns),
+                "keep_recent": int(self.settings.memory.context_keep_recent),
+            },
+            "tokens": {
+                "last": int(self._diag.get("last_tokens") or 0),
+                "trimmed": int(self._diag.get("trimmed") or 0),
+                "saved": int(self._diag.get("saved_tokens") or 0),
+                "cache_friendly": bool(self.settings.cache_friendly),
+            },
             "mode": str(
                 self._load_simple_overrides("panel_mode.json", "面板模式").get("mode") or "simple"
             ),

@@ -610,6 +610,33 @@
             "hint": "一段固定不变的说明（不要编造、不要念出来、别每条都提），写进 system_prompt，不会破坏提示词缓存。"
           }
         }
+      },
+      "context": {
+        "type": "object",
+        "description": "上下文压缩：聊太长时只留要紧的句子",
+        "hint": "默认超过 40 轮就压缩：保留最近若干轮 + 旧历史里带「记住/生日/生病/难过」等标记的句子，其余压成几行提要。不调用模型，不额外花 token",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用上下文压缩",
+            "default": true
+          },
+          "max_turns": {
+            "type": "int",
+            "description": "超过多少轮开始压缩",
+            "default": 40
+          },
+          "keep_recent": {
+            "type": "int",
+            "description": "最近留几轮原样不动",
+            "default": 16
+          },
+          "keep_important": {
+            "type": "int",
+            "description": "旧历史里最多挑几件要紧事保留",
+            "default": 6
+          }
+        }
       }
     }
   },

@@ -98,6 +98,13 @@ class Settings:
     weight_importance: float = 0.15
     max_inject_chars: int = 1400
 
+    # -- 上下文压缩 ---------------------------------------------------------
+    #: 聊太长就只留最近几轮 + 旧历史里要紧的句子（不调模型，不花 token）
+    context_enabled: bool = True
+    context_max_turns: int = 40
+    context_keep_recent: int = 16
+    context_keep_important: int = 6
+
     # -- 四力打分（移植 dsh-unified-memory）--------------------------------
     #: 关掉就退回「词法 + 新鲜 + 重要」的老公式，排序行为完全不变
     unified_enabled: bool = True
@@ -160,6 +167,10 @@ class Settings:
             weight_recency=_f(cfg_get(config, "retrieval.weight_recency", 0.25), 0.25, 0.0, 1.0),
             weight_importance=_f(cfg_get(config, "retrieval.weight_importance", 0.15), 0.15, 0.0, 1.0),
             max_inject_chars=_i(cfg_get(config, "retrieval.max_inject_chars", 1400), 1400, 100, 8000),
+            context_enabled=_b(cfg_get(config, "context.enabled", True), True),
+            context_max_turns=_i(cfg_get(config, "context.max_turns", 40), 40, 8, 200),
+            context_keep_recent=_i(cfg_get(config, "context.keep_recent", 16), 16, 2, 100),
+            context_keep_important=_i(cfg_get(config, "context.keep_important", 6), 6, 0, 30),
             unified_enabled=_b(cfg_get(config, "retrieval.unified.enabled", True), True),
             unified_weight_relevance=_f(cfg_get(config, "retrieval.unified.weight_relevance", 0.55), 0.55, 0.0, 1.0),
             unified_weight_importance=_f(cfg_get(config, "retrieval.unified.weight_importance", 0.20), 0.20, 0.0, 1.0),

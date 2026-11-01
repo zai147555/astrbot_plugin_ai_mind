@@ -2816,6 +2816,7 @@ var qrcode = function() {
       <h3 style="margin-bottom:8px">她现在是什么状态</h3>
       <div class="row" id="wz-toggles"></div>
       <div class="small muted" style="margin-top:8px" id="wz-stats"></div>
+      <div class="small muted" style="margin-top:6px" id="wz-learn"></div>
     </div>
 
     <div class="card">
@@ -7659,6 +7660,23 @@ var qrcode = function() {
     $("wz-stats").textContent = "记忆 " + (memory.total || 0) + " 条 · 会话 " +
       (stats.sessions || 0) + " 个 · 曲线采样 " + (stats.samples || 0) +
       " 点 · 数据库 " + fmtBytes(stats.db_bytes || 0);
+
+    var learn = data.auto_learn || {};
+    var ctx = data.context || {};
+    var tok = data.tokens || {};
+    var names = [];
+    if (learn.memory) names.push("记忆");
+    if (learn.style) names.push("表达");
+    if (learn.humanize) names.push("口吻");
+    if (learn.sticker) names.push("表情");
+    $("wz-learn").textContent =
+      "自动学习：" + (names.length ? names.join(" / ") : "关着") +
+      " · 上下文：" + (ctx.enabled
+        ? ("保留最近 " + (ctx.keep_recent || 16) + " 轮，超长只留要紧句")
+        : "不压缩") +
+      " · 省 token：" + (tok.cache_friendly ? "前缀缓存开" : "前缀缓存关") +
+      (tok.last ? "，上一轮注入约 " + tok.last + " token" : "") +
+      (tok.saved ? "（累计省下约 " + tok.saved + " token）" : "");
 
     $("wz-checks").innerHTML = checks.length ? checks.map(function (item) {
       var chip = item.level === "error" ? "lock" : (item.level === "warn" ? "pin" : "");
