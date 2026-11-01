@@ -5435,6 +5435,7 @@ class AIMindPlugin(Star):
             result = await asyncio.to_thread(self._bili_scroll, 0)
             result = await self._bili_comments(result)
             self._bili_save_last(self._bili_payload_from_result(result))
+            self._bili_library_add(result.get("items"))
             state.parent.mkdir(parents=True, exist_ok=True)
             state.write_text(
                 json.dumps({"at": time.time(), "ok": bool(result.get("ok"))},
@@ -5941,12 +5942,15 @@ class AIMindPlugin(Star):
             return ""
         if not text:
             return ""
-        words = ("看了", "看过", "刷到", "刷了", "视频", "b站", "B站", "有什么好看", "推荐", "在看")
+        words = ("看了", "看过", "刷到", "刷了", "视频", "b站", "B站", "有什么好看",
+                 "推荐", "在看", "链接", "地址", "网址", "发我")
         if not any(word in text for word in words):
             return ""
         lines = ["<recent_videos>"]
         last = self._bili_last_result()
         items = [row for row in (last.get("items") or []) if str(row.get("title") or "").strip()]
+        if not items:
+            items = self._bili_library()
         if items:
             lines.append("（他问起你看过什么。这是你最近刷到的真实视频，"
                          "至少点名一条标题，别念清单；要链接就给 url）")
@@ -5974,9 +5978,56 @@ class AIMindPlugin(Star):
                 lines.append("· %s%s%s%s" % (title, ("（%s）" % up) if up else "",
                                              ("  看到 %d%%" % percent) if percent else "",
                                              ("  " + url) if url else ""))
+        lines.append("他要是要链接：直接把上面带的 url 原文发给他（一条一段），"
+                     "不许说「自己搜去」「懒得翻」。")
         lines.append("绝不许编造清单里没有的视频，也不许说『忘了是哪个』。")
         lines.append("</recent_videos>")
         return chr(10).join(lines)
+
+    # -- 刷到的视频库：标题 + 链接，存在本地，随时能报出来 -------------------
+    def _bili_library_path(self) -> Path:
+        return Path(self.data_dir) / "bili" / "videos.json"
+
+    def _bili_library(self) -> list[dict[str, Any]]:
+        try:
+            rows = json.loads(self._bili_library_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)
+                and str(row.get("title") or "").strip()]
+
+    def _bili_library_add(self, items: Any) -> int:
+        """把这一轮刷到的视频记进库（按 bvid 去重，最多留 40 条）。"""
+        rows = self._bili_library()
+        seen = {str(row.get("bvid") or "") for row in rows}
+        added = 0
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            bvid = str(item.get("bvid") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not title or (bvid and bvid in seen):
+                continue
+            rows.append({
+                "bvid": bvid, "title": title,
+                "up": str(item.get("up") or "").strip(),
+                "url": str(item.get("url") or "").strip(),
+                "at": time.time(),
+            })
+            if bvid:
+                seen.add(bvid)
+            added += 1
+        if added:
+            try:
+                path = self._bili_library_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(rows[-40:], ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+            except OSError as exc:
+                logger.debug(f"[ai_mind] 记视频库失败：{exc}")
+        return added
 
     # -- 观看历史缓存（分享用） ---------------------------------------------
     def _bili_viewed_path(self) -> Path:
@@ -6030,6 +6081,11 @@ class AIMindPlugin(Star):
             lines.append("最近刷到的（%d 条）：" % len(last))
             for row in last[:6]:
                 lines.append("  · " + str(row.get("title") or ""))
+        library = self._bili_library()
+        if library:
+            lines.append("视频库（标题 + 链接，%d 条）：" % len(library))
+            for row in library[:8]:
+                lines.append("  · %s %s" % (row.get("title") or "", row.get("url") or ""))
         if viewed:
             lines.append("观看历史缓存（%d 条，%s）：" % (
                 len(viewed), time.strftime("%m-%d %H:%M", time.localtime()) if False else "已缓存"))
@@ -8505,6 +8561,7 @@ class AIMindPlugin(Star):
             result = await self._bili_comments(result)
             payload = self._bili_payload_from_result(result)
             self._bili_save_last(payload)
+            self._bili_library_add(result.get("items"))
             job.done(payload)
         except Exception as exc:  # noqa: BLE001 - 后台任务失败要说给前端
             logger.warning(f"[ai_mind] 后台刷站失败：{exc}")
@@ -8545,6 +8602,7 @@ class AIMindPlugin(Star):
         result = await self._bili_comments(result)
         payload = self._bili_payload_from_result(result)
         self._bili_save_last(payload)
+        self._bili_library_add(result.get("items"))
         return json_response(payload)
 
     def _bili_one_storyboard(self, bvid: str) -> dict[str, Any]:

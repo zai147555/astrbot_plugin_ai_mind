@@ -9351,8 +9351,15 @@ var qrcode = function() {
         };
       }
     }
-    if (data.report) { typeIn($("bl-report"), data.report); }
-    else { $("bl-report").textContent = ""; }
+    var report = data.report || "";
+    if (!report) {
+      $("bl-report").textContent = "";
+    } else if (report.length > 800) {
+      // 长日报逐字打字会卡（几千字 × 90ms），直接塞文本
+      $("bl-report").textContent = report;
+    } else {
+      typeIn($("bl-report"), report);
+    }
     var errors = data.errors || [];
     if (errors.length) {
       $("bl-hint").textContent = "这一轮有 " + errors.length + " 个小问题：" + errors.slice(0, 2).join("；");
