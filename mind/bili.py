@@ -85,6 +85,10 @@ class BiliSettings:
     use_search: bool = True
     #: 每天几点自己刷一轮（-1 = 不定时）
     daily_hour: int = -1
+    #: 改成「等她有闲的时候刷」（跟着日程）
+    daily_by_schedule: bool = False
+    #: 两轮之间至少隔几小时
+    daily_gap_hours: float = 6.0
     #: 让模型给每条写「一句话」（上游的「它自己的一句话」）
     one_liner: bool = True
     #: 登录凭据（浏览器里复制的 Cookie 原文）。填了才有高清直链 / 字幕 / 排行榜
@@ -108,6 +112,8 @@ class BiliSettings:
             "max_download_mb": int(self.max_download_mb),
             "use_search": bool(self.use_search),
             "daily_hour": int(self.daily_hour),
+            "daily_by_schedule": bool(self.daily_by_schedule),
+            "daily_gap_hours": float(self.daily_gap_hours),
             "one_liner": bool(self.one_liner),
             "rids": list(self.rids),
         }
@@ -124,6 +130,8 @@ class BiliSettings:
             "rids": list(self.rids),
             "use_search": bool(self.use_search),
             "daily_hour": int(self.daily_hour),
+            "daily_by_schedule": bool(self.daily_by_schedule),
+            "daily_gap_hours": float(self.daily_gap_hours),
             "one_liner": bool(self.one_liner),
             "cookie": self.cookie,
             "prefer_hq": bool(self.prefer_hq),
@@ -159,6 +167,8 @@ class BiliSettings:
             rids=rids or list(DEFAULT_RIDS),
             use_search=bool(raw.get("use_search", True)),
             daily_hour=num(raw.get("daily_hour"), -1, -1, 23),
+            daily_by_schedule=bool(raw.get("daily_by_schedule", False)),
+            daily_gap_hours=_gap_hours(raw.get("daily_gap_hours")),
             one_liner=bool(raw.get("one_liner", True)),
             cookie=str(raw.get("cookie") or "").strip(),
             prefer_hq=bool(raw.get("prefer_hq", True)),
@@ -846,6 +856,27 @@ def download_with_ytdlp(url: str, out: Path | str, max_bytes: int = 60 * 1024 * 
     except OSError:
         pass
     return True, ""
+
+
+def _gap_hours(value: Any) -> float:
+    try:
+        return max(1.0, min(24.0, float(value)))
+    except (TypeError, ValueError):
+        return 6.0
+
+
+def due_by_schedule(enabled: bool, state: str, now: float | None = None,
+                    last_run: float = 0.0, gap_hours: float = 6.0) -> bool:
+    """跟着日程刷：她有闲、不是深夜、离上一轮够久才刷。"""
+    if not enabled:
+        return False
+    if str(state or "") != "free":
+        return False
+    stamp = time.time() if now is None else float(now)
+    hour = time.localtime(stamp).tm_hour
+    if hour < 9 or hour >= 23:
+        return False
+    return (stamp - float(last_run or 0)) >= max(1.0, float(gap_hours or 6.0)) * 3600.0
 
 
 def due_today(daily_hour: int, now: float | None = None,

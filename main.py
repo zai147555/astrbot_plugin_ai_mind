@@ -315,6 +315,11 @@ try:  # QQ 空间：日记 + 配图 + 说说
 except ImportError:  # pragma: no cover
     from mind import qzone as qzone_engine  # type: ignore[no-redef]
 
+try:  # 按人格生成日程
+    from .mind import schedule_gen
+except ImportError:  # pragma: no cover
+    from mind import schedule_gen  # type: ignore[no-redef]
+
 try:  # 上下文压缩（聊长了只留要紧句）
     from .mind import contextfit
 except ImportError:  # pragma: no cover
@@ -1036,6 +1041,9 @@ class AIMindPlugin(Star):
         # 计数只在本次进程内有效，重启就归零，所以文案写「本次启动以来」。
         #: 上一次分段结果（#分段 诊断用）
         self._last_split: dict[str, Any] = {}
+        #: 今天按人格生成的日程（坏了就退回规则版）
+        self._schedule_generated: dict[str, Any] | None = None
+        self._schedule_gen_date: str = ""
         self._diag = {
             "turns": 0, "prepares": 0, "gated": 0, "frozen": 0,
             "samples": 0, "skipped": 0, "writes": 0,
@@ -1156,6 +1164,7 @@ class AIMindPlugin(Star):
                 self._style_maintenance()
                 self._debounce_gc()
                 await self._bili_daily_tick()
+                await self._schedule_tick()
                 await self._qzone_daily_tick()
                 await self._mail_auto_tick()
                 self._evolve_tick += 1
@@ -1753,6 +1762,15 @@ class AIMindPlugin(Star):
             # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
             cache_tail: list[str] = []
 
+            # ---------- 他问起「你看过什么视频」 ----------
+            try:
+                _share = self._bili_share_block(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[ai_mind] 组装最近视频失败：{exc}")
+                _share = ""
+            if _share:
+                cache_tail.append(_share)
+
             # ---------- 群里被陌生人用「专属称呼」叫到 ----------
             # 这是最容易露馅的一处：一声「宝宝」要是被她当成自己人，
             # 或者回一句「在群里这么叫……」，关系就摆到群里了。
@@ -1771,7 +1789,7 @@ class AIMindPlugin(Star):
                 from .mind import schedule as _schedule
             except ImportError:  # pragma: no cover
                 import mind.schedule as _schedule  # type: ignore[no-redef]
-            _slot = _schedule.render(time.time())
+            _slot = self._schedule_block()
             if _slot:
                 req.system_prompt = ((req.system_prompt or "") + chr(10) * 2 + _slot).strip()
 
@@ -5278,6 +5296,8 @@ class AIMindPlugin(Star):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
+            if word.split()[0] in ("日程", "schedule"):
+                return await self._debug_schedule(text)
             if word.split()[0] in ("人格", "persona"):
                 return self._debug_persona()
             if word.split()[0] in ("分段", "split"):
@@ -5379,7 +5399,8 @@ class AIMindPlugin(Star):
     async def _bili_daily_tick(self) -> None:
         """到点自己刷一轮（同一天只跑一次），报告发给主人私聊。"""
         conf = self.bili_settings
-        if not conf.enabled or int(conf.daily_hour) < 0:
+        by_schedule = bool(getattr(conf, "daily_by_schedule", False))
+        if not conf.enabled or (int(conf.daily_hour) < 0 and not by_schedule):
             return
         state = Path(self.data_dir) / "bili" / "last_run.json"
         last_run = 0.0
@@ -5387,7 +5408,14 @@ class AIMindPlugin(Star):
             last_run = float(json.loads(state.read_text(encoding="utf-8")).get("at") or 0)
         except (OSError, ValueError):
             last_run = 0.0
-        if not bili_engine.due_today(conf.daily_hour, time.time(), last_run):
+        if by_schedule:
+            state, _activity = self._current_schedule_state()
+            if not bili_engine.due_by_schedule(
+                True, state, time.time(), last_run,
+                gap_hours=float(getattr(conf, "daily_gap_hours", 6.0) or 6.0),
+            ):
+                return
+        elif not bili_engine.due_today(conf.daily_hour, time.time(), last_run):
             return
         try:
             result = await asyncio.to_thread(self._bili_scroll, 0)
@@ -5766,6 +5794,158 @@ class AIMindPlugin(Star):
             return str(getattr(self, "_last_prompt_seen", "") or "")
         except Exception:  # noqa: BLE001
             return ""
+
+    # -- 日程（按人格生成） --------------------------------------------------
+    def _schedule_path(self, date: str = "") -> Path:
+        day = date or time.strftime("%Y-%m-%d")
+        return Path(self.data_dir) / "schedule" / (day + ".json")
+
+    def _load_generated_schedule(self) -> dict[str, Any] | None:
+        date = time.strftime("%Y-%m-%d")
+        if self._schedule_generated is not None and self._schedule_gen_date == date:
+            return self._schedule_generated
+        gen = schedule_gen.load(self._schedule_path(date))
+        self._schedule_generated = gen
+        self._schedule_gen_date = date
+        return gen
+
+    async def _generate_schedule(self) -> dict[str, Any] | None:
+        """让模型按人格写今天的作息；失败返回 None（调用方退回模板）。"""
+        provider = await self._qzone_provider()
+        if provider is None:
+            return None
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        try:
+            info = _schedule.today(time.time())
+        except Exception:  # noqa: BLE001
+            return None
+        persona = ""
+        try:
+            persona = (self.engine.preset.style_note or "").strip()
+        except Exception:  # noqa: BLE001
+            persona = ""
+        name = str(self.settings.emotion.bot_name or "").strip()
+        system, prompt = schedule_gen.build_prompt(info, persona=persona, name=name)
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=system), timeout=90
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 生成日程失败：{exc}")
+            return None
+        gen = schedule_gen.parse(getattr(response, "completion_text", "") or "")
+        if not gen:
+            logger.warning("[ai_mind] 日程 JSON 不合格，今天用规则版")
+            return None
+        date = time.strftime("%Y-%m-%d")
+        gen.update({"date": date, "generated_at": time.time(), "persona": persona[:200]})
+        schedule_gen.save(self._schedule_path(date), gen)
+        self._schedule_generated = gen
+        self._schedule_gen_date = date
+        return gen
+
+    async def _schedule_tick(self) -> None:
+        """每天一次：没有今天的日程就生成一份（开关 schedule.auto_generate）。"""
+        if not bool(cfg_get(self.config, "schedule.auto_generate", True)):
+            return
+        if self._load_generated_schedule() is not None:
+            return
+        gen = await self._generate_schedule()
+        if gen:
+            logger.info("[ai_mind] 按人格生成今天的日程：%s" % (gen.get("note") or ""))
+
+    def _schedule_block(self) -> str:
+        """给模型看的日程：优先生成版，坏了用规则版。"""
+        try:
+            gen = self._load_generated_schedule()
+            if gen:
+                text = schedule_gen.render(gen)
+                if text:
+                    return text
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[ai_mind] 读生成的日程失败：{exc}")
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        try:
+            return _schedule.render(time.time())
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _current_schedule_state(self) -> tuple[str, str]:
+        """(state, activity)：优先生成版。刷B站按日程就用这个。"""
+        try:
+            gen = self._load_generated_schedule()
+            if gen:
+                slot = schedule_gen.slot_of(gen)
+                return str(slot.get("state") or "free"), str(slot.get("activity") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .mind import schedule as _schedule
+        except ImportError:  # pragma: no cover
+            import mind.schedule as _schedule  # type: ignore[no-redef]
+        try:
+            info = _schedule.today(time.time())
+            return str(info.get("state") or "free"), str(info.get("activity") or "")
+        except Exception:  # noqa: BLE001
+            return "free", ""
+
+    async def _debug_schedule(self, text: str) -> str:
+        parts = text.lstrip("#").strip().split()
+        args = parts[1:] if parts and parts[0].lower() in ("日程", "schedule") else parts
+        if args and args[0] in ("重", "重新", "regen", "刷新"):
+            gen = await self._generate_schedule()
+            if not gen:
+                return "没生成出来（模型没回、JSON 不合格，或没有可用模型）；今天继续用规则版。"
+            return "已重新生成：" + (gen.get("note") or "") + chr(10) + self._schedule_block()
+        gen = self._load_generated_schedule()
+        if gen:
+            lines = ["日程来源：模型按人格生成（%s）" % (gen.get("note") or "")]
+            for row in gen.get("table") or []:
+                lines.append("  %02d:%02d-%02d:%02d %s（%s）"
+                             % (row["start"] // 60, row["start"] % 60,
+                                row["end"] // 60, row["end"] % 60,
+                                row.get("activity") or "",
+                                {"busy": "忙", "free": "闲", "sleeping": "睡"}.get(
+                                    str(row.get("state")), str(row.get("state")))))
+            return chr(10).join(lines)
+        _state, activity = self._current_schedule_state()
+        return ("日程来源：规则版（%s）。想让她按人格自己排，发「#日程 重」生成今天的。"
+                % activity)
+
+    # -- 分享最近刷到的视频 --------------------------------------------------
+    def _bili_share_block(self, event: AstrMessageEvent) -> str:
+        """他问「你看过什么视频」时，把她最近刷到的东西带上，让她自己说。"""
+        try:
+            text = str(event.message_str or "")
+        except Exception:  # noqa: BLE001
+            return ""
+        if not text:
+            return ""
+        words = ("看了", "看过", "刷到", "刷了", "视频", "b站", "B站", "有什么好看", "推荐", "在看")
+        if not any(word in text for word in words):
+            return ""
+        last = self._bili_last_result()
+        items = last.get("items") or []
+        if not items:
+            return ""
+        lines = [
+            "<recent_videos>",
+            "（他问起你看过什么；这是你最近刷到的，挑一两条随口说，别念清单、别装没看过）",
+        ]
+        for row in items[:5]:
+            title = str(row.get("title") or "").strip()
+            up = str(row.get("up") or "").strip()
+            if not title:
+                continue
+            lines.append("· %s%s" % (title, ("（%s）" % up) if up else ""))
+        lines.append("</recent_videos>")
+        return chr(10).join(lines)
 
     def _debug_split(self, text: str) -> str:
         """看一眼她这句话怎么拆、为什么没拆。"""
@@ -7866,6 +8046,17 @@ class AIMindPlugin(Star):
             slot = _schedule.today(now)
         except Exception:  # noqa: BLE001
             slot = {}
+        generated = self._load_generated_schedule()
+        if generated:
+            try:
+                live = schedule_gen.slot_of(generated, now)
+                slot = dict(slot)
+                slot["activity"] = live.get("activity") or slot.get("activity")
+                slot["state"] = live.get("state") or slot.get("state")
+                slot["tone"] = live.get("tone") or slot.get("tone", "")
+                slot["note"] = generated.get("note") or slot.get("note", "")
+            except Exception:  # noqa: BLE001
+                pass
         year = time.localtime(now).tm_year
         spans = [
             {"name": name, "start": start.isoformat(), "end": end.isoformat(),
@@ -8121,6 +8312,13 @@ class AIMindPlugin(Star):
             conf.prefer_hq = bool(payload.get("prefer_hq"))
         if "use_history" in payload:
             conf.use_history = bool(payload.get("use_history"))
+        if "daily_by_schedule" in payload:
+            conf.daily_by_schedule = bool(payload.get("daily_by_schedule"))
+        if payload.get("daily_gap_hours") is not None:
+            try:
+                conf.daily_gap_hours = max(1.0, min(24.0, float(payload.get("daily_gap_hours"))))
+            except (TypeError, ValueError):
+                pass
         merged = conf.to_dict()
         for key in ("candidates", "storyboard_n", "min_seconds", "max_seconds", "max_download_mb"):
             if payload.get(key) is not None:

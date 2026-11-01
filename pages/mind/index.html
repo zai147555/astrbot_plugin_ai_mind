@@ -3958,6 +3958,8 @@ var qrcode = function() {
         <label class="small muted">时长 <input id="bl-min" type="number" min="5" style="width:74px"> ~ <input id="bl-max" type="number" min="30" style="width:80px"> 秒</label>
         <label class="small muted">下载上限 <input id="bl-mb" type="number" min="4" max="2048" style="width:80px"> MB</label>
         <label class="small muted">每天 <input id="bl-daily" type="number" min="-1" max="23" style="width:70px"> 点自己刷（-1 关）</label>
+        <label class="small" title="她有闲的时候才刷，一天最多一轮"><input type="checkbox" id="bl-sched"> 按日程自己刷</label>
+        <label class="small muted">间隔 <input id="bl-gap" type="number" min="1" max="24" style="width:60px"> 小时</label>
         <span class="small muted" id="bl-check"></span>
       </div>
       <div style="margin-top:12px">
@@ -5967,6 +5969,8 @@ var qrcode = function() {
         daily_hour: Number($("bl-daily").value),
         use_search: $("bl-search").checked,
         use_history: $("bl-history").checked,
+        daily_by_schedule: $("bl-sched").checked,
+        daily_gap_hours: Number($("bl-gap").value) || 6,
         one_liner: $("bl-one").checked,
         bulk_to_private: $("bl-private").checked,
         cookie: $("bl-cookie").value,
@@ -9156,6 +9160,8 @@ var qrcode = function() {
     $("bl-max").value = settings.max_seconds || 1800;
     $("bl-mb").value = settings.max_download_mb || 60;
     $("bl-daily").value = (settings.daily_hour === undefined ? -1 : settings.daily_hour);
+    $("bl-sched").checked = settings.daily_by_schedule === true;
+    $("bl-gap").value = settings.daily_gap_hours === undefined ? 6 : settings.daily_gap_hours;
     $("bl-search").checked = settings.use_search !== false;
     $("bl-one").checked = settings.one_liner !== false;
     $("bl-history").checked = settings.use_history !== false;
