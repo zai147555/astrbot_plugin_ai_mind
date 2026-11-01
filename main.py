@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 后台任务（长操作交给它，前端轮询）
+    from .mind import job as job_engine
+except ImportError:  # pragma: no cover
+    from mind import job as job_engine  # type: ignore[no-redef]
+
 try:  # AI 声聊（先发文字，再补一条语音）
     from .mind import voicechat as voice_engine
 except ImportError:  # pragma: no cover
@@ -952,6 +957,8 @@ class AIMindPlugin(Star):
         )
         #: 每个会话上次发语音的时间（冷却用）
         self._voice_last: dict[str, float] = {}
+        self.jobs = job_engine.JobRegistry()
+        self._job_tasks: set[Any] = set()
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -2892,7 +2899,9 @@ class AIMindPlugin(Star):
             ("storyboard/install-ffmpeg", self._api_storyboard_install_ffmpeg, "内置 ffmpeg"),
             ("bili", self._api_bili, "刷B站设置与已读"),
             ("bili/save", self._api_bili_save, "保存刷B站设置"),
-            ("bili/scroll", self._api_bili_scroll, "刷一轮"),
+            ("bili/scroll", self._api_bili_scroll, "刷一轮（同步）"),
+            ("bili/scroll/start", self._api_bili_scroll_start, "刷一轮（后台任务）"),
+            ("bili/scroll/state", self._api_bili_scroll_state, "查刷站进度"),
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
             ("bili/login", self._api_bili_login, "校验登录凭据"),
@@ -7015,6 +7024,63 @@ class AIMindPlugin(Star):
         if not ok:
             return error_response("写入刷B站设置失败，详细原因见 AstrBot 日志")
         return json_response(data)
+
+    def _bili_payload_from_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        images: list[dict[str, Any]] = []
+        for sheet in result.get("sheets") or []:
+            for row in self._images_payload(sheet.get("images") or []):
+                row["bvid"] = sheet.get("bvid")
+                row["title"] = sheet.get("title")
+                images.append(row)
+        return {
+            "ok": bool(result.get("ok")),
+            "error": result.get("error", ""),
+            "day": result.get("day", ""),
+            "report": result.get("report", ""),
+            "items": [
+                {key: item.get(key) for key in
+                 ("bvid", "title", "up", "duration", "view", "url", "score",
+                  "reasons", "storyboard", "subtitle")}
+                for item in (result.get("items") or [])
+            ],
+            "images": images,
+            "errors": result.get("errors") or [],
+            "seen": self.bili_seen.count(),
+        }
+
+    async def _run_bili_job(self, job: job_engine.Job, limit: int) -> None:
+        """后台跑一轮：刷站 → 每条一句话。结果塞回 job。"""
+        try:
+            result = await asyncio.to_thread(self._bili_scroll, limit)
+            result = await self._bili_comments(result)
+            job.done(self._bili_payload_from_result(result))
+        except Exception as exc:  # noqa: BLE001 - 后台任务失败要说给前端
+            logger.warning(f"[ai_mind] 后台刷站失败：{exc}")
+            job.fail(str(exc))
+
+    async def _api_bili_scroll_start(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        try:
+            limit = int(payload.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        job = self.jobs.create("刷一轮")
+        task = asyncio.create_task(self._run_bili_job(job, limit))
+        self._job_tasks.add(task)
+        task.add_done_callback(self._job_tasks.discard)
+        return json_response({"ok": True, "job": job.id, "state": job.snapshot(with_result=False)})
+
+    async def _api_bili_scroll_state(self) -> Any:
+        params = await self._params()
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        job = self.jobs.get(str(payload.get("job") or ""))
+        if job is None:
+            return json_response({"ok": False, "error": "任务不在了（可能重启过）"})
+        snap = job.snapshot(with_result=True)
+        snap["ok"] = job.status != "error"
+        return json_response(snap)
 
     async def _api_bili_scroll(self) -> Any:
         body = await self._read_body()
