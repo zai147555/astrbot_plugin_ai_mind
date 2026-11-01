@@ -7,7 +7,14 @@
 > **版本规则**：从这一版起，后续所有更新都并入 **3.0.0.1**，不逐次提版本号。
 > 拿最新的 zip 就是最新的代码。
 
-### 3.0.0.1 做了什么
+### 3.0.0.1 做了什么'''
+- **被戳一下**（参考 poke_to_llm，MIT）：poke 通知 → 作用域/黑名单/双重冷却（个人+群）→
+  走标准 LLM 链路接一句；管理员免冷却；面板「人格定制」顶部新增开关、冷却、黑名单、提示词。
+- **表情工具**：LLM 可主动 send_sticker / search_sticker（参考 stealer 的「LLM 主动选图」，
+  AGPL 项目仅借鉴概念、代码独立实现）。
+- 参考了 stealer（AGPL）、AIQTalk（QQ 声聊通道，与输出规则冲突）、memewiki（仓库不可访问）三个项目，
+  未并入的理由写进 README。
+'''
 - **B 站扫码登录**：面板「刷B站」新增「扫码登录」——走官方 qrcode 协议（generate + poll），
   二维码用内联的 MIT 库（qrcode-generator）画在 canvas 上，不联网、不经过第三方；
   每 2 秒轮询一次，成功后自动从 Set-Cookie 取 SESSDATA / bili_jct / DedeUserID 存进

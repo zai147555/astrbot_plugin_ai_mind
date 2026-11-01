@@ -326,3 +326,25 @@ python3 audit_buttons.py                   # 面板按钮绑定审计
 `SESSDATA` / `bili_jct` / `DedeUserID` 等凭据存进 `data/bili.json`，并顺手校验一次昵称。
 过期了会提示重新生成；也可以随时改用手动粘贴 Cookie。
 
+
+---
+
+## 3.0.0.1 补充：被戳一下 + 表情工具 + 四个参考项目
+
+**被戳一下**（参考 muyouzhi6/astrbot_plugin_poke_to_llm，MIT，思路照搬、代码独立实现）：
+监听 OneBot 的 poke 通知（post_type=notice、notice_type=poke、target_id=机器人），
+做作用域 / 黑名单 / **双重冷却**（同一个人 + 同一个群，防轮流戳）检查后，
+走标准 LLM 链路（request_llm）生成一句反应——人设、情绪、记忆、分段、表情包全部照常生效。
+管理员不受冷却限制。面板「人格定制」顶部可开关、调冷却、加黑名单、改提示词。
+
+**表情工具**：她可以通过 send_sticker / search_sticker 两个 LLM 工具主动挑表情发，
+不用等概率触发（参考 stealer 的「LLM 主动选图」，AGPL 项目只借鉴概念，未复制代码）。
+
+**四个参考项目里为什么只搬这两块**
+- astrbot_plugin_stealer（AGPL-3.0）：自动偷图 + VLM 分类 + 审核池 + 外部图源；本插件已有收集与按情绪发送，
+  它独有的大块依赖视觉模型与额外存储，属于另一个产品形态，不并进来。
+- astrbot_plugin_AIQTalk：QQ「AI 声聊」通道，只支持 QQ 且会过滤掉颜文字/网址/表情，
+  与本插件「零空格 + 分段 + 表情」的输出规则冲突，不搬。
+- astrbot_plugin_memewiki：仓库当前不可访问（API 返回空），没法核对实现，暂不参考。
+- poke_to_llm：MIT，已搬（见上）。
+

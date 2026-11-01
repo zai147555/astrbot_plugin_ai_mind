@@ -3175,6 +3175,37 @@ var qrcode = function() {
 
   <div id="view-persona" style="display:none">
     <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>被戳一下</h3>
+        <span class="small muted">群里有人戳她 → 她会自然接一句</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        走标准对话链路，人设、情绪、记忆、分段都会生效。双重冷却：同一个人 + 同一群，
+        防止被轮流戳。管理员不受冷却限制。
+      </div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="pk-enabled"> 启用</label>
+        <label class="small"><input type="checkbox" id="pk-groups"> 群聊里响应</label>
+        <label class="small"><input type="checkbox" id="pk-private"> 私聊里响应</label>
+        <label class="small muted">个人冷却 <input id="pk-user" type="number" min="0" max="600" style="width:80px"> 秒</label>
+        <label class="small muted">群冷却 <input id="pk-group" type="number" min="0" max="600" style="width:80px"> 秒</label>
+      </div>
+      <div style="margin-top:10px">
+        <div class="small muted">黑名单（QQ 号，空格或逗号隔开）</div>
+        <input id="pk-black" style="width:100%;margin-top:6px">
+      </div>
+      <div style="margin-top:10px">
+        <div class="small muted">反应提示词（$username / $user_id / $scene 会被替换）</div>
+        <textarea id="pk-prompt" style="width:100%;min-height:90px;margin-top:6px"></textarea>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="pk-save">保存</button>
+        <span class="grow"></span>
+        <span class="small muted" id="pk-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="row">
         <h3 style="margin-right:8px">人格预设</h3>
         <select id="pr-select"></select>
@@ -5287,8 +5318,21 @@ var qrcode = function() {
     $("msearch").onclick = function () { state.memOffset = 0; loadMemory().catch(function (e) { toast("失败：" + e.message); }); };
     $("mprev").onclick = function () { state.memOffset = Math.max(0, state.memOffset - state.memLimit); loadMemory(); };
     $("mnext").onclick = function () { state.memOffset += state.memLimit; loadMemory(); };
+    $("pk-save").onclick = function () {
+      request("poke/save", "POST", {
+        enabled: $("pk-enabled").checked,
+        in_groups: $("pk-groups").checked,
+        in_private: $("pk-private").checked,
+        user_cooldown: Number($("pk-user").value) || 0,
+        group_cooldown: Number($("pk-group").value) || 0,
+        blacklist: ($("pk-black").value || "").split(/[,，\s]+/).filter(Boolean),
+        prompt: $("pk-prompt").value
+      }).then(function (data) { renderPoke(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
     $("tab-persona").onclick = function () {
       setView("persona");
+      loadPoke().catch(function () {});
       loadPresets().catch(function (e) { toast("加载失败：" + e.message); });
       loadRelationship().catch(function (e) { toast("加载专属用户失败：" + e.message); });
     };
@@ -8398,6 +8442,24 @@ var qrcode = function() {
     html += "<pre class='small' style='white-space:pre-wrap;margin-top:8px;max-height:320px;overflow:auto'>" +
       esc(data.manifest || "") + "</pre>";
     $("sb-result").innerHTML = html;
+  }
+
+  // ---- 戳一戳 -------------------------------------------------------------
+  function renderPoke(data) {
+    var settings = (data && data.settings) || {};
+    $("pk-enabled").checked = settings.enabled !== false;
+    $("pk-groups").checked = settings.in_groups !== false;
+    $("pk-private").checked = settings.in_private !== false;
+    $("pk-user").value = settings.user_cooldown === undefined ? 8 : settings.user_cooldown;
+    $("pk-group").value = settings.group_cooldown === undefined ? 20 : settings.group_cooldown;
+    $("pk-black").value = (settings.blacklist || []).join(" ");
+    $("pk-prompt").value = settings.prompt || "";
+    $("pk-status").textContent = (settings.enabled ? "开" : "关") +
+      "｜个人 " + (settings.user_cooldown || 0) + "s｜群 " + (settings.group_cooldown || 0) + "s";
+  }
+
+  function loadPoke() {
+    return request("poke", "GET").then(renderPoke);
   }
 
   // ---- 表情包 -------------------------------------------------------------

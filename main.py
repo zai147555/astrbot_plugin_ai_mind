@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # 被戳一下的反应（参考 poke_to_llm，MIT）
+    from .mind import poke as poke_engine
+except ImportError:  # pragma: no cover
+    from mind import poke as poke_engine  # type: ignore[no-redef]
+
 try:  # 内置 ffmpeg（找 / 下载 / 校验）
     from .mind import ffmpeg_setup
 except ImportError:  # pragma: no cover
@@ -932,6 +937,10 @@ class AIMindPlugin(Star):
         #: 每个会话最近发过的表情（避免连续同一张）与发送时间
         self._sticker_recent: dict[str, list[int]] = {}
         self._sticker_sent: dict[str, list[float]] = {}
+        self.poke_settings = poke_engine.load_settings(
+            Path(self.data_dir) / "poke.json"
+        )
+        self.poke_gate = poke_engine.PokeGate(self.poke_settings)
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -2874,6 +2883,8 @@ class AIMindPlugin(Star):
             ("bili/login", self._api_bili_login, "校验登录凭据"),
             ("bili/qr/start", self._api_bili_qr_start, "生成扫码登录二维码"),
             ("bili/qr/poll", self._api_bili_qr_poll, "轮询扫码结果"),
+            ("poke", self._api_poke, "戳一戳设置"),
+            ("poke/save", self._api_poke_save, "保存戳一戳设置"),
             ("sticker", self._api_sticker, "表情包库"),
             ("sticker/save", self._api_sticker_save, "保存表情设置"),
             ("sticker/tag", self._api_sticker_tag, "给表情打标"),
@@ -4316,6 +4327,52 @@ class AIMindPlugin(Star):
     # ------------------------------------------------------------------
     # 让她自己会回忆、会记事（LLM 工具）
     # ------------------------------------------------------------------
+    @llm_tool(name="send_sticker")
+    async def tool_send_sticker(self, event: AstrMessageEvent, mood: str = "") -> str:
+        """从表情包里挑一张发出去。想用表情回应、或者气氛适合甩一张图时调用。
+
+        Args:
+            mood(string): 想要的情绪，joy/angry/sad/shy/surprised/bored/tired/affection/confused/proud；留空按此刻心情挑
+        """
+        if Comp is None or not self.sticker_settings.enabled:
+            return "表情包没开。"
+        key = str(event.unified_msg_origin or "")
+        item = self.stickers.pick(str(mood or ""), self._sticker_recent.get(key, []))
+        if item is None:
+            return "表情包里还没有合适的。"
+        try:
+            await self.context.send_message(key, [Comp.Image.fromFileSystem(item.path)])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 发表情失败：{exc}")
+            return "发失败了。"
+        self.stickers.mark_used(item.id)
+        recent = self._sticker_recent.setdefault(key, [])
+        recent.append(item.id)
+        del recent[:-8]
+        return "已经发了一张表情（%s）。" % (",".join(item.emotions) or "无标签")
+
+    @llm_tool(name="search_sticker")
+    async def tool_search_sticker(self, event: AstrMessageEvent, keyword: str = "") -> str:
+        """看看表情库里有哪些图，只查不发。想知道有没有能用的表情时调用。
+
+        Args:
+            keyword(string): 情绪或描述关键词，留空列最近的几张
+        """
+        rows = self.stickers.list(limit=300)
+        word = str(keyword or "").strip().lower()
+        hits = [
+            item for item in rows
+            if not word
+            or word in " ".join(item.emotions).lower()
+            or word in str(item.desc or "").lower()
+        ]
+        if not hits:
+            return "没有相关的表情。"
+        rows_text = "；".join(
+            "#%d %s" % (item.id, ",".join(item.emotions) or "未打标") for item in hits[:5]
+        )
+        return "有 %d 张：%s" % (len(hits), rows_text)
+
     @llm_tool(name="recall_long_term_memory")
     async def tool_recall(self, event: AstrMessageEvent, query: str = "") -> str:
         """回忆关于对方的长期记忆。想不起他之前说过什么、要确认某个细节时调用。
@@ -4746,6 +4803,55 @@ class AIMindPlugin(Star):
         # ---- 闭嘴的群：什么都不做，直接掐掉 ----
         if not self.groupswitch.is_open(group_id):
             event.stop_event()
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1004)
+    async def on_poke(self, event: AstrMessageEvent):
+        """被戳一下：走标准 LLM 链路接一句，人设/情绪/记忆/分段都会生效。"""
+        try:
+            conf = self.poke_settings
+            if not conf.enabled:
+                return
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            if not poke_engine.is_poke(raw):
+                return
+            get_self = getattr(event, "get_self_id", None)
+            self_id = str(get_self() if callable(get_self) else (raw or {}).get("self_id") or "")
+            if not poke_engine.hits_me(raw, self_id):
+                return
+            sender = poke_engine.poke_sender(raw) or str(event.get_sender_id() or "")
+            group = poke_engine.poke_group(raw)
+            get_group = getattr(event, "get_group_id", None)
+            if not group and callable(get_group):
+                group = str(get_group() or "")
+            is_admin = False
+            try:
+                is_admin = bool(event.is_admin())
+            except Exception:  # noqa: BLE001
+                is_admin = False
+            allowed, reason = self.poke_gate.allow(
+                time.time(), sender=sender, group=group, is_admin=is_admin
+            )
+            if not allowed:
+                return
+            request_llm = getattr(event, "request_llm", None)
+            if not callable(request_llm):
+                return          # 老版本框架没有这条链路
+            self.poke_gate.mark(time.time(), sender=sender, group=group)
+            name = ""
+            try:
+                name = str(event.get_sender_name() or "")
+            except Exception:  # noqa: BLE001
+                name = ""
+            prompt = poke_engine.build_prompt(
+                conf,
+                username=name or sender or "对方",
+                user_id=sender,
+                scene="群聊" if group else "私聊",
+                has_context=True,
+            )
+            yield request_llm(prompt=prompt)
+        except Exception as exc:  # noqa: BLE001 - 戳一戳失败绝不能影响聊天
+            logger.warning(f"[ai_mind] 戳一戳处理失败：{exc}")
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1002)
     async def on_force_search(self, event: AstrMessageEvent) -> None:
@@ -6885,6 +6991,28 @@ class AIMindPlugin(Star):
         removed = self.bili_seen.clear()
         data = self._bili_payload()
         data["removed"] = removed
+        return json_response(data)
+
+    # -- 面板：戳一戳 -------------------------------------------------------
+    async def _api_poke(self) -> Any:
+        return json_response({"settings": self.poke_settings.to_dict()})
+
+    async def _api_poke_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        merged = dict(self.poke_settings.to_dict())
+        for key in ("enabled", "in_groups", "in_private", "user_cooldown",
+                    "group_cooldown", "blacklist", "prompt"):
+            if payload.get(key) is not None:
+                merged[key] = payload[key]
+        conf = poke_engine.PokeSettings.from_dict(merged)
+        self.poke_settings = conf
+        self.poke_gate = poke_engine.PokeGate(conf)
+        ok = poke_engine.save_settings(Path(self.data_dir) / "poke.json", conf)
+        data = {"settings": conf.to_dict(), "saved": ok}
+        if not ok:
+            return error_response("写入戳一戳设置失败，详细原因见日志")
         return json_response(data)
 
     # -- 面板：表情包 -------------------------------------------------------
