@@ -3923,8 +3923,12 @@ var qrcode = function() {
       <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
         <label class="small"><input type="checkbox" id="bl-enabled"> 启用</label>
         <label class="small muted">关键词 <input id="bl-keywords" placeholder="留空就只看时长和热度" style="width:220px"></label>
-        <label class="small muted">挑几条 <input id="bl-candidates" type="number" min="1" max="20" style="width:70px"></label>
+        <label class="small muted" title="每轮最后最多挑出几条">每轮挑几条 <input id="bl-candidates" type="number" min="1" max="20" style="width:70px"></label>
         <label class="small muted">做几条分镜 <input id="bl-sb" type="number" min="0" max="5" style="width:70px"></label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:10px;align-items:center">
+        <span class="small muted">爱刷的分区</span>
+        <span id="bl-rids" class="row" style="gap:10px;flex-wrap:wrap"></span>
       </div>
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
         <label class="small muted">时长 <input id="bl-min" type="number" min="5" style="width:74px"> ~ <input id="bl-max" type="number" min="30" style="width:80px"> 秒</label>
@@ -3949,12 +3953,14 @@ var qrcode = function() {
       </div>
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
         <label class="small" title="有关键词就先走 B 站搜索（WBI 签名），搜不到再逛分区"><input type="checkbox" id="bl-search"> 用关键词搜索</label>
-        <label class="small" title="登录后可以把你最近看过的也当候选"><input type="checkbox" id="bl-history"> 用我的观看历史</label>
+        <label class="small" title="登录后可以把你最近看过的也当候选"><input type="checkbox" id="bl-history"> 把我最近看的也算进来</label>
         <label class="small" title="让模型给每条写一句话（失败就用字幕摘录）"><input type="checkbox" id="bl-one"> 每条一句话</label>
         <label class="small" title="群里发指令时，日报和分镜图发到发指令那个 QQ 的私聊"><input type="checkbox" id="bl-private"> 结果发指令QQ私聊</label>
       </div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="bl-save">保存</button>
+        <label class="small muted" title="只对这一次生效；留空就按上面的「每轮挑几条」">这一轮挑
+          <input id="bl-this" type="number" min="1" max="20" style="width:64px" placeholder="按设置"></label>
         <button class="primary small" id="bl-scroll">刷一轮</button>
         <button class="ghost small" id="bl-clear">清空已读</button>
         <button class="ghost small" id="bl-reload">刷新</button>
@@ -5902,6 +5908,13 @@ var qrcode = function() {
         keywords: $("bl-keywords").value,
         candidates: Number($("bl-candidates").value) || 6,
         storyboard_n: Number($("bl-sb").value) || 0,
+        rids: (function () {
+          var out = [];
+          Array.prototype.forEach.call($("bl-rids").querySelectorAll("[data-rid]"), function (box) {
+            if (box.checked) out.push(Number(box.getAttribute("data-rid")));
+          });
+          return out;
+        })(),
         min_seconds: Number($("bl-min").value) || 60,
         max_seconds: Number($("bl-max").value) || 1800,
         max_download_mb: Number($("bl-mb").value) || 60,
@@ -5932,7 +5945,8 @@ var qrcode = function() {
     };
     $("bl-scroll").onclick = function () {
       $("bl-hint").textContent = "已经开跑：拉列表、读字幕、挑、下载、做分镜…（30~90 秒）";
-      request("bili/scroll/start", "POST", {}).then(function (data) {
+      var thisRun = Number($("bl-this").value) || 0;
+      request("bili/scroll/start", "POST", { limit: thisRun }).then(function (data) {
         var job = data && data.job;
         if (!job) {
           $("bl-scroll").disabled = false;
@@ -9066,6 +9080,14 @@ var qrcode = function() {
     $("bl-enabled").checked = settings.enabled !== false;
     $("bl-keywords").value = settings.keywords || "";
     $("bl-candidates").value = settings.candidates || 6;
+    var regions = data.regions || [];
+    var chosenRids = settings.rids || [];
+    $("bl-rids").innerHTML = regions.length ? regions.map(function (row) {
+      return "<label class='small' style='display:inline-flex;align-items:center;gap:4px'>" +
+        "<input type='checkbox' data-rid='" + row.rid + "'" +
+        (chosenRids.indexOf(row.rid) >= 0 ? " checked" : "") + "> " + esc(row.name) + "</label>";
+    }).join("") : "<span class='small muted'>（读不到分区列表）</span>";
+    $("bl-this").value = "";
     $("bl-sb").value = settings.storyboard_n || 0;
     $("bl-min").value = settings.min_seconds || 60;
     $("bl-max").value = settings.max_seconds || 1800;

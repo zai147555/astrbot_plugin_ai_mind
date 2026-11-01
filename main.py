@@ -5284,7 +5284,7 @@ class AIMindPlugin(Star):
             except Exception as exc:  # noqa: BLE001 - 单条失败不影响整轮
                 errors.append("%s：%s" % (row.get("bvid"), exc))
 
-        picked = bili_engine.pick(enriched, conf, self.bili_seen)
+        picked = bili_engine.pick(enriched, conf, self.bili_seen, limit=want)
         sheets: list[dict[str, Any]] = []
         workdir = Path(self.data_dir) / "bili"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -7484,6 +7484,10 @@ class AIMindPlugin(Star):
             "storyboard": self.storyboard_settings.to_dict(),
             "has_ffmpeg": bool(self._ffmpeg_tools().get("ok")),
             "last": self._bili_last_result(),
+            "regions": [
+                {"rid": rid, "name": name}
+                for rid, name in bili_engine.DISCOVER_RIDS.items()
+            ],
         }
 
     async def _api_bili(self) -> Any:
@@ -7510,6 +7514,8 @@ class AIMindPlugin(Star):
         for key in ("candidates", "storyboard_n", "min_seconds", "max_seconds", "max_download_mb"):
             if payload.get(key) is not None:
                 merged[key] = payload.get(key)
+        if isinstance(payload.get("rids"), list):
+            merged["rids"] = payload.get("rids")
         conf = bili_engine.BiliSettings.from_dict(merged)
         self.bili_settings = conf
         if "bulk_to_private" in payload:

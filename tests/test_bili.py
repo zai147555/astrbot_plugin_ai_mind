@@ -138,6 +138,21 @@ class PickTest(unittest.TestCase):
         conf = bili.BiliSettings(candidates=1)
         self.assertEqual(len(bili.pick(self._items(), conf)), 1)
 
+    def test_run_limit_overrides_settings(self) -> None:
+        conf = bili.BiliSettings(candidates=6)
+        self.assertEqual(len(bili.pick(self._items(), conf, limit=1)), 1)
+
+    def test_run_limit_never_exceeds_available(self) -> None:
+        conf = bili.BiliSettings(candidates=6)
+        self.assertEqual(len(bili.pick(self._items(), conf, limit=50)), 2)
+
+    def test_discover_regions_have_names(self) -> None:
+        self.assertTrue(bili.DISCOVER_RIDS)
+        for rid, name in bili.DISCOVER_RIDS.items():
+            self.assertIsInstance(rid, int)
+            self.assertTrue(name)
+        self.assertIn(4, bili.DISCOVER_RIDS)
+
 
 class ReportTest(unittest.TestCase):
     def test_report_shape(self) -> None:
@@ -300,6 +315,20 @@ class PluginTest(PluginHarness, unittest.TestCase):
             self.assertTrue(saved["saved"])
             self.assertEqual(saved["settings"]["keywords"], "分镜")
             self.assertTrue((plugin.data_dir / "bili.json").is_file())
+
+        self.run_async(scenario())
+
+    def test_api_save_regions(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            data = (await self.api(plugin, "bili/save", body={
+                "rids": [4, 36, 999], "candidates": 4,
+            }))["data"]
+            # 自定义 rid 也留着（面板只列常用的那几个，手改 json 仍可用）
+            self.assertEqual(data["settings"]["rids"], [4, 36, 999])
+            self.assertEqual(data["settings"]["candidates"], 4)
+            self.assertTrue(data["regions"])
 
         self.run_async(scenario())
 

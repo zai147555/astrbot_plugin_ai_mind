@@ -52,6 +52,11 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 #: 默认逛哪几个分区（新版分区 id）：动画 / 游戏 / 科技 / 生活 / 影视 / 知识
 DEFAULT_RIDS = (1, 4, 36, 160, 181, 32)
+#: 面板上可选的分区（B 站分区号 → 名字），只放「适合刷着看」的那几个
+DISCOVER_RIDS: dict[int, str] = {
+    1: "动画", 4: "游戏", 32: "音乐", 36: "知识", 160: "生活",
+    181: "影视", 188: "科技", 202: "资讯", 211: "美食", 234: "运动",
+}
 #: 一轮的默认规模
 DEFAULT_CANDIDATES = 6
 DEFAULT_STORYBOARD = 2
@@ -104,6 +109,7 @@ class BiliSettings:
             "use_search": bool(self.use_search),
             "daily_hour": int(self.daily_hour),
             "one_liner": bool(self.one_liner),
+            "rids": list(self.rids),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -913,13 +919,16 @@ def score_item(item: dict[str, Any], settings: BiliSettings) -> tuple[float, lis
 
 
 def pick(items: Iterable[dict[str, Any]], settings: BiliSettings,
-         seen: SeenStore | None = None) -> list[dict[str, Any]]:
+         seen: SeenStore | None = None,
+         limit: int = 0) -> list[dict[str, Any]]:
     """过滤 + 打分 + 排序。返回带 score/reasons 的副本（不含已推过的）。"""
     picked: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for item in items:
         bvid = str(item.get("bvid") or "")
-        if not bvid:
+        if not bvid or bvid in seen_ids:
             continue
+        seen_ids.add(bvid)
         if str(item.get("title") or "").strip() in ("", "-"):
             continue
         if seen is not None and seen.known(bvid):
@@ -933,7 +942,9 @@ def pick(items: Iterable[dict[str, Any]], settings: BiliSettings,
         row["reasons"] = reasons
         picked.append(row)
     picked.sort(key=lambda row: row.get("score", 0), reverse=True)
-    return picked[: max(1, int(settings.candidates))]
+    # 本轮想挑几条：面板上「这一轮挑 N 条」优先，否则按设置里的
+    cap = max(1, int(limit or settings.candidates))
+    return picked[: min(cap, 50)]
 
 
 def format_duration(seconds: int) -> str:
@@ -989,7 +1000,7 @@ def build_report(day: str, items: list[dict[str, Any]]) -> str:
 
 
 __all__ = [
-    "API", "DEFAULT_RIDS", "BiliSettings", "SeenStore",
+    "API", "DEFAULT_RIDS", "DISCOVER_RIDS", "BiliSettings", "SeenStore",
     "load_settings", "save_settings",
     "fetch_region", "fetch_view", "fetch_subtitle", "pick_stream", "download",
     "normalize", "score_item", "pick", "format_duration", "format_count", "build_report",
