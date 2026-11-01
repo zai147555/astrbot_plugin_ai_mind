@@ -2927,6 +2927,7 @@ class AIMindPlugin(Star):
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
             ("bili/login", self._api_bili_login, "校验登录凭据"),
             ("bili/history", self._api_bili_history, "我最近在看"),
+            ("bili/image", self._api_bili_image, "取一张分镜图（缩略）"),
             ("bili/qr/start", self._api_bili_qr_start, "生成扫码登录二维码"),
             ("bili/qr/poll", self._api_bili_qr_poll, "轮询扫码结果"),
             ("voice", self._api_voice, "AI 声聊设置"),
@@ -7471,14 +7472,8 @@ class AIMindPlugin(Star):
             return {}
         if not isinstance(data, dict):
             return {}
-        if not data.get("images"):
-            images: list[dict[str, Any]] = []
-            for row in data.get("image_paths") or []:
-                for item in self._images_payload([row.get("path")]):
-                    item["bvid"] = row.get("bvid")
-                    item["title"] = row.get("title")
-                    images.append(item)
-            data["images"] = images
+        data.pop("images", None)
+        data["image_count"] = len(data.get("image_paths") or [])
         return data
 
     def _bili_payload(self) -> dict[str, Any]:
@@ -7528,12 +7523,15 @@ class AIMindPlugin(Star):
         return json_response(data)
 
     def _bili_payload_from_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        images: list[dict[str, Any]] = []
-        for sheet in result.get("sheets") or []:
-            for row in self._images_payload(sheet.get("images") or []):
-                row["bvid"] = sheet.get("bvid")
-                row["title"] = sheet.get("title")
-                images.append(row)
+        # 分镜图不走这里：base64 一张就有几百 KB 到几 MB，塞进 JSON 会把
+        # 面板请求拖到超时（前端只看到 Network Error）。这里只给路径，
+        # 真要看图时再一张一张取（bili/image，取之前先缩到 720 宽）。
+        image_paths = [
+            {"path": str(path), "bvid": sheet.get("bvid"),
+             "title": sheet.get("title")}
+            for sheet in (result.get("sheets") or [])
+            for path in (sheet.get("images") or [])
+        ]
         return {
             "ok": bool(result.get("ok")),
             "error": result.get("error", ""),
@@ -7545,13 +7543,8 @@ class AIMindPlugin(Star):
                   "reasons", "storyboard", "subtitle")}
                 for item in (result.get("items") or [])
             ],
-            "images": images,
-            "image_paths": [
-                {"path": str(path), "bvid": sheet.get("bvid"),
-                 "title": sheet.get("title")}
-                for sheet in (result.get("sheets") or [])
-                for path in (sheet.get("images") or [])
-            ],
+            "image_paths": image_paths,
+            "image_count": len(image_paths),
             "errors": result.get("errors") or [],
             "seen": self.bili_seen.count(),
         }
@@ -7701,6 +7694,49 @@ class AIMindPlugin(Star):
                 for item in rows[: max(1, min(20, limit))]
             ],
         })
+
+    def _bili_image(self, raw_path: str) -> dict[str, Any]:
+        """取一张分镜图：只允许 data/bili 下的文件，先缩到 720 宽再回。"""
+        root = (Path(self.data_dir) / "bili").resolve()
+        try:
+            target = Path(str(raw_path or "")).resolve()
+        except OSError:
+            return {"ok": False, "error": "路径不对"}
+        if target != root and root not in target.parents:
+            return {"ok": False, "error": "只给空间自己的分镜图"}
+        if not target.is_file():
+            return {"ok": False, "error": "这张图不在了（可能被清过）"}
+        thumb = root / "thumbs" / (target.stem + "-720.png")
+        if not thumb.is_file():
+            tools = storyboard_engine.find_tools(
+                self.storyboard_settings.ffmpeg_path,
+                self.storyboard_settings.ffprobe_path,
+            )
+            if tools.get("ok"):
+                try:
+                    thumb.parent.mkdir(parents=True, exist_ok=True)
+                    storyboard_engine._run([
+                        str(tools["ffmpeg"]), "-y", "-i", str(target),
+                        "-vf", "scale=720:-1", str(thumb),
+                    ], timeout=60)
+                except Exception:  # noqa: BLE001 - 缩不了就回原图
+                    thumb = target
+            else:
+                thumb = target
+        src = thumb if thumb.is_file() else target
+        try:
+            blob = base64.b64encode(src.read_bytes()).decode("ascii")
+        except OSError:
+            return {"ok": False, "error": "这张图读不出来"}
+        return {"ok": True, "image": "data:image/png;base64," + blob,
+                "path": str(target)}
+
+    async def _api_bili_image(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        result = await self._mail_call(self._bili_image, str(payload.get("path") or ""))
+        return json_response(result)
 
     async def _api_bili_login(self) -> Any:
         body = await self._read_body()

@@ -212,9 +212,50 @@ class PluginHistoryTest(PluginHarness, unittest.TestCase):
                 })
                 plugin._bili_save_last(payload)
                 last = plugin._bili_payload()["last"]
-            self.assertTrue(last["images"])
-            self.assertTrue(last["images"][0]["image"].startswith("data:image"))
-            self.assertEqual(last["images"][0]["bvid"], "BV1")
+            self.assertEqual(last["image_count"], 1)
+            self.assertNotIn("images", last, "base64 不该再跟着结果回来")
+            self.assertEqual(last["image_paths"][0]["bvid"], "BV1")
+
+        self.run_async(scenario())
+
+
+class BiliImagesTest(PluginHarness, unittest.TestCase):
+    def test_payload_carries_paths_not_base64(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            payload = plugin._bili_payload_from_result({
+                "ok": True, "day": "2026-11-01", "report": "x", "items": [],
+                "sheets": [{"bvid": "BV1", "title": "t", "images": ["/nope/a.png"]}],
+                "errors": [],
+            })
+            self.assertNotIn("images", payload)
+            self.assertEqual(payload["image_count"], 1)
+            self.assertEqual(payload["image_paths"][0]["bvid"], "BV1")
+
+        self.run_async(scenario())
+
+    def test_image_rejects_outside_data_dir(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            data = (await self.api(plugin, "bili/image", body={"path": "/etc/passwd"}))["data"]
+            self.assertFalse(data["ok"])
+            self.assertIn("只给", data["error"])
+
+        self.run_async(scenario())
+
+    def test_image_returns_data_uri(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            folder = Path(plugin.data_dir) / "bili"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / "sheet.png"
+            target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"i" * 16)
+            data = (await self.api(plugin, "bili/image", body={"path": str(target)}))["data"]
+            self.assertTrue(data["ok"])
+            self.assertTrue(data["image"].startswith("data:image/png;base64,"))
 
         self.run_async(scenario())
 

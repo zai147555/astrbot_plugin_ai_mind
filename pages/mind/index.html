@@ -9130,6 +9130,30 @@ var qrcode = function() {
     });
   }
 
+  var biliImgLoaded = {};
+  function loadBiliImage(path) {
+    if (!path || biliImgLoaded[path]) return;
+    var box = $("bl-img-box");
+    if (!box) return;
+    biliImgLoaded[path] = true;
+    var slot = document.createElement("div");
+    slot.className = "small muted";
+    slot.textContent = "加载中…";
+    box.appendChild(slot);
+    request("bili/image", "POST", { path: path }).then(function (data) {
+      if (!data.ok) {
+        slot.textContent = "取图失败：" + (data.error || "未知原因");
+        biliImgLoaded[path] = false;
+        return;
+      }
+      slot.innerHTML = "<img src='" + data.image +
+        "' style='max-width:100%;border-radius:8px;margin:6px 0'>";
+    }).catch(function (e) {
+      slot.textContent = "取图失败：" + e.message;
+      biliImgLoaded[path] = false;
+    });
+  }
+
   // 刷一轮是后台任务：任务号存本地，页面刷新/关掉再打开也能接着看进度
   var BILI_JOB_KEY = "ai-mind-bili-job";
   function biliJobStored() {
@@ -9209,12 +9233,33 @@ var qrcode = function() {
         (item.storyboard ? "<div class='small'>分镜：" + esc(item.storyboard) + "</div>" : "") +
         "</div>";
     }).join("") : "<div class='small muted'>今天没有值得推的。</div>";
-    var images = data.images || [];
-    $("bl-images").innerHTML = images.map(function (row) {
-      return "<div style='margin-bottom:10px'><div class='small muted'>" +
-        esc(row.bvid || "") + "</div>" +
-        "<img src='" + row.image + "' style='max-width:100%;border-radius:8px;margin-top:4px'></div>";
-    }).join("");
+    var paths = (data.image_paths || []).slice();
+    var imgHost = $("bl-images");
+    biliImgLoaded = {};
+    if (!paths.length) {
+      imgHost.innerHTML = "";
+    } else {
+      imgHost.innerHTML =
+        "<div class='row' style='margin-bottom:6px'>" +
+        "<span class='small muted'>分镜图 " + paths.length + " 张（点开才加载，几 MB 的图不会拖慢页面）</span>" +
+        "<span class='grow'></span>" +
+        "<button class='ghost small' id='bl-load-imgs'>全部加载</button></div>" +
+        "<div class='row' style='gap:8px;flex-wrap:wrap;margin-bottom:8px'>" +
+        paths.map(function (row) {
+          return "<button class='ghost small' data-bili-img='" + esc(row.path || "") + "'>" +
+            esc(midEllipsis(row.bvid || row.title || "分镜图", 16)) + "</button>";
+        }).join("") + "</div>" +
+        "<div id='bl-img-box'></div>";
+      Array.prototype.forEach.call(imgHost.querySelectorAll("[data-bili-img]"), function (btn) {
+        btn.onclick = function () { loadBiliImage(btn.getAttribute("data-bili-img")); btn.disabled = true; };
+      });
+      var loadAll = $("bl-load-imgs");
+      if (loadAll) {
+        loadAll.onclick = function () {
+          paths.forEach(function (row) { loadBiliImage(row.path); });
+        };
+      }
+    }
     if (data.report) { typeIn($("bl-report"), data.report); }
     else { $("bl-report").textContent = ""; }
     var errors = data.errors || [];
