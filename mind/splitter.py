@@ -795,6 +795,14 @@ def _should_split(
         # 以前要求「两边都得有字」，正好把这一种挡在门外。
         if (index == 0 or weight >= 1) and index + len(delim) < len(text):
             return True
+    # 换行是作者/模型明确敲下的「分条」：两侧都有字就切，不看长度门槛。
+    # 模型想分两条时最常用的就是这个；以前被均分门槛挡掉，短句就挤在同一个气泡里
+    # （「能啊\n问这干嘛」被当成一条发出去）。
+    if "\n" in delim:
+        before = text[:index].strip()
+        after = text[index + len(delim):].strip()
+        if before and after:
+            return True
     # 均分模式：这一段还没攒够就先别切。
     # 标点自己的长度也要算进去 —— 否则「下午好。」这种四个字的短句会被判成「不够长」，
     # 切点被迫后移到下一个逗号上，气泡就变成以「，」结尾。

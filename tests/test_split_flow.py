@@ -55,6 +55,48 @@ class SplitFlowTest(PluginHarness, unittest.TestCase):
         self.run_async(scenario())
 
 
+class NewlineSplitTest(PluginHarness, unittest.TestCase):
+    def test_newline_splits_short_lines(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.splitter.enabled = True
+            plugin.splitter.max_segments = 3
+            plugin.splitter.fixed_delay = 0.0
+            event = FakeEvent("嗯", umo=PRIVATE, uid=OWNER)
+            plugin._mark_llm(event)
+            event.set_result(FakeResult([Plain("能啊\n问这干嘛")]))
+            plugin.context.sent = []
+            await plugin.on_decorating_result(event)
+            sent = ["".join(getattr(c, "text", "") for c in getattr(ch, "chain", ch))
+                    for _umo, ch in plugin.context.sent]
+            final = "".join(getattr(c, "text", "") for c in event.get_result().chain)
+            bubbles = [part for part in (sent + [final]) if part.strip()]
+            self.assertEqual(len(bubbles), 2)
+            self.assertIn("能啊", bubbles[0])
+            self.assertIn("问这干嘛", bubbles[1])
+
+        self.run_async(scenario())
+
+    def test_newline_respects_max_segments(self) -> None:
+        async def scenario() -> None:
+            plugin = self.make_plugin()
+            await plugin.initialize()
+            plugin.splitter.enabled = True
+            plugin.splitter.max_segments = 2
+            plugin.splitter.fixed_delay = 0.0
+            event = FakeEvent("嗯", umo=PRIVATE, uid=OWNER)
+            plugin._mark_llm(event)
+            event.set_result(FakeResult([Plain("一\n二\n三\n四")]))
+            plugin.context.sent = []
+            await plugin.on_decorating_result(event)
+            final = "".join(getattr(c, "text", "") for c in event.get_result().chain)
+            total = len(plugin.context.sent) + (1 if final.strip() else 0)
+            self.assertLessEqual(total, 2)
+
+        self.run_async(scenario())
+
+
 class SplitDiagnosticsTest(PluginHarness, unittest.TestCase):
     def test_report_after_no_split(self):
         async def scenario() -> None:
