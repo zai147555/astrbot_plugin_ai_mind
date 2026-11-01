@@ -348,3 +348,18 @@ python3 audit_buttons.py                   # 面板按钮绑定审计
 - astrbot_plugin_memewiki：仓库当前不可访问（API 返回空），没法核对实现，暂不参考。
 - poke_to_llm：MIT，已搬（见上）。
 
+
+---
+
+## 3.0.0.1 补充：AI 声聊（先文字，后语音）
+
+参考 zgojin/astrbot_plugin_AIQTalk 的接口用法（QQ AI 声聊），**但换了顺序**：
+上游为了只发语音，会把颜文字、网址、表情全过滤掉；这里是**文字先照常发**（分段、零空格、
+表情包一条规则都不动），发完再让 QQ 用指定音色把同一段话念一遍。
+
+- 接口：get_ai_characters(group_id, chat_type=1) 取音色；send_group_ai_record(group_id, character, text) 发声
+- 语音文本会单独清理：去网址 / markdown / 括号动作 / emoji，折叠空白，截到 300 字
+- 只支持 QQ 群聊；平台不支持时静默跳过，不影响文字
+- 冷却（默认 8s，防语音刷屏）、按条或按概率、群白名单、指定音色都在面板「分段拟人」页顶部
+- 命令：#声聊 看状态 / 开|关 / 人物 / 用 <id> / 测试
+

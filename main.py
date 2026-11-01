@@ -281,6 +281,11 @@ try:  # 生图（OpenAI Images 兼容接口 + 适配器层）
 except ImportError:  # pragma: no cover
     from mind import imagegen as imagegen_engine  # type: ignore[no-redef]
 
+try:  # AI 声聊（先发文字，再补一条语音）
+    from .mind import voicechat as voice_engine
+except ImportError:  # pragma: no cover
+    from mind import voicechat as voice_engine  # type: ignore[no-redef]
+
 try:  # 被戳一下的反应（参考 poke_to_llm，MIT）
     from .mind import poke as poke_engine
 except ImportError:  # pragma: no cover
@@ -519,6 +524,7 @@ DEBUG_HELP = "\n".join([
     "#知识　知识树：列表 / 学 <名> / 开|关 <名> / 加 <名> <标题> <内容> / 待审 / 批|否 <id>",
     "#画 <描述>　文生图；#画 改 <图片> <说明>　参考图编辑",
     "#市场 <能力词>　去开源插件市场搜有没有现成的",
+    "#声聊　AI 语音：开|关 / 人物 / 用 <id> / 测试",
     "#表情　表情包库：状态 / 开|关 / 标签 <id> <情绪> / 删 <id> / 清",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
@@ -941,6 +947,11 @@ class AIMindPlugin(Star):
             Path(self.data_dir) / "poke.json"
         )
         self.poke_gate = poke_engine.PokeGate(self.poke_settings)
+        self.voice_settings = voice_engine.load_settings(
+            Path(self.data_dir) / "voice.json"
+        )
+        #: 每个会话上次发语音的时间（冷却用）
+        self._voice_last: dict[str, float] = {}
         self.images = ImageStore(self.store, self.data_dir, logger)
         # 把库文件的路径也交给各仓库：主连接要是被别处关掉，
         # 它们能自己连上这个文件继续干活，而不是一路静默失败。
@@ -2043,6 +2054,10 @@ class AIMindPlugin(Star):
             await self._maybe_sticker(event)
         except Exception as exc:  # noqa: BLE001 - 表情发不出去不影响正文
             logger.debug(f"[ai_mind] 发表情失败：{exc}")
+        try:
+            await self._maybe_voice(event, self._reply_text(event) or reply)
+        except Exception as exc:  # noqa: BLE001 - 语音发不出去不影响正文
+            logger.debug(f"[ai_mind] 发语音失败：{exc}")
 
     #: 当前活着的实例。插件重载时旧实例不会立刻消失，它的路由还会抢走
     #: 面板请求 —— 而旧实例的库是关着的、计数器停在 0，于是面板显示成
@@ -2883,6 +2898,9 @@ class AIMindPlugin(Star):
             ("bili/login", self._api_bili_login, "校验登录凭据"),
             ("bili/qr/start", self._api_bili_qr_start, "生成扫码登录二维码"),
             ("bili/qr/poll", self._api_bili_qr_poll, "轮询扫码结果"),
+            ("voice", self._api_voice, "AI 声聊设置"),
+            ("voice/save", self._api_voice_save, "保存声聊设置"),
+            ("voice/characters", self._api_voice_characters, "拉音色列表"),
             ("poke", self._api_poke, "戳一戳设置"),
             ("poke/save", self._api_poke_save, "保存戳一戳设置"),
             ("sticker", self._api_sticker, "表情包库"),
@@ -4988,6 +5006,8 @@ class AIMindPlugin(Star):
                 return await self._debug_storyboard(event, text)
             if word.split()[0] in ("刷b站", "刷b", "bili"):
                 return await self._debug_bili(event, text)
+            if word.split()[0] in ("声聊", "voice"):
+                return await self._debug_voice(event, text)
             if word.split()[0] in ("画", "画图", "draw"):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
@@ -5423,6 +5443,129 @@ class AIMindPlugin(Star):
             rows.append("  #%d %s %s" % (item.id, ",".join(item.emotions) or "（未打标）",
                                          Path(item.path).name))
         return "\n".join(rows)
+
+    # -- AI 声聊（文字照常发，再补一条语音）---------------------------------
+    @staticmethod
+    def _event_group_id(event: AstrMessageEvent) -> str:
+        getter = getattr(event, "get_group_id", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if value:
+                    return str(value)
+            except Exception:  # noqa: BLE001
+                pass
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        parts = umo.split(":")
+        if len(parts) >= 3 and "GroupMessage" in parts[1]:
+            return parts[-1]
+        return ""
+
+    async def _voice_characters(self, event: AstrMessageEvent, group: str) -> list[dict[str, str]]:
+        bot = getattr(event, "bot", None)
+        api = getattr(bot, "api", None)
+        caller = getattr(api, "call_action", None)
+        if not callable(caller):
+            return []
+        try:
+            payload = await caller(
+                "get_ai_characters", group_id=int(group) if group.isdigit() else group,
+                chat_type=1, timeout=8,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[ai_mind] 拉音色列表失败：{exc}")
+            return []
+        return voice_engine.parse_characters(payload)
+
+    async def _maybe_voice(self, event: AstrMessageEvent, text: str) -> str:
+        """文字发完之后，按设置补一条 AI 语音。"""
+        conf = self.voice_settings
+        if not conf.enabled:
+            return ""
+        group = self._event_group_id(event)
+        try:
+            platform = str(event.get_platform_name() or "")
+        except Exception:  # noqa: BLE001
+            platform = ""
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        if not voice_engine.should_send(
+            conf, group=group, platform=platform,
+            last_at=self._voice_last.get(umo, 0.0),
+        ):
+            return ""
+        spoken = voice_engine.clean_for_voice(text, conf.max_chars)
+        if not spoken:
+            return ""
+        bot = getattr(event, "bot", None)
+        api = getattr(bot, "api", None)
+        caller = getattr(api, "call_action", None)
+        if not callable(caller):
+            return ""
+        character = conf.character
+        if not character:
+            character = voice_engine.pick_character(
+                conf, await self._voice_characters(event, group)
+            )
+        if not character:
+            return ""
+        try:
+            await caller(
+                "send_group_ai_record",
+                group_id=int(group) if group.isdigit() else group,
+                character=character,
+                text=spoken,
+                timeout=10,
+            )
+        except Exception as exc:  # noqa: BLE001 - QQ 不一定支持，失败就算了
+            logger.debug(f"[ai_mind] send_group_ai_record 失败：{exc}")
+            return ""
+        self._voice_last[umo] = time.time()
+        return spoken
+
+    def _voice_save(self) -> bool:
+        return voice_engine.save_settings(Path(self.data_dir) / "voice.json",
+                                          self.voice_settings)
+
+    async def _debug_voice(self, event: AstrMessageEvent, text: str) -> str:
+        conf = self.voice_settings
+        parts = text.lstrip("#").strip().split()
+        args = parts[1:] if parts and parts[0].lower() in ("声聊", "voice") else parts
+        head = args[0].lower() if args else ""
+        group = self._event_group_id(event)
+        if not args:
+            rows = [
+                "AI 声聊：%s｜模式 %s｜音色 %s｜群 %s"
+                % ("开" if conf.enabled else "关",
+                   "每条都发" if conf.mode == voice_engine.MODE_ALWAYS
+                   else "概率 %.0f%%" % (conf.chance * 100),
+                   conf.character or "自动（第一个）",
+                   "、".join(conf.groups) if conf.groups else "全部"),
+                "用法：#声聊 开|关 / 人物 / 用 <id> / 测试",
+            ]
+            return chr(10).join(rows)
+        if head in ("开", "on"):
+            conf.enabled = True
+            self._voice_save()
+            return "AI 声聊：开（先发文字，再补一条语音）"
+        if head in ("关", "off"):
+            conf.enabled = False
+            self._voice_save()
+            return "AI 声聊：关"
+        if head in ("人物", "list"):
+            if not group:
+                return "只有群聊才有 AI 音色。"
+            rows = await self._voice_characters(event, group)
+            if not rows:
+                return "这个群拿不到 AI 音色（平台可能不支持）。"
+            return chr(10).join("%s　%s" % (item["id"], item["name"]) for item in rows[:20])
+        if head in ("用", "use") and len(args) > 1:
+            conf.character = str(args[1])
+            self._voice_save()
+            return "音色设成：" + conf.character
+        if head in ("测试", "test"):
+            spoken = await self._maybe_voice(event, "语音测试，能听到吗")
+            return ("发出去了：" + spoken) if spoken else "没发出去（看日志或先开开关）。"
+        return "不认识的用法。发 #声聊 看说明。"
 
     # -- 需求先搜市场 -------------------------------------------------------
     def _market_is_owner(self, sender: str) -> bool:
@@ -6992,6 +7135,40 @@ class AIMindPlugin(Star):
         data = self._bili_payload()
         data["removed"] = removed
         return json_response(data)
+
+    # -- 面板：声聊 ---------------------------------------------------------
+    async def _api_voice(self) -> Any:
+        return json_response({"settings": self.voice_settings.to_dict()})
+
+    async def _api_voice_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        merged = dict(self.voice_settings.to_dict())
+        for key in ("enabled", "mode", "chance", "character", "groups",
+                    "max_chars", "cooldown"):
+            if payload.get(key) is not None:
+                merged[key] = payload[key]
+        conf = voice_engine.VoiceSettings.from_dict(merged)
+        self.voice_settings = conf
+        ok = self._voice_save()
+        data = {"settings": conf.to_dict(), "saved": ok}
+        if not ok:
+            return error_response("写入声聊设置失败，详细原因见日志")
+        return json_response(data)
+
+    async def _api_voice_characters(self) -> Any:
+        params = await self._params()
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        group = str(payload.get("group") or "").strip()
+        if not group:
+            return json_response({"ok": False, "error": "要先给一个群号", "characters": []})
+        fake = type("_E", (), {})()
+        setattr(fake, "get_group_id", lambda: group)
+        rows = await self._voice_characters(fake, group)
+        return json_response({"ok": bool(rows), "characters": rows,
+                              "error": "" if rows else "拿不到音色（平台可能不支持）"})
 
     # -- 面板：戳一戳 -------------------------------------------------------
     async def _api_poke(self) -> Any:

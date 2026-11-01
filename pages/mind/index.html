@@ -3313,6 +3313,42 @@ var qrcode = function() {
   <!-- ================= 分段 ================= -->
   <div id="view-split" style="display:none">
     <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>AI 声聊</h3>
+        <span class="small muted">先发文字，再补一条语音</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">
+        文字照常发（分段、零空格、表情一条规则都不动），发完再让 QQ 用 AI 音色把同一段话念一遍。
+        只支持 QQ 群聊；平台没开这个能力时会静默跳过。
+      </div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="vo-enabled"> 启用</label>
+        <label class="small muted">模式
+          <select id="vo-mode">
+            <option value="always">每条都补</option>
+            <option value="chance">按概率</option>
+          </select>
+        </label>
+        <label class="small muted">概率 <input id="vo-chance" type="number" min="0" max="100" style="width:70px"> %</label>
+        <label class="small muted">冷却 <input id="vo-cooldown" type="number" min="0" max="600" style="width:80px"> 秒</label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small muted">音色 <select id="vo-character" style="min-width:200px"></select></label>
+        <button class="ghost small" id="vo-chars">拉音色列表</button>
+        <span class="small muted" id="vo-status"></span>
+      </div>
+      <div style="margin-top:10px">
+        <div class="small muted">只在这些群发（群号，空格隔开；留空 = 所有群）</div>
+        <input id="vo-groups" style="width:100%;margin-top:6px">
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="vo-save">保存</button>
+        <span class="grow"></span>
+        <span class="small muted" id="vo-hint">音色列表要从具体群里拉：先在上面「会话」里选一个群。</span>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="row">
         <h3 style="margin-right:8px">拟人分段</h3>
         <label class="small"><input type="checkbox" data-sp="enabled"> 开启</label>
@@ -5359,6 +5395,35 @@ var qrcode = function() {
     $("rl-list").onclick = relationshipAction;
     $("rl-list").onchange = relationshipNumber;
     $("rl-candidates").onclick = relationshipAction;
+    $("vo-save").onclick = function () {
+      request("voice/save", "POST", {
+        enabled: $("vo-enabled").checked,
+        mode: $("vo-mode").value,
+        chance: (Number($("vo-chance").value) || 0) / 100,
+        cooldown: Number($("vo-cooldown").value) || 0,
+        character: $("vo-character").value,
+        groups: ($("vo-groups").value || "").split(/[,，\s]+/).filter(Boolean)
+      }).then(function (data) { renderVoice(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
+    };
+    $("vo-chars").onclick = function () {
+      var group = "";
+      var key = state.session || "";
+      var parts = key.split(":");
+      if (parts.length >= 3 && parts[1].indexOf("GroupMessage") >= 0) group = parts[parts.length - 1];
+      if (!group) { $("vo-hint").textContent = "先在顶部「会话」里选一个群，再拉音色。"; return; }
+      $("vo-hint").textContent = "正在问 QQ 要音色列表…";
+      request("voice/characters", "POST", { group: group }).then(function (data) {
+        if (!data.ok) { $("vo-hint").textContent = data.error || "拿不到音色"; return; }
+        var current = $("vo-character").value;
+        $("vo-character").innerHTML = "<option value=''>自动（第一个）</option>" +
+          data.characters.map(function (item) {
+            return "<option value='" + esc(item.id) + "'" + (item.id === current ? " selected" : "") +
+              ">" + esc(item.name) + "</option>";
+          }).join("");
+        $("vo-hint").textContent = "拿到 " + data.characters.length + " 个音色";
+      }).catch(function (e) { $("vo-hint").textContent = "失败：" + e.message; });
+    };
     $("tab-split").onclick = function () {
       setView("split");
       loadSplitter().catch(function (e) { toast("加载失败：" + e.message); });
@@ -8442,6 +8507,25 @@ var qrcode = function() {
     html += "<pre class='small' style='white-space:pre-wrap;margin-top:8px;max-height:320px;overflow:auto'>" +
       esc(data.manifest || "") + "</pre>";
     $("sb-result").innerHTML = html;
+  }
+
+  // ---- AI 声聊 -------------------------------------------------------------
+  function renderVoice(data) {
+    var settings = (data && data.settings) || {};
+    $("vo-enabled").checked = !!settings.enabled;
+    $("vo-mode").value = settings.mode === "chance" ? "chance" : "always";
+    $("vo-chance").value = Math.round((settings.chance || 0) * 100);
+    $("vo-cooldown").value = settings.cooldown === undefined ? 8 : settings.cooldown;
+    $("vo-groups").value = (settings.groups || []).join(" ");
+    var current = settings.character || "";
+    var select = $("vo-character");
+    select.innerHTML = "<option value=''>自动（第一个）</option>" +
+      (current ? "<option value='" + esc(current) + "' selected>" + esc(current) + "</option>" : "");
+    $("vo-status").textContent = settings.enabled ? "开" : "关";
+  }
+
+  function loadVoice() {
+    return request("voice", "GET").then(renderVoice);
   }
 
   // ---- 戳一戳 -------------------------------------------------------------
