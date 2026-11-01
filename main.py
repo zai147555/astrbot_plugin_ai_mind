@@ -530,6 +530,7 @@ DEBUG_HELP = "\n".join([
     "#画 <描述>　文生图；#画 改 <图片> <说明>　参考图编辑",
     "#市场 <能力词>　去开源插件市场搜有没有现成的",
     "#声聊　AI 语音：开|关 / 人物 / 用 <id> / 测试",
+    "#在看 [N]　登录后看我最近在 B 站看什么",
     "#表情　表情包库：状态 / 开|关 / 标签 <id> <情绪> / 删 <id> / 清",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
@@ -2905,6 +2906,7 @@ class AIMindPlugin(Star):
             ("bili/storyboard", self._api_bili_storyboard, "给单条视频做分镜"),
             ("bili/clear", self._api_bili_clear, "清空已读记录"),
             ("bili/login", self._api_bili_login, "校验登录凭据"),
+            ("bili/history", self._api_bili_history, "我最近在看"),
             ("bili/qr/start", self._api_bili_qr_start, "生成扫码登录二维码"),
             ("bili/qr/poll", self._api_bili_qr_poll, "轮询扫码结果"),
             ("voice", self._api_voice, "AI 声聊设置"),
@@ -5013,6 +5015,8 @@ class AIMindPlugin(Star):
                 return await self._debug_zoom(event, text)
             if word.split()[0] in ("分镜", "storyboard", "sb"):
                 return await self._debug_storyboard(event, text)
+            if word.split()[0] in ("在看", "history"):
+                return await self._debug_history(event, text)
             if word.split()[0] in ("刷b站", "刷b", "bili"):
                 return await self._debug_bili(event, text)
             if word.split()[0] in ("声聊", "voice"):
@@ -5192,6 +5196,13 @@ class AIMindPlugin(Star):
         want = max(1, min(20, int(limit or conf.candidates)))
         errors: list[str] = []
         candidates: list[dict[str, Any]] = []
+        # 有登录态就先看「我最近在看」，这是最贴身的一路来源
+        if conf.cookie and conf.use_history:
+            rows, err = bili_engine.fetch_history(conf.cookie, 12)
+            if err:
+                errors.append("历史：" + err)
+            else:
+                candidates.extend(rows)
         words = [word for word in str(conf.keywords or "").replace("，", " ")
                  .replace(",", " ").split() if word]
         if conf.use_search and words:
@@ -7009,6 +7020,8 @@ class AIMindPlugin(Star):
             conf.cookie = ""
         if "prefer_hq" in payload:
             conf.prefer_hq = bool(payload.get("prefer_hq"))
+        if "use_history" in payload:
+            conf.use_history = bool(payload.get("use_history"))
         merged = conf.to_dict()
         for key in ("candidates", "storyboard_n", "min_seconds", "max_seconds", "max_download_mb"):
             if payload.get(key) is not None:
@@ -7157,6 +7170,57 @@ class AIMindPlugin(Star):
             "summary": result.get("summary", ""),
             "manifest": result.get("manifest", ""),
             "images": images,
+        })
+
+    async def _debug_history(self, event: AstrMessageEvent, text: str) -> str:
+        conf = self.bili_settings
+        if not conf.cookie:
+            return "还没登录 B 站：面板「刷B站」页扫码或粘 Cookie，然后再发 #在看。"
+        parts = text.lstrip("#").strip().split()
+        limit = 10
+        if len(parts) > 1 and parts[1].isdigit():
+            limit = max(1, min(20, int(parts[1])))
+        rows, err = await asyncio.to_thread(
+            bili_engine.fetch_history, conf.cookie, limit
+        )
+        if err:
+            return "看不了历史：" + err
+        if not rows:
+            return "最近没有观看记录。"
+        lines = ["我最近在看（%d 条）：" % len(rows)]
+        for item in rows:
+            progress = int(item.get("progress") or 0)
+            duration = max(1, int(item.get("duration") or 0))
+            percent = min(100, round(progress * 100.0 / duration)) if duration else 0
+            lines.append("· %s（%s）%s" % (
+                str(item.get("title") or "")[:36],
+                str(item.get("up") or "?"),
+                ("看到 %d%%" % percent) if duration else "",
+            ))
+        return chr(10).join(lines)
+
+    async def _api_bili_history(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        try:
+            limit = int(payload.get("limit") or 10)
+        except (TypeError, ValueError):
+            limit = 10
+        conf = self.bili_settings
+        if not conf.cookie:
+            return json_response({"ok": False, "error": "还没登录 B 站", "items": []})
+        rows, err = await self._mail_call(bili_engine.fetch_history, conf.cookie, 12)
+        return json_response({
+            "ok": not err,
+            "error": err,
+            "items": [
+                {
+                    "bvid": item.get("bvid"), "title": item.get("title"),
+                    "up": item.get("up"), "duration": item.get("duration"),
+                    "progress": item.get("progress"), "url": item.get("url"),
+                }
+                for item in rows[: max(1, min(20, limit))]
+            ],
         })
 
     async def _api_bili_login(self) -> Any:

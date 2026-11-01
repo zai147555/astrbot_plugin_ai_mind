@@ -86,6 +86,8 @@ class BiliSettings:
     cookie: str = ""
     #: 有登录态时优先要高清
     prefer_hq: bool = True
+    #: 有登录态时，把「我最近在看」也当候选来源
+    use_history: bool = True
 
     def masked(self) -> dict[str, Any]:
         return {
@@ -93,6 +95,7 @@ class BiliSettings:
             "keywords": self.keywords,
             "has_cookie": bool(self.cookie),
             "prefer_hq": bool(self.prefer_hq),
+            "use_history": bool(self.use_history),
             "candidates": int(self.candidates),
             "storyboard_n": int(self.storyboard_n),
             "min_seconds": int(self.min_seconds),
@@ -118,6 +121,7 @@ class BiliSettings:
             "one_liner": bool(self.one_liner),
             "cookie": self.cookie,
             "prefer_hq": bool(self.prefer_hq),
+            "use_history": bool(self.use_history),
         }
 
     @staticmethod
@@ -152,6 +156,7 @@ class BiliSettings:
             one_liner=bool(raw.get("one_liner", True)),
             cookie=str(raw.get("cookie") or "").strip(),
             prefer_hq=bool(raw.get("prefer_hq", True)),
+            use_history=bool(raw.get("use_history", True)),
         )
 
 
@@ -317,6 +322,52 @@ def normalize(candidate: dict[str, Any]) -> dict[str, Any]:
         "cid": cid,
         "url": "https://www.bilibili.com/video/" + str(candidate.get("bvid") or ""),
     }
+
+
+def _history_row(item: dict[str, Any]) -> dict[str, Any] | None:
+    """把一条观看历史抹平成候选（bvid 在 history.bvid 里）。"""
+    if not isinstance(item, dict):
+        return None
+    hist = item.get("history") if isinstance(item.get("history"), dict) else {}
+    bvid = str(hist.get("bvid") or "").strip()
+    if not bvid:
+        return None
+    progress = int(_num(item.get("progress")))
+    duration = int(_num(item.get("duration") or hist.get("duration")))
+    return {
+        "bvid": bvid,
+        "title": str(item.get("title") or "").strip(),
+        "desc": str(item.get("long_title") or item.get("new_desc") or "").strip(),
+        "up": str(item.get("author_name") or item.get("author") or ""),
+        "duration": duration,
+        "view": 0,
+        "pubdate": 0,
+        "cid": int(_num(hist.get("cid"))),
+        "url": "https://www.bilibili.com/video/" + bvid,
+        "from_history": True,
+        "progress": progress,
+        "view_at": int(_num(item.get("view_at"))),
+    }
+
+
+def fetch_history(cookie: str, limit: int = 20,
+                  timeout: int = HTTP_TIMEOUT) -> tuple[list[dict[str, Any]], str]:
+    """读「我最近在看」——必须登录。返回 (候选列表, 错误说明)。"""
+    jar = normalize_cookie(cookie)
+    if not jar:
+        return [], "要登录才能看历史（先在面板扫码或粘 Cookie）"
+    payload, err = _get_json(
+        "/x/web-interface/history/cursor",
+        {"ps": max(1, min(30, int(limit))), "max": 0, "view_at": 0, "business": ""},
+        timeout=timeout, cookie=jar,
+    )
+    if err:
+        return [], err
+    rows = ((payload or {}).get("data") or {}).get("list") or []
+    if not isinstance(rows, list):
+        return [], "历史接口返回格式变了"
+    out = [row for row in (_history_row(item) for item in rows) if row]
+    return out[: max(1, int(limit))], ""
 
 
 def fetch_region(rid: int = 1, limit: int = 5,
@@ -834,6 +885,16 @@ def score_item(item: dict[str, Any], settings: BiliSettings) -> tuple[float, lis
         if views >= 100000:
             reasons.append("播放 %s，讨论度不低" % format_count(views))
 
+    if item.get("from_history"):
+        score += 1.2
+        progress = int(item.get("progress") or 0)
+        duration = max(1, int(item.get("duration") or 0))
+        if progress and duration:
+            reasons.append("你最近在看这条（看到 %d%%）"
+                           % min(100, round(progress * 100.0 / duration)))
+        else:
+            reasons.append("你最近点开过这条")
+
     subtitle_len = len(str(item.get("subtitle") or ""))
     if subtitle_len >= 200:
         score += 1.5
@@ -926,7 +987,7 @@ __all__ = [
     "fetch_region", "fetch_view", "fetch_subtitle", "pick_stream", "download",
     "normalize", "score_item", "pick", "format_duration", "format_count", "build_report",
     "sign_wbi", "search_videos", "fetch_subtitle_lines", "ytdlp_path",
-    "normalize_cookie", "cookie_value", "login_check",
+    "normalize_cookie", "cookie_value", "login_check", "fetch_history",
     "PASSPORT", "QR_STATES", "QR_MESSAGES", "COOKIE_KEEP",
     "cookie_from_set_cookie", "qr_generate", "qr_poll",
     "download_with_ytdlp", "due_today",
