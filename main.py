@@ -859,6 +859,9 @@ class AIMindPlugin(Star):
         self.data_dir = self._resolve_data_dir()
         #: 插件自己的目录（自带 ffmpeg 在 vendor/ffmpeg 下）
         self.plugin_dir = Path(__file__).resolve().parent
+        #: 实例编号：用来判断「是不是有更新的实例在跑」（见 _is_stale）
+        type(self)._seq = int(getattr(type(self), "_seq", 0) or 0) + 1
+        self._born = int(type(self)._seq)
         #: 装 ffmpeg 时避免两次下载同时跑
         self._ffmpeg_lock = threading.Lock()
         # 面板上填的"专属用户 / 称呼"盖在配置之上（存在 data 目录里）
@@ -1030,6 +1033,8 @@ class AIMindPlugin(Star):
         self._sample_warned = False
         # 曲线为什么不画线 —— 面板上要能一眼看出卡在哪一步。
         # 计数只在本次进程内有效，重启就归零，所以文案写「本次启动以来」。
+        #: 上一次分段结果（#分段 诊断用）
+        self._last_split: dict[str, Any] = {}
         self._diag = {
             "turns": 0, "prepares": 0, "gated": 0, "frozen": 0,
             "samples": 0, "skipped": 0, "writes": 0,
@@ -1119,9 +1124,16 @@ class AIMindPlugin(Star):
         self.store.close()
 
     def _is_stale(self) -> bool:
-        """插件重载后，旧实例的钩子还在；它手里的配置/人格都是旧的，必须让路。"""
+        """插件重载后，旧实例的钩子还在；它手里的配置/人格都是旧的，必须让路。
+
+        判定不能只看「_LIVE 是不是我」：要是新实例还没来得及认领，
+        它就会把自己当成旧实例，结果一条都不回（分段、情绪全没了）。
+        所以只认「有比我更新的实例还活着」这一种情况。
+        """
         live = type(self)._LIVE
-        return live is not None and live is not self
+        if live is None or live is self:
+            return False
+        return int(getattr(live, "_born", 0) or 0) > int(self._born or 0)
 
     def _ensure_task(self) -> None:
         if self._task is not None and not self._task.done():
@@ -2651,6 +2663,7 @@ class AIMindPlugin(Star):
         """
         settings = self.splitter
         if not settings.enabled:
+            self._last_split = {"segments": [], "sent": 0, "reason": "分段关着"}
             return
         try:
             result = event.get_result()
@@ -2705,6 +2718,16 @@ class AIMindPlugin(Star):
         if not splitter_engine.should_split(
             settings, session_id=session_key, is_group=group, text=text, is_llm=is_llm
         ):
+            reason = "没到条件"
+            if settings.llm_only and not is_llm:
+                reason = "这不是模型的回复（llm_only）"
+            elif settings.min_length and len(text) < settings.min_length:
+                reason = "太短（%d < %d）" % (len(text), settings.min_length)
+            elif settings.max_length and len(text) > settings.max_length:
+                reason = "太长（%d > %d）" % (len(text), settings.max_length)
+            elif not splitter_engine.scope_allows(settings, group):
+                reason = "范围不允许（当前是" + ("群聊" if group else "私聊") + "）"
+            self._last_split = {"segments": [], "sent": 0, "reason": reason, "text": text}
             return
 
         rules = splitter_engine.parse_replace_rules(settings.replace_rules)
@@ -2721,7 +2744,14 @@ class AIMindPlugin(Star):
 
         segments = splitter_engine.split_chain(list(chain), settings)
         if len(segments) <= 1:
+            self._last_split = {"segments": [text], "sent": 0,
+                                "reason": "只有一段，不用拆"}
             return  # 只有一段就别折腾了，原样交回框架
+        self._last_split = {
+            "segments": [splitter_engine.segment_text(seg) for seg in segments],
+            "sent": 0,
+            "reason": "",
+        }
 
         if settings.clean_after_items or settings.clean_after_regex:
             for segment in segments:
@@ -2820,6 +2850,10 @@ class AIMindPlugin(Star):
                         return
 
         self._split_sent += sent
+        try:
+            self._last_split["sent"] = sent
+        except Exception:  # noqa: BLE001
+            pass
         if self.settings.debug_log:
             preview_text = " ｜ ".join(
                 value[:20] for value in (splitter_engine.segment_text(seg) for seg in segments)
@@ -5176,6 +5210,8 @@ class AIMindPlugin(Star):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
+            if word.split()[0] in ("分段", "split"):
+                return self._debug_split(text)
             if word.split()[0] in ("表情", "sticker"):
                 parts = word.split()
                 if len(parts) > 1 and parts[1] in ("试", "test", "发"):
@@ -5605,6 +5641,37 @@ class AIMindPlugin(Star):
         return sticker_engine.save_settings(
             Path(self.data_dir) / "sticker.json", self.sticker_settings
         )
+
+    def _debug_split(self, text: str) -> str:
+        """看一眼她这句话怎么拆、为什么没拆。"""
+        conf = self.splitter
+        parts = text.lstrip("#").strip().split(None, 2)
+        args = parts[1:] if parts and parts[0].lower() in ("分段", "split") else parts
+        sample = args[1] if len(args) > 1 else ""
+        if args and args[0] in ("试", "预览", "test", "preview") and sample:
+            data = splitter_engine.preview(sample, conf)
+            lines = ["试拆：%d 段（上限 %d）" % (data.get("count") or 0, data.get("limit") or 0)]
+            for row in data.get("segments") or []:
+                lines.append("  %d. [%d 字｜等 %.1f 秒] %s"
+                             % (row.get("index") or 0, row.get("chars") or 0,
+                                row.get("delay_before_next") or 0,
+                                str(row.get("text") or "")[:60]))
+            return chr(10).join(lines)
+        lines = [
+            "分段：%s｜最多 %d 段｜%s"
+            % ("开" if conf.enabled else "关", conf.max_segments,
+               splitter_engine.describe(conf)),
+        ]
+        last = self._last_split or {}
+        if last.get("segments"):
+            lines.append("上一次：拆成 %d 段，发出去 %d 段"
+                         % (len(last.get("segments") or []), last.get("sent") or 0))
+            for index, value in enumerate((last.get("segments") or [])[:5], 1):
+                lines.append("  %d. %s" % (index, str(value)[:60]))
+        elif last.get("reason"):
+            lines.append("上一次没拆：" + str(last.get("reason")))
+        lines.append("用法：#分段 试 <一段话>")
+        return chr(10).join(lines)
 
     def _debug_group(self, event: AstrMessageEvent) -> str:
         """一屏看完「为什么这个群里不对劲」。"""

@@ -18,6 +18,11 @@ _CJK_PUNCT = "\u3000-\u303f\uff01-\uff65"
 
 _BETWEEN_CJK = re.compile("(?<=[" + _CJK + "])[ \t\u3000]+(?=[" + _CJK + "])")
 _BEFORE_CJK_PUNCT = re.compile("[ \t\u3000]+(?=[" + _CJK_PUNCT + "])")
+#: 标点/省略号后面的空格也要收掉：「…… 好吗」→「……好吗」。
+#: 但「…… OK」这种后面跟英文/数字的保持原样。
+_AFTER_CJK_PUNCT = re.compile(
+    "(?<=[" + _CJK_PUNCT + "\u2026\u2014])[ \t\u3000]+(?=[" + _CJK + "])"
+)
 
 
 def tidy_cjk_spaces(text: str) -> str:
@@ -25,7 +30,8 @@ def tidy_cjk_spaces(text: str) -> str:
     if not text:
         return text
     out = _BETWEEN_CJK.sub("", text)
-    return _BEFORE_CJK_PUNCT.sub("", out)
+    out = _BEFORE_CJK_PUNCT.sub("", out)
+    return _AFTER_CJK_PUNCT.sub("", out)
 
 
 __all__ = ["tidy_cjk_spaces"]
