@@ -1763,6 +1763,15 @@ class AIMindPlugin(Star):
             # 每轮都会变的内容攒在这里，最后统一贴到请求尾部（见 _cache_or_place）
             cache_tail: list[str] = []
 
+            # ---------- 他在困惑 / 在报 bug ----------
+            try:
+                _clarify = self._clarify_guard(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[ai_mind] 组装解释模式失败：{exc}")
+                _clarify = ""
+            if _clarify:
+                cache_tail.append(_clarify)
+
             # ---------- 他问起「你看过什么视频」 ----------
             try:
                 _share = self._bili_share_block(event)
@@ -2133,7 +2142,9 @@ class AIMindPlugin(Star):
             "3. 出现自伤/轻生信号时，立刻放下口癖和玩笑，认真回应；",
             "4. 群里不点破你和用户的关系，不透露真名、学校、住址、生日；",
             "5. 别人问你叫什么，只用人设里的名字；不要自创第二个名字，"
-            "也不要用聊天记录、记忆、示例里出现过的别人的名字。",
+            "也不要用聊天记录、记忆、示例里出现过的别人的名字；",
+            "6. 对方没听懂、连续发问号、或说你有 bug 时，先把话说明白；"
+            "不许骂「笨蛋」、不许说「烦死了 / 问什么问」、不许越吵越凶。",
         ])
         if note:
             lines.append("人格设定里的味道（优先遵守）：" + note)
@@ -7719,6 +7730,35 @@ class AIMindPlugin(Star):
         except Exception:  # noqa: BLE001
             pass
 
+    @staticmethod
+    def _wants_clarify(event: AstrMessageEvent) -> bool:
+        """对方是在困惑/没听懂/报 bug，还是在聊天。"""
+        try:
+            text = str(event.message_str or "")
+        except Exception:  # noqa: BLE001
+            return False
+        blob = text.strip()
+        if not blob:
+            return False
+        if blob.count("？") + blob.count("?") >= 2:
+            return True
+        for word in ("什么意思", "没懂", "听不懂", "没看懂", "在说什么", "有bug", "有 bug",
+                     "这段有", "怎么回事", "你说明白", "没明白"):
+            if word in blob:
+                return True
+        return False
+
+    def _clarify_guard(self, event: AstrMessageEvent) -> str:
+        if not self._wants_clarify(event):
+            return ""
+        return (
+            "<clarify_mode>"
+            "对方在困惑或没听懂（可能是「？」或「什么意思」，也可能是说你有 bug）。\n"
+            "先用一两句把话说明白，再保留你的性格；不许骂人、不许嫌烦、"
+            "不许反问「问什么问」；他说有 bug 就先问清楚是哪一步，别防御。"
+            "</clarify_mode>"
+        )
+
     def _group_label_guard(self, event: AstrMessageEvent, session_key: str) -> str:
         """群里有人用专属称呼叫她时，明确告诉她：别认。"""
         try:
@@ -7774,6 +7814,18 @@ class AIMindPlugin(Star):
             group = False
         report = guard_engine.scrub_reply(text)
         cleaned = report.cleaned
+        rude_hits: list[str] = []
+        # 解释模式（对方在问「什么意思 / ？？？」）：把骂人的半句摘掉
+        if self._wants_clarify(event):
+            rude = ("笨蛋", "烦死了", "问什么问", "闭嘴", "傻", "贫")
+            rude_hits = [word for word in rude if word in cleaned]
+            if rude_hits:
+                for word in rude_hits:
+                    cleaned = cleaned.replace(word, "")
+                cleaned = cleaned.strip("，。、…—？！?! ")
+                if not cleaned:
+                    cleaned = "？"
+                logger.info("[ai_mind] 解释模式下摘掉了 %s" % "、".join(rude_hits))
         # 群里还有一类词不能出现：把「专属称呼」说得像私密约定。
         # 这类话只摘掉那半句，剩下的还能照常发。
         group_hits: list[str] = []
@@ -7788,7 +7840,7 @@ class AIMindPlugin(Star):
                 cleaned = cleaned.strip("，。、…—？！?! ")
                 if not cleaned:
                     cleaned = "嗯？"
-        if not report.leaked and not group_hits:
+        if not report.leaked and not group_hits and not rude_hits:
             return
         self._guard_leaks += 1
         logger.warning(
