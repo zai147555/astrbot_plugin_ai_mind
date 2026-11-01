@@ -3966,17 +3966,23 @@ var qrcode = function() {
 
     <div class="card">
       <div class="row" style="justify-content:space-between">
+        <h3>我最近在看</h3>
+        <span class="small muted">登录后才有；刷一轮也会先看这里</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost small" id="bl-get-history">读我的历史</button>
+        <span class="grow"></span><span class="small muted" id="bl-history-status"></span>
+      </div>
+      <div id="bl-history-list" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
         <h3>今天挑的</h3>
         <span class="small muted" id="bl-day"></span>
       </div>
       <div id="bl-list" style="margin-top:10px"></div>
       <div id="bl-images" style="margin-top:12px"></div>
-      <div class="row" style="margin-top:10px">
-        <h3 style="margin-right:8px">最近在看</h3>
-        <button class="ghost small" id="bl-get-history">读我的历史</button>
-        <span class="grow"></span><span class="small muted" id="bl-history-status"></span>
-      </div>
-      <div id="bl-history-list" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -5880,27 +5886,7 @@ var qrcode = function() {
         $("bl-qr-status").textContent = "生成失败：" + e.message;
       });
     };
-    $("bl-get-history").onclick = function () {
-      $("bl-history-status").textContent = "正在读…";
-      request("bili/history", "POST", {}).then(function (data) {
-        if (!data.ok) {
-          $("bl-history-status").textContent = data.error || "读不到";
-          $("bl-history-list").innerHTML = "";
-          return;
-        }
-        var items = data.items || [];
-        $("bl-history-status").textContent = items.length + " 条";
-        $("bl-history-list").innerHTML = items.length ? items.map(function (item) {
-          var percent = (item.duration && item.progress)
-            ? Math.min(100, Math.round(item.progress * 100 / item.duration)) : 0;
-          return "<div class='small' style='margin-bottom:6px'>· " +
-            esc(item.title || "") + " <span class='muted'>" + esc(item.up || "") +
-            (percent ? "　看到 " + percent + "%" : "") + "</span></div>";
-        }).join("") : "<div class='small muted'>最近没有观看记录。</div>";
-      }).catch(function (e) {
-        $("bl-history-status").textContent = "失败：" + e.message;
-      });
-    };
+    $("bl-get-history").onclick = function () { loadBiliHistory(); };
     $("bl-login").onclick = function () {
       var cookie = ($("bl-cookie").value || "").trim();
       $("bl-login-status").textContent = "正在问 B 站…";
@@ -9122,6 +9108,40 @@ var qrcode = function() {
     $("bl-check").textContent = data.has_ffmpeg
       ? "ffmpeg 就绪，能出分镜"
       : "没找到 ffmpeg —— 能挑能写日报，但出不了分镜";
+    var historyBox = $("bl-history-list");
+    if (!settings.has_cookie) {
+      $("bl-history-status").textContent = "未登录：先扫码或粘 Cookie";
+      if (historyBox) historyBox.innerHTML = "";
+    } else if (historyBox && !historyBox.innerHTML) {
+      // 登录了就别让人再点一下：进页面直接读
+      loadBiliHistory(true);
+    }
+  }
+
+  function loadBiliHistory(silent) {
+    var status = $("bl-history-status");
+    var list = $("bl-history-list");
+    if (!silent) status.textContent = "正在读…";
+    return request("bili/history", "POST", {}).then(function (data) {
+      if (!data.ok) {
+        status.textContent = data.error || "读不到";
+        list.innerHTML = "";
+        return data;
+      }
+      var items = data.items || [];
+      status.textContent = items.length + " 条";
+      list.innerHTML = items.length ? items.map(function (item) {
+        var percent = (item.duration && item.progress)
+          ? Math.min(100, Math.round(item.progress * 100 / item.duration)) : 0;
+        return "<div class='small' style='margin-bottom:6px'>· " +
+          esc(item.title || "") + " <span class='muted'>" + esc(item.up || "") +
+          (percent ? "　看到 " + percent + "%" : "") + "</span></div>";
+      }).join("") : "<div class='small muted'>最近没有观看记录。</div>";
+      return data;
+    }).catch(function (e) {
+      status.textContent = "失败：" + e.message;
+      return null;
+    });
   }
 
   function loadBili() {
