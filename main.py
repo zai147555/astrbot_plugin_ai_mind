@@ -32,6 +32,7 @@ import os
 import sqlite3
 import threading
 import random
+import re
 import sys
 import time
 from collections import OrderedDict
@@ -1742,7 +1743,7 @@ class AIMindPlugin(Star):
             # 身份和说话底线不随情绪、场合、谁在说话而变；放在最强前缀位，
             # 既压住「跑偏」，也让前缀缓存一直命中。
             try:
-                anchor = self._persona_anchor()
+                anchor = self._persona_anchor(req)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[ai_mind] 人格锚点组装失败：{exc}")
                 anchor = ""
@@ -1895,8 +1896,21 @@ class AIMindPlugin(Star):
                     # 过滤不了就一条都别注入：拒绝名单是隐私承诺，
                     # 宁可这一轮不回忆，也不能把不该出现的人的记忆端上去。
                     result.retain([])
-                elif len(kept) != len(result.memories()):
-                    result.retain(kept)
+                else:
+                    allowed = self._persona_names() | set(self._declared_names(req.system_prompt or ""))
+                    identity_kept = self._filter_identity_memories(kept, allowed)
+                    if len(identity_kept) != len(kept):
+                        logger.info(
+                            "[ai_mind] 记忆里有 %d 条自称别的名字，已跳过注入"
+                            % (len(kept) - len(identity_kept))
+                        )
+                        self._diag["identity_skipped"] = (
+                            int(self._diag.get("identity_skipped") or 0)
+                            + (len(kept) - len(identity_kept))
+                        )
+                    the_kept = identity_kept if identity_kept else []
+                    if len(the_kept) != len(result.memories()):
+                        result.retain(the_kept)
                 memory_block = render_memory_block(
                     result, settings=self.settings.memory, session_id=session_key
                 )
@@ -2018,6 +2032,7 @@ class AIMindPlugin(Star):
                     (req.system_prompt or "") + history + "".join(cache_tail)
                 )
                 self._diag["last_chars"] = len(req.system_prompt or "") + len(history)
+                self._last_prompt_seen = str(req.system_prompt or "")
             except Exception:  # noqa: BLE001
                 pass
         except Exception as exc:  # noqa: BLE001 - 钩子里的异常绝不能打断对话
@@ -2031,23 +2046,76 @@ class AIMindPlugin(Star):
             text = ""
         return (text or "").strip() or fallback
 
-    def _persona_anchor(self) -> str:
-        """人格底座：身份、说话底线、危机覆盖。任何情绪都不能盖掉它。"""
-        name = str(self.settings.emotion.bot_name or "").strip()
+    def _persona_names(self) -> set[str]:
+        """她自己可能叫的名字：配置里的 bot_name + 人格预设的 label。"""
+        names: set[str] = set()
+        for value in (
+            self.settings.emotion.bot_name,
+            getattr(getattr(self.engine, "preset", None), "label", ""),
+        ):
+            text = str(value or "").strip()
+            if text:
+                names.add(text)
+        return names
+
+    def _declared_names(self, system_prompt: str) -> list[str]:
+        """从已有的系统提示词里找「你叫什么」：别的插件/人设卡可能已经写过。"""
+        blob = str(system_prompt or "")
+        if not blob:
+            return []
+        found: list[str] = []
+        for pattern in (
+            r"你(?:的名字)?(?:叫做|叫|名为|名叫|是)\s*[「『“\"']?([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_]{0,9})",
+            r"你的名字[是为叫：:\s]+[「『“\"']?([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_]{0,9})",
+        ):
+            for match in re.finditer(pattern, blob):
+                name = match.group(1).strip()
+                if name and name not in ("谁", "什么", "我", "你", "她", "他") and name not in found:
+                    found.append(name)
+        return found
+
+    def _persona_anchor(self, req: Any = None) -> str:
+        """人格底座：身份、说话底线、危机覆盖。任何情绪都不能盖掉它。
+
+        名字这里特别小心：插件不能硬塞一个和宿主人设不一样的名字 ——
+        那会让她一会儿说自己是 A、一会儿说自己是 B（用户反馈过）。
+        所以：配置里有名字才用它；系统里已有名字就照那个；出现多个就明确挑一个。
+        """
+        configured = str(self.settings.emotion.bot_name or "").strip()
+        declared = self._declared_names(getattr(req, "system_prompt", "") or "")
+        names = [value for value in ([configured] if configured else []) if value]
+        for value in declared:
+            if value not in names:
+                names.append(value)
         note = ""
         try:
             note = (self.engine.preset.style_note or "").strip()
         except Exception:  # noqa: BLE001
             note = ""
-        lines = [
-            PERSONA_ANCHOR_MARK,
-            "你是%s。这个身份不因情绪、场合、谁在说话而改变。" % (name or "她"),
+        lines = [PERSONA_ANCHOR_MARK]
+        # 宿主人设卡里已经写了名字时，以它为准 —— 插件再塞一个名字
+        # 就会变成「一会儿流莹、一会儿桃子」。
+        if declared:
+            lines.append("你的名字以系统设定里的「%s」为准；身份不因情绪、场合、谁在说话而改变。"
+                         % declared[0])
+        elif configured:
+            lines.append("你是%s。这个身份不因情绪、场合、谁在说话而改变。" % configured)
+        else:
+            lines.append("你的名字以系统设定为准；没有明确名字时不要自报名字。")
+        if len(names) > 1:
+            lines.append(
+                "注意：系统里出现过多个名字（%s）。以人格设定里的那个为准，"
+                "不确定就说「不告诉你」，绝不能在同一轮里换名字。" % "、".join(names[:5])
+            )
+        lines.extend([
             "说话底线（任何时候都成立）：",
             "1. 一次最多 3 条消息，每条要短；中文和中文之间不要空格；",
             "2. 不用客服腔、不写总结段、不排比、不写「作为…」这种句子；",
             "3. 出现自伤/轻生信号时，立刻放下口癖和玩笑，认真回应；",
-            "4. 群里不点破你和用户的关系，不透露真名、学校、住址、生日。",
-        ]
+            "4. 群里不点破你和用户的关系，不透露真名、学校、住址、生日；",
+            "5. 别人问你叫什么，只用人设里的名字；不要自创第二个名字，"
+            "也不要用聊天记录、记忆、示例里出现过的别人的名字。",
+        ])
         if note:
             lines.append("人格设定里的味道（优先遵守）：" + note)
         lines.append("</persona_anchor>")
@@ -5210,6 +5278,8 @@ class AIMindPlugin(Star):
                 return await self._debug_imagegen(event, text)
             if word.split()[0] in ("市场", "market"):
                 return await self._debug_market(event, text)
+            if word.split()[0] in ("人格", "persona"):
+                return self._debug_persona()
             if word.split()[0] in ("分段", "split"):
                 return self._debug_split(text)
             if word.split()[0] in ("表情", "sticker"):
@@ -5641,6 +5711,61 @@ class AIMindPlugin(Star):
         return sticker_engine.save_settings(
             Path(self.data_dir) / "sticker.json", self.sticker_settings
         )
+
+    @staticmethod
+    def _identity_claim(text: str) -> str:
+        """这句记忆里她自称什么名字（只认「我叫/我的名字是/叫我」这三种）。"""
+        blob = str(text or "")
+        for pattern in (r"我叫([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_]{0,7})",
+                        r"我的名字(?:是|叫)([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_]{0,7})",
+                        r"叫我([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_]{0,7})"):
+            match = re.search(pattern, blob)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def _filter_identity_memories(self, rows: Any, allowed: set[str]) -> list[Any]:
+        """把「我叫流莹」这类和人设对不上的记忆挡在注入之外（数据照旧保留）。"""
+        out: list[Any] = []
+        names = {str(item or "").strip() for item in (allowed or set()) if str(item or "").strip()}
+        for row in rows or []:
+            content = str(getattr(row, "content", "") or "")
+            claim = self._identity_claim(content)
+            if claim and names and claim not in names:
+                continue
+            out.append(row)
+        return out
+
+    def _debug_persona(self) -> str:
+        """一屏看完「她到底是谁」，专门查人格混乱。"""
+        configured = str(self.settings.emotion.bot_name or "").strip() or "（没填）"
+        preset = ""
+        try:
+            preset = "%s / %s" % (self.engine.preset.key, self.engine.preset.label)
+        except Exception:  # noqa: BLE001
+            preset = "?"
+        declared: list[str] = []
+        try:
+            declared = self._declared_names(self._last_system_prompt())
+        except Exception:  # noqa: BLE001
+            declared = []
+        lines = [
+            "配置里的名字：%s" % configured,
+            "运行中的人格预设：%s" % preset,
+            "系统提示词里已经写过的名字：%s" % ("、".join(declared) or "（没检测到）"),
+            "专属用户：%s" % ("、".join(str(x) for x in (self.settings.emotion.special_users or [])[:4]) or "没配"),
+            "因自称别的名字而跳过的记忆：%d 条" % int(self._diag.get("identity_skipped") or 0),
+            "",
+            "要是她还在乱认名字：把「人格定制 → 她叫什么」填成和人设卡一样的名字，",
+            "并确认没有别的插件也在往系统提示词里写「你是 XXX」。",
+        ]
+        return chr(10).join(lines)
+
+    def _last_system_prompt(self) -> str:
+        try:
+            return str(getattr(self, "_last_prompt_seen", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     def _debug_split(self, text: str) -> str:
         """看一眼她这句话怎么拆、为什么没拆。"""
