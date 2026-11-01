@@ -307,6 +307,11 @@ try:  # 表情包库（收 → 打标 → 按情绪发）
 except ImportError:  # pragma: no cover
     from mind import sticker as sticker_engine  # type: ignore[no-redef]
 
+try:  # QQ 空间：日记 + 配图 + 说说
+    from .mind import qzone as qzone_engine
+except ImportError:  # pragma: no cover
+    from mind import qzone as qzone_engine  # type: ignore[no-redef]
+
 try:  # 需求先搜市场（DSH 插件目录）
     from .mind import market as market_engine
 except ImportError:  # pragma: no cover
@@ -533,6 +538,7 @@ DEBUG_HELP = "\n".join([
     "#声聊　AI 语音：开|关 / 人物 / 用 <id> / 测试",
     "#在看 [N]　登录后看我最近在 B 站看什么",
     "#表情　表情包库：状态 / 开|关 / 标签 <id> <情绪> / 删 <id> / 清",
+    "#日记　QQ空间：列表 / 写 / 发 [id] / 删 <id> / 刷新",
     "#刷B站 [条数]　刷一轮：挑值得的 + 值得的做分镜 + 出日报",
     "#帮助　这份清单",
     "",
@@ -962,6 +968,15 @@ class AIMindPlugin(Star):
         )
         #: 每个会话上次发语音的时间（冷却用）
         self._voice_last: dict[str, float] = {}
+        self.qzone_settings = qzone_engine.load_settings(
+            Path(self.data_dir) / "qzone.json"
+        )
+        self.diaries = qzone_engine.DiaryStore(self.store, logger)
+        #: 发说说要 bot api：事件里拿到就存下来，面板/定时任务复用
+        self._qzone_api_cache: Any = None
+        #: 空间资料（昵称/头像）缓存
+        self._qzone_profile: dict[str, str] = {}
+        self._qzone_session: str = ""
         self.jobs = job_engine.JobRegistry()
         self._job_tasks: set[Any] = set()
         self.images = ImageStore(self.store, self.data_dir, logger)
@@ -1111,6 +1126,7 @@ class AIMindPlugin(Star):
                 self._style_maintenance()
                 self._debounce_gc()
                 await self._bili_daily_tick()
+                await self._qzone_daily_tick()
                 self._evolve_tick += 1
                 if self._evolve_tick >= 20:
                     self._evolve_tick = 0
@@ -2923,6 +2939,12 @@ class AIMindPlugin(Star):
             ("sticker/tag", self._api_sticker_tag, "给表情打标"),
             ("sticker/delete", self._api_sticker_delete, "删一张表情"),
             ("sticker/clear", self._api_sticker_clear, "清空表情库"),
+            ("qzone", self._api_qzone, "QQ空间：日记与说说"),
+            ("qzone/save", self._api_qzone_save, "保存空间设置"),
+            ("qzone/write", self._api_qzone_write, "写一篇日记（可配图）"),
+            ("qzone/publish", self._api_qzone_publish, "发到 QQ 空间"),
+            ("qzone/delete", self._api_qzone_delete, "删一条日记"),
+            ("qzone/refresh", self._api_qzone_refresh, "拉空间最新说说"),
             ("market", self._api_market, "插件市场搜索"),
             ("market/search", self._api_market_search, "搜市场"),
             ("market/save", self._api_market_save, "保存市场搜索设置"),
@@ -5015,6 +5037,8 @@ class AIMindPlugin(Star):
                 return self._debug_imitate(text)
             if word.split()[0] in ("邮件", "mail", "邮箱"):
                 return await self._debug_mail(text)
+            if word.split()[0] in ("日记", "空间", "qzone", "diary"):
+                return await self._debug_qzone(event, text)
             if word.split()[0] in ("分镜放大", "zoom"):
                 return await self._debug_zoom(event, text)
             if word.split()[0] in ("分镜", "storyboard", "sb"):
@@ -5903,6 +5927,359 @@ class AIMindPlugin(Star):
         return await self._emit_bulk(
             event, soundcheck_engine.report(result), images, "音频"
         )
+
+    # -- QQ 空间：写日记 / 配图 / 发说说 ------------------------------------
+    def _qzone_api_of(self, event: AstrMessageEvent | None = None) -> Any:
+        """拿能发说说的 bot api（NapCat 这类端才有空间扩展接口）。"""
+        api = getattr(getattr(event, "bot", None), "api", None)
+        if api is not None:
+            self._qzone_api_cache = api
+            try:
+                self._qzone_session = str(event.unified_msg_origin or "")
+            except Exception:  # noqa: BLE001
+                pass
+            return api
+        if self._qzone_api_cache is not None:
+            return self._qzone_api_cache
+        manager = getattr(getattr(self, "context", None), "platform_manager", None)
+        getter = getattr(manager, "get_insts", None)
+        try:
+            insts = list(getter() or []) if callable(getter) else []
+        except Exception:  # noqa: BLE001
+            insts = []
+        for inst in insts:
+            api = (getattr(getattr(inst, "bot", None), "api", None)
+                   or getattr(inst, "api", None))
+            if api is not None and callable(getattr(api, "call_action", None)):
+                self._qzone_api_cache = api
+                return api
+        return None
+
+    def _qzone_mood(self, session_key: str = "") -> str:
+        """此刻的心情：能读到情绪就用情绪原型的名字，读不到就随便挑一个。"""
+        try:
+            session = self.engine.sessions.get(str(session_key or ""))
+            if session is not None:
+                snap = self.engine.snapshot(session)
+                proto = getattr(snap, "proto", None)
+                label = str(getattr(proto, "label", "") or getattr(proto, "key", "") or "")
+                if label:
+                    return label
+        except Exception:  # noqa: BLE001
+            pass
+        return random.choice(list(qzone_engine.MOODS))
+
+    async def _qzone_provider(self) -> Any:
+        provider = await self._resolve_provider(str(self._qzone_session or ""))
+        if provider is not None:
+            return provider
+        try:
+            providers = self.context.get_all_providers()
+        except Exception:  # noqa: BLE001
+            providers = []
+        return providers[0] if providers else None
+
+    async def _qzone_illustrate(self, title: str, body: str) -> str:
+        """给日记配一张图；配图失败不能拦住写日记。"""
+        conf = self.qzone_settings
+        try:
+            ready = bool(self.imagegen_settings.ready())
+        except Exception:  # noqa: BLE001
+            ready = False
+        if not conf.with_image or not ready:
+            return ""
+        prompt = qzone_engine.image_prompt(title, body, conf.image_style)
+        folder = Path(self.data_dir) / "qzone" / "img"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            result = await asyncio.to_thread(
+                imagegen_engine.generate, prompt, self.imagegen_settings, folder, ""
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_mind] 日记配图失败：{exc}")
+            return ""
+        paths = result.get("images") or []
+        return str(paths[0]) if result.get("ok") and paths else ""
+
+    async def _qzone_write(self, session_key: str = "") -> dict[str, Any]:
+        """让模型写今天的日记（可选配图），存成草稿。"""
+        conf = self.qzone_settings
+        if not conf.enabled:
+            return {"ok": False, "error": "空间功能关着（面板「空间」页打开）"}
+        if session_key:
+            self._qzone_session = str(session_key)
+        provider = await self._qzone_provider()
+        if provider is None:
+            return {"ok": False, "error": "没有可用的模型，先配一个对话模型"}
+        day = qzone_engine.day_text()
+        mood = self._qzone_mood(str(session_key or ""))
+        system, prompt = qzone_engine.diary_prompt(
+            day, mood, persona=conf.write_system, max_chars=conf.max_chars
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=system), timeout=90
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "写日记失败了：" + (str(exc) or type(exc).__name__)[:160]}
+        parsed = qzone_engine.parse_diary(getattr(response, "completion_text", "") or "")
+        if not parsed.get("body"):
+            return {"ok": False, "error": "模型没写出正文，再试一次"}
+        image = await self._qzone_illustrate(parsed["title"], parsed["body"])
+        ident = self.diaries.add(parsed["title"], parsed["body"], parsed["mood"],
+                                 image=image, day=day)
+        if not ident:
+            return {"ok": False, "error": "日记没存进库（数据库不可写？）"}
+        entry = self.diaries.get(ident)
+        return {"ok": True, "entry": entry.to_dict() if entry else {}, "day": day, "mood": mood}
+
+    async def _qzone_publish(self, diary_id: int = 0,
+                             event: AstrMessageEvent | None = None) -> dict[str, Any]:
+        """把一条草稿发到空间。成功才改状态，失败留 failed 让人重试。"""
+        conf = self.qzone_settings
+        entry = self.diaries.get(int(diary_id)) if diary_id else self.diaries.latest_draft()
+        if entry is None:
+            return {"ok": False, "error": "没有可发的日记"}
+        if entry.status == "published" and entry.tid:
+            return {"ok": False, "error": "这条已经发过了", "entry": entry.to_dict()}
+        api = self._qzone_api_of(event)
+        if api is None:
+            return {"ok": False,
+                    "error": "没连上 QQ（空间接口要 NapCat / LLOneBot 这类支持扩展接口的端）"}
+        content = qzone_engine.compose_content(entry, conf.signature)
+        if not content.strip():
+            return {"ok": False, "error": "正文是空的"}
+        images: list[str] = []
+        uri = qzone_engine.image_data_uri(entry.image) if entry.image else ""
+        if uri:
+            images.append(uri)
+        params = qzone_engine.build_send_params(content, images, conf.ugc_right)
+        try:
+            payload = await asyncio.wait_for(
+                api.call_action("send_qzone_msg", **params), timeout=60
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = (str(exc) or type(exc).__name__)[:200]
+            self.diaries.mark_failed(entry.id, message)
+            return {"ok": False, "error": "发送失败：" + message}
+        parsed = qzone_engine.parse_send(payload)
+        if not parsed.get("ok"):
+            error = str(parsed.get("error") or "没发出去")
+            self.diaries.mark_failed(entry.id, error)
+            return {"ok": False, "error": error}
+        published_at = float(parsed.get("time") or 0) or time.time()
+        self.diaries.mark_published(entry.id, str(parsed.get("tid") or ""), published_at)
+        logger.info(f"[ai_mind] 日记已发到空间：id={entry.id} tid={parsed.get('tid')}")
+        return {"ok": True, "tid": parsed.get("tid") or "",
+                "entry": (self.diaries.get(entry.id) or entry).to_dict()}
+
+    async def _qzone_refresh(self) -> dict[str, Any]:
+        """拉空间最新说说，顺手更新本地已发那几条的赞/评论数。"""
+        api = self._qzone_api_of()
+        if api is None:
+            return {"ok": False, "error": "没连上 QQ（空间接口要 NapCat）"}
+        try:
+            payload = await asyncio.wait_for(
+                api.call_action("get_qzone_msg_list", pos=0, num=20), timeout=40
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False,
+                    "error": "拉空间列表失败：" + (str(exc) or type(exc).__name__)[:160]}
+        feeds = qzone_engine.parse_feeds(payload)
+        for feed in feeds:
+            self.diaries.update_stats(str(feed.get("tid") or ""),
+                                      int(feed.get("likes") or 0),
+                                      int(feed.get("comments") or 0))
+        return {"ok": True, "feeds": feeds, "count": len(feeds)}
+
+    async def _qzone_profile_refresh(self) -> dict[str, str]:
+        api = self._qzone_api_of()
+        if api is None:
+            return {}
+        try:
+            payload = await asyncio.wait_for(
+                api.call_action("get_qzone_profile"), timeout=20
+            )
+        except Exception:  # noqa: BLE001 - 有的端没这个接口，不影响发说说
+            return {}
+        profile = qzone_engine.parse_profile(payload)
+        if profile.get("nickname") or profile.get("uin"):
+            self._qzone_profile = profile
+        return profile
+
+    def _qzone_payload(self) -> dict[str, Any]:
+        entries = [item.to_dict() for item in self.diaries.recent(30)]
+        wanted = [str(item.get("image") or "") for item in entries if item.get("image")]
+        images = {row.get("path"): row.get("image")
+                  for row in self._images_payload(wanted)}
+        for entry in entries:
+            entry["image_url"] = images.get(str(entry.get("image") or ""), "")
+        return {
+            "settings": self.qzone_settings.to_dict(),
+            "stats": self.diaries.stats(),
+            "entries": entries,
+            "profile": dict(self._qzone_profile),
+            "has_api": self._qzone_api_of() is not None,
+            "moods": list(qzone_engine.MOODS),
+        }
+
+    async def _qzone_daily_tick(self) -> None:
+        """到点自己写一篇、发到空间（默认关；开了就是替主人往空间发东西）。"""
+        conf = self.qzone_settings
+        if not conf.enabled or not conf.auto_post:
+            return
+        state = Path(self.data_dir) / "qzone" / "last_run.json"
+        last = 0.0
+        try:
+            last = float(json.loads(state.read_text(encoding="utf-8")).get("at") or 0)
+        except (OSError, ValueError):
+            last = 0.0
+        if not qzone_engine.due_daily(conf, time.time(), last):
+            return
+        try:
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
+        except OSError:
+            return
+        written = await self._qzone_write(str(getattr(self, "_bili_target", "") or ""))
+        if not written.get("ok"):
+            logger.warning("[ai_mind] 定时写日记失败：" + str(written.get("error") or ""))
+            return
+        entry = written.get("entry") or {}
+        posted = await self._qzone_publish(int(entry.get("id") or 0))
+        if posted.get("ok"):
+            logger.info("[ai_mind] 定时日记已发到空间")
+        else:
+            logger.warning("[ai_mind] 定时发空间失败：" + str(posted.get("error") or ""))
+
+    def _qzone_report(self) -> str:
+        conf = self.qzone_settings
+        stats = self.diaries.stats()
+        lines = [
+            "空间：%s｜自动发 %s（%02d:%02d）｜权限 %s"
+            % ("开" if conf.enabled else "关",
+               "开" if conf.auto_post else "关", conf.auto_hour, conf.auto_minute,
+               qzone_engine.UGC_RIGHTS.get(conf.ugc_right, "?")),
+            "日记 %d 条（草稿 %d / 已发 %d）｜配图 %s"
+            % (stats["total"], stats["drafts"], stats["published"],
+               "开" if conf.with_image else "关"),
+        ]
+        for entry in self.diaries.recent(6):
+            lines.append("  #%d [%s] %s %s"
+                         % (entry.id, entry.status_text, entry.title,
+                            entry.time_text if hasattr(entry, "time_text") else ""))
+        lines.append("")
+        lines.append("用法：#日记 写 / 发 [id] / 删 <id> / 刷新")
+        return chr(10).join(lines)
+
+    async def _debug_qzone(self, event: AstrMessageEvent, text: str) -> str:
+        parts = text.lstrip("#").strip().split(None, 2)
+        args = parts[1:]
+        key = str(event.unified_msg_origin or "")
+        head = (args[0].lower() if args else "")
+        if not head:
+            return self._qzone_report()
+        if head in ("写", "write", "new"):
+            result = await self._qzone_write(key)
+            if not result.get("ok"):
+                return "写不出来：" + str(result.get("error") or "")
+            entry = result.get("entry") or {}
+            return (("写好了 #%d《%s》" + chr(10) + "%s" + chr(10) * 2
+                     + "要发就说：#日记 发")
+                    % (int(entry.get("id") or 0), entry.get("title") or "",
+                       str(entry.get("body") or "")[:400]))
+        if head in ("发", "send", "post", "publish"):
+            ident = 0
+            if len(args) > 1 and str(args[1]).strip().isdigit():
+                ident = int(str(args[1]).strip())
+            result = await self._qzone_publish(ident, event)
+            if not result.get("ok"):
+                return "没发出去：" + str(result.get("error") or "")
+            return "已发到空间（tid %s）" % (result.get("tid") or "?")
+        if head in ("删", "delete", "rm"):
+            if len(args) < 2 or not str(args[1]).strip().isdigit():
+                return "用法：#日记 删 <id>"
+            ident = int(str(args[1]).strip())
+            ok = self.diaries.remove(ident)
+            return "删掉了 #%d" % ident if ok else "没找到 #%d" % ident
+        if head in ("刷新", "refresh", "list"):
+            result = await self._qzone_refresh()
+            if not result.get("ok"):
+                return "刷新失败：" + str(result.get("error") or "")
+            return "空间最近 %d 条说说（本地已同步赞/评论数）" % int(result.get("count") or 0)
+        return self._qzone_report()
+
+    # -- 面板：QQ 空间 ------------------------------------------------------
+    async def _api_qzone(self) -> Any:
+        data = self._qzone_payload()
+        if not self._qzone_profile:
+            profile = await self._qzone_profile_refresh()
+            if profile:
+                data["profile"] = profile
+        return json_response(data)
+
+    async def _api_qzone_save(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        merged = self.qzone_settings.to_dict()
+        merged.update({key: value for key, value in payload.items() if key in merged})
+        self.qzone_settings = qzone_engine.QzoneSettings.from_dict(merged)
+        ok = qzone_engine.save_settings(
+            Path(self.data_dir) / "qzone.json", self.qzone_settings
+        )
+        data = self._qzone_payload()
+        data["saved"] = ok
+        if not ok:
+            return error_response("写入空间设置失败，详细原因见 AstrBot 日志")
+        return json_response(data)
+
+    async def _api_qzone_write(self) -> Any:
+        body = await self._read_body()
+        payload = body if isinstance(body, dict) else {}
+        result = await self._qzone_write(str(payload.get("session") or ""))
+        data = self._qzone_payload()
+        data.update({"ok": bool(result.get("ok")),
+                     "error": str(result.get("error") or ""),
+                     "entry": result.get("entry") or {}})
+        return json_response(data)
+
+    async def _api_qzone_publish(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        try:
+            ident = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            ident = 0
+        result = await self._qzone_publish(ident)
+        data = self._qzone_payload()
+        data.update({"ok": bool(result.get("ok")),
+                     "error": str(result.get("error") or ""),
+                     "tid": str(result.get("tid") or "")})
+        return json_response(data)
+
+    async def _api_qzone_delete(self) -> Any:
+        body = await self._read_body()
+        params = await self._params()
+        payload = body if isinstance(body, dict) else dict(params or {})
+        try:
+            ident = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            ident = 0
+        ok = bool(ident) and self.diaries.remove(ident)
+        data = self._qzone_payload()
+        data["done"] = ok
+        return json_response(data)
+
+    async def _api_qzone_refresh(self) -> Any:
+        result = await self._qzone_refresh()
+        data = self._qzone_payload()
+        data.update({"ok": bool(result.get("ok")),
+                     "error": str(result.get("error") or ""),
+                     "count": int(result.get("count") or 0),
+                     "feeds": result.get("feeds") or []})
+        return json_response(data)
 
     # -- 结果投递（群里 → 指令 QQ 私聊） -----------------------------------
     def _delivery_save(self) -> str:

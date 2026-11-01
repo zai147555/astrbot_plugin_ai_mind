@@ -38,3 +38,9 @@ python3 scripts/fetch_ffmpeg.py --platform windows --force
 | poke_to_llm | MIT | 戳一戳接话（mind/poke.py） |
 
 只借鉴概念、没有搬运代码的项目（stealer / AIQTalk / MemOS / memewiki）在 README 里写明了原因。
+
+## 接口参考（未复制代码）
+
+| 项目 | 许可 | 用在哪 |
+| --- | --- | --- |
+| NapCatQQ | AGPL-3.0 | QQ 空间扩展接口（send_qzone_msg / get_qzone_msg_list / get_qzone_profile）的调用方式与参数语义；只按文档调接口，没有复制其代码 |

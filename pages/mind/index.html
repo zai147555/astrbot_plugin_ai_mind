@@ -295,7 +295,8 @@
     #view-persona, #view-split, #view-debounce, #view-humanize,
     #view-style, #view-prompts, #view-theory, #view-wizard,
     #view-imitate, #view-mail, #view-storyboard, #view-bili,
-    #view-knowledge, #view-imagegen, #view-market, #view-sticker {
+    #view-knowledge, #view-imagegen, #view-market, #view-sticker,
+#view-qzone {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 14px;
@@ -309,7 +310,8 @@
     #view-prompts > .card, #view-theory > .card, #view-wizard > .card,
     #view-imitate > .card, #view-mail > .card, #view-storyboard > .card,
     #view-bili > .card, #view-knowledge > .card, #view-imagegen > .card,
-    #view-market > .card, #view-sticker > .card {
+    #view-market > .card, #view-sticker > .card,
+#view-qzone > .card {
       margin-bottom: 0;
     }
   }
@@ -376,6 +378,55 @@
     body:not(.no-bg) .card { background: var(--glass-solid); }
     body:not(.no-bg) .memitem { background: var(--glass-solid-2); }
   }
+
+  /* ===================== QQ 空间（日记 + 说说） ===================== */
+  #qz-cover {
+    height: 96px; border-radius: var(--r-in); margin-bottom: 4px;
+    background:
+      radial-gradient(120% 150% at 10% 0%, rgba(255,255,255,.55), transparent 62%),
+      linear-gradient(120deg, #cfd9ef 0%, #e8d6e4 48%, #f3e7d7 100%);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+  html[data-theme="dark"] #qz-cover {
+    background:
+      radial-gradient(120% 150% at 10% 0%, rgba(255,255,255,.08), transparent 62%),
+      linear-gradient(120deg, #1b2436 0%, #2a1f2c 52%, #33291f 100%);
+  }
+  #qz-head { display: flex; align-items: flex-end; gap: 12px; margin-top: -30px; padding: 0 10px; }
+  #qz-avatar {
+    width: 64px; height: 64px; border-radius: 50%; flex: 0 0 auto;
+    display: grid; place-items: center; overflow: hidden;
+    font-weight: var(--fw-bold); font-size: 22px;
+    color: var(--accent-fg); background: var(--accent);
+    box-shadow: 0 0 0 4px var(--card);
+  }
+  #qz-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .qz-name { font-weight: var(--fw-semi); font-size: 15.5px; }
+  .qz-feed { display: grid; gap: 12px; margin-top: 12px; }
+  .qz-post { background: var(--card-2); border-radius: var(--r-in); padding: 14px; }
+  .qz-post .qz-meta { display: flex; align-items: center; gap: 9px; }
+  .qz-post .qz-dot {
+    width: 32px; height: 32px; border-radius: 50%; flex: 0 0 auto;
+    display: grid; place-items: center; font-size: 14px;
+    background: var(--card-3); color: var(--fg-2);
+  }
+  .qz-post .qz-body { margin: 9px 0 4px; white-space: pre-wrap; line-height: 1.78; }
+  .qz-post .qz-pic { margin: 9px 0 4px; border-radius: var(--r-in); overflow: hidden; background: var(--card-3); }
+  .qz-post .qz-pic img { display: block; width: 100%; max-height: 380px; object-fit: cover; }
+  .qz-foot {
+    display: flex; align-items: center; gap: 14px;
+    color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums;
+  }
+  .qz-foot button {
+    background: none; border: 0; padding: 4px 2px; font: inherit;
+    color: var(--muted); cursor: pointer; border-radius: 6px;
+  }
+  .qz-foot button:hover { color: var(--fg); }
+  .qz-foot button:focus-visible { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--accent); }
+  .qz-tag { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; background: var(--card-3); color: var(--muted); }
+  .qz-tag.pub { color: var(--ok); }
+  .qz-tag.failed { color: var(--danger); }
+  .qz-empty { padding: 30px 12px; text-align: center; color: var(--muted); }
 </style>
 <script>/* qrcode-generator (c) 2009 Kazuhiko Arase, MIT */
 //---------------------------------------------------------------------
@@ -2735,6 +2786,7 @@ var qrcode = function() {
     <button id="tab-imagegen">画图</button>
     <button id="tab-market">市场</button>
     <button id="tab-sticker">表情</button>
+    <button id="tab-qzone">空间</button>
     <button id="tab-split">分段拟人</button>
     <button id="tab-debounce">消息防抖</button>
     <button id="tab-humanize">去 AI 味</button>
@@ -4100,6 +4152,59 @@ var qrcode = function() {
         <span class="small muted" id="sk-count"></span>
       </div>
       <div id="sk-list" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- ================= QQ 空间（日记 + 说说） ================= -->
+  <div id="view-qzone" style="display:none">
+    <div class="card">
+      <div id="qz-cover"></div>
+      <div id="qz-head">
+        <div id="qz-avatar">她</div>
+        <div class="grow">
+          <div class="qz-name" id="qz-name">她</div>
+          <div class="small muted" id="qz-sub">还没连上 QQ 空间</div>
+        </div>
+        <button class="ghost small" id="qz-refresh">刷新</button>
+        <button class="primary small" id="qz-write">写一篇</button>
+      </div>
+      <div class="row" style="margin-top:12px" id="qz-stats"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>空间设置</h3>
+        <span class="small muted" id="qz-status"></span>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="qz-enabled"> 开启</label>
+        <label class="small"><input type="checkbox" id="qz-auto"> 每天定时发</label>
+        <label class="small muted">时间
+          <input id="qz-hour" type="number" min="0" max="23" style="width:64px"> :
+          <input id="qz-min" type="number" min="0" max="59" style="width:64px"></label>
+        <label class="small muted">谁能看 <select id="qz-right"></select></label>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:14px">
+        <label class="small"><input type="checkbox" id="qz-image"> 配一张图</label>
+        <label class="small muted">画风 <input id="qz-style" style="width:190px" placeholder="手绘水彩，暖光，安静"></label>
+        <label class="small muted">署名 <input id="qz-sign" style="width:130px" placeholder="留空就不加"></label>
+      </div>
+      <div class="small" style="margin-top:10px;color:var(--warn)">
+        定时发 = 到点自己写、自己发到你的空间。这是替你的号发内容，QQ 的风控与规则风险由你承担，默认关。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="qz-save">保存</button>
+        <span class="grow"></span>
+        <span class="small muted" id="qz-hint"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3>她的空间</h3>
+        <span class="small muted" id="qz-count"></span>
+      </div>
+      <div class="qz-feed" id="qz-feed"></div>
     </div>
   </div>
 
@@ -5973,6 +6078,47 @@ var qrcode = function() {
       }).catch(function (e) {
         $("ig-go-status").textContent = "失败：" + e.message;
       });
+    };
+    $("tab-qzone").onclick = function () {
+      setView("qzone");
+      loadQzone().catch(function (e) { toast("加载空间失败：" + e.message); });
+    };
+    $("qz-write").onclick = function () {
+      var btn = $("qz-write");
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = "写着…";
+      request("qzone/write", "POST", {}).then(function (data) {
+        btn.disabled = false;
+        btn.textContent = "写一篇";
+        renderQzone(data);
+        toast(data.ok ? "写好了，草稿在下面" : ("写不出来：" + (data.error || "")));
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "写一篇";
+        toast("写日记失败：" + e.message);
+      });
+    };
+    $("qz-refresh").onclick = function () {
+      request("qzone/refresh", "POST", {}).then(function (data) {
+        renderQzone(data);
+        toast(data.ok
+          ? "已刷新（" + (data.count || 0) + " 条）"
+          : ("刷新失败：" + (data.error || "")));
+      }).catch(function (e) { toast("刷新失败：" + e.message); });
+    };
+    $("qz-save").onclick = function () {
+      request("qzone/save", "POST", {
+        enabled: $("qz-enabled").checked,
+        auto_post: $("qz-auto").checked,
+        auto_hour: Number($("qz-hour").value) || 0,
+        auto_minute: Number($("qz-min").value) || 0,
+        ugc_right: Number($("qz-right").value) || 1,
+        with_image: $("qz-image").checked,
+        image_style: $("qz-style").value.trim(),
+        signature: $("qz-sign").value.trim()
+      }).then(function (data) { renderQzone(data); toast("已保存"); })
+        .catch(function (e) { toast("保存失败：" + e.message); });
     };
     $("tab-market").onclick = function () {
       setView("market");
@@ -8657,6 +8803,124 @@ var qrcode = function() {
   function loadSticker() {
     return request("sticker", "GET").then(renderSticker);
   }
+  // ---- QQ 空间 -----------------------------------------------------------
+  var QZ_STATUS = { draft: "草稿", published: "已发", failed: "没发出去" };
+  function qzPad2(value) {
+    var n = Number(value) || 0;
+    return (n < 10 ? "0" : "") + n;
+  }
+  function qzFeed(entries) {
+    if (!entries.length) {
+      return "<div class='qz-empty'>还没有日记。点「写一篇」，她写完先放这儿，你确认了再发。</div>";
+    }
+    return entries.map(function (entry) {
+      var status = entry.status || "draft";
+      var tagClass = status === "published" ? " pub" : (status === "failed" ? " failed" : "");
+      var tag = "<span class='qz-tag" + tagClass + "'>" + esc(QZ_STATUS[status] || status) + "</span>";
+      var pic = entry.image_url
+        ? "<div class='qz-pic'><img alt='' src='" + entry.image_url + "'></div>" : "";
+      var actions;
+      if (status === "published") {
+        actions = "<span>" + ("赞 " + (entry.likes || 0)) + "</span>" +
+          "<span>" + ("评论 " + (entry.comments || 0)) + "</span>" +
+          "<span class='grow'></span>" +
+          (entry.tid ? "<span>" + esc("tid " + entry.tid) + "</span>" : "");
+      } else {
+        actions = "<button data-qz-publish='" + entry.id + "'>" +
+          (status === "failed" ? "重试发送" : "发到空间") + "</button>" +
+          "<span class='grow'></span>" +
+          "<button data-qz-del='" + entry.id + "'>删掉</button>";
+      }
+      var errorLine = (status === "failed" && entry.error)
+        ? "<div class='small' style='color:var(--danger);margin-top:6px'>" + esc(entry.error) + "</div>" : "";
+      return "<div class='qz-post'>" +
+        "<div class='qz-meta'>" +
+        "<div class='qz-dot'>" + esc((entry.mood || "·").slice(0, 1)) + "</div>" +
+        "<div class='grow'>" +
+        "<div class='qz-name'>" + esc(entry.title || "她") + "</div>" +
+        "<div class='small muted'>" + esc(entry.time_text || "") +
+        (entry.day ? " · " + esc(entry.day) : "") + "</div>" +
+        "</div>" + tag + "</div>" +
+        "<div class='qz-body'>" + esc(entry.body || "") + "</div>" + pic +
+        "<div class='qz-foot'>" + actions + "</div>" + errorLine +
+        "</div>";
+    }).join("");
+  }
+  function renderQzone(data) {
+    data = data || {};
+    var settings = data.settings || {};
+    $("qz-enabled").checked = settings.enabled !== false;
+    $("qz-auto").checked = settings.auto_post === true;
+    $("qz-hour").value = settings.auto_hour === undefined ? 21 : settings.auto_hour;
+    $("qz-min").value = settings.auto_minute === undefined ? 0 : settings.auto_minute;
+    $("qz-image").checked = settings.with_image !== false;
+    $("qz-style").value = settings.image_style || "";
+    $("qz-sign").value = settings.signature || "";
+    var rights = settings.ugc_rights || [];
+    $("qz-right").innerHTML = rights.map(function (item) {
+      return "<option value='" + item.value + "'" +
+        (item.value === settings.ugc_right ? " selected" : "") + ">" + esc(item.label) + "</option>";
+    }).join("");
+    var profile = data.profile || {};
+    var name = profile.nickname || "她";
+    $("qz-name").textContent = name;
+    if (profile.avatar) {
+      $("qz-avatar").innerHTML = "<img alt='' src='" + esc(profile.avatar) + "'>";
+    } else {
+      $("qz-avatar").textContent = name.slice(0, 1);
+    }
+    var stats = data.stats || {};
+    $("qz-sub").textContent = data.has_api
+      ? "已连上 QQ 空间" : "还没连上 QQ（发说说要 NapCat 这类端）";
+    $("qz-stats").innerHTML =
+      "<span class='qz-tag'>日记 " + (stats.total || 0) + "</span>" +
+      "<span class='qz-tag'>草稿 " + (stats.drafts || 0) + "</span>" +
+      "<span class='qz-tag pub'>已发 " + (stats.published || 0) + "</span>" +
+      "<span class='grow'></span>" +
+      "<span class='small muted'>" +
+      (settings.auto_post
+        ? "每天 " + qzPad2(settings.auto_hour) + ":" + qzPad2(settings.auto_minute) + " 自己发"
+        : "只在你说发的时候发") + "</span>";
+    $("qz-hint").textContent = settings.auto_post ? "定时发开着" : "";
+    $("qz-status").textContent = settings.enabled === false ? "已关" : "已开";
+    var entries = data.entries || [];
+    $("qz-count").textContent = entries.length ? entries.length + " 条" : "";
+    $("qz-feed").innerHTML = qzFeed(entries);
+    Array.prototype.forEach.call($("qz-feed").querySelectorAll("[data-qz-publish]"), function (btn) {
+      btn.onclick = function () { qzPublish(btn, Number(btn.getAttribute("data-qz-publish"))); };
+    });
+    Array.prototype.forEach.call($("qz-feed").querySelectorAll("[data-qz-del]"), function (btn) {
+      btn.onclick = function () {
+        var ident = String(btn.getAttribute("data-qz-del"));
+        if (!needConfirm("qz-del:" + ident, "再点一次：删掉这条日记")) return;
+        request("qzone/delete", "POST", { id: Number(ident) })
+          .then(function (result) { renderQzone(result); toast("删掉了"); })
+          .catch(function (e) { toast("删除失败：" + e.message); });
+      };
+    });
+    return data;
+  }
+  function qzPublish(btn, ident) {
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "发送中…";
+    request("qzone/publish", "POST", { id: ident }).then(function (data) {
+      renderQzone(data);
+      if (!data.ok) {
+        toast("没发出去：" + (data.error || "未知原因"));
+        return;
+      }
+      toast("已发到空间");
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = old;
+      toast("发送失败：" + e.message);
+    });
+  }
+  function loadQzone() {
+    return request("qzone", "GET").then(renderQzone);
+  }
+
 
   // ---- 市场 ---------------------------------------------------------------
   function renderMarket(data) {
@@ -9028,7 +9292,7 @@ var qrcode = function() {
       style: "view-style", wizard: "view-wizard", debounce: "view-debounce",
       imitate: "view-imitate", mail: "view-mail", storyboard: "view-storyboard",
       bili: "view-bili", knowledge: "view-knowledge", imagegen: "view-imagegen",
-      market: "view-market", sticker: "view-sticker"
+      market: "view-market", sticker: "view-sticker", qzone: "view-qzone"
     };
     Object.keys(views).forEach(function (key) {
       var view = $(views[key]);
